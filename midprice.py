@@ -286,6 +286,14 @@ class Trader(EWrapper, EClient):
         o.tif = self.config["tif"]
         return o
 
+    # Makes the script more robust across IB API versions that differ on
+    # cancelOrder’s Python binding
+    def safe_cancel_order(self, order_id: int) -> None:
+        try:
+            self.cancelOrder(order_id)
+        except TypeError:
+            self.cancelOrder(order_id, "")
+            
     def sync_orders(self):
         if not self.ready_for_trading:
             return
@@ -311,8 +319,7 @@ class Trader(EWrapper, EClient):
         if desired_side == "BUY":
             if self.sell_order_id is not None:
                 tprint(f"Cancelling opposite SELL order id={self.sell_order_id}")
-                # self.cancelOrder(self.sell_order_id, "")
-                self.cancelOrder(self.sell_order_id)
+                self.safe_cancel_order(self.sell_order_id)
                 self.pending_sell = False
                 self.sell_order_id = None
                 self.open_symbol_sells = 0
@@ -333,8 +340,7 @@ class Trader(EWrapper, EClient):
         else:
             if self.buy_order_id is not None:
                 tprint(f"Cancelling opposite BUY order id={self.buy_order_id}")
-                # self.cancelOrder(self.buy_order_id, "")
-                self.cancelOrder(self.buy_order_id)
+                self.safe_cancel_order(self.buy_order_id)
                 self.pending_buy = False
                 self.buy_order_id = None
                 self.open_symbol_buys = 0
