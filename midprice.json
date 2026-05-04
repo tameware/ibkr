@@ -7,7 +7,7 @@
   "currency": "USD",
   "exchange": "SMART",
   "primary_exchange": "Your stock's exchange here",
-  "max_pos": 100,
+  "max_pos": 200,
   "loop_seconds": 10,
   "market_timezone": "America/New_York",
   "market_open_hour": 9,
