@@ -10,7 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict
 
-from ibapi.client import EClient
+from ibapi.client import EClient, OrderCancel
 from ibapi.common import TickAttrib, TickAttribLast, TickerId
 from ibapi.contract import Contract
 from ibapi.order import Order
@@ -292,7 +292,7 @@ class Trader(EWrapper, EClient):
         try:
             self.cancelOrder(order_id)
         except TypeError:
-            self.cancelOrder(order_id, "")
+            self.cancelOrder(order_id, OrderCancel())
             
     def sync_orders(self):
         if not self.ready_for_trading:
