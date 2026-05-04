@@ -18,6 +18,6 @@
   "tif": "DAY",
   "ignored_error_codes": [2103, 2104, 2106, 2108, 2158],
   "ignore_error_substrings": ["data farm connection is broken"],
-  "buy_delta": 0.10,
-  "sell_delta": 0.10
+  "buy_delta": 0.04,
+  "sell_delta": 0.04
 }
