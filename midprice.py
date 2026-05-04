@@ -287,7 +287,7 @@ class Trader(EWrapper, EClient):
         return o
 
     # Makes the script more robust across IB API versions that differ on
-    # cancelOrder’s Python binding
+    # cancelOrder's Python binding
     def safe_cancel_order(self, order_id: int) -> None:
         try:
             self.cancelOrder(order_id)
