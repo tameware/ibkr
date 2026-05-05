@@ -10,7 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict
 
-from ibapi.client import EClient, OrderCancel
+from ibapi.client import EClient
 from ibapi.common import TickAttrib, TickAttribLast, TickerId
 from ibapi.contract import Contract
 from ibapi.order import Order
@@ -90,6 +90,10 @@ class Trader(EWrapper, EClient):
         self.open_symbol_sells = 0
         self.pending_buy = False
         self.pending_sell = False
+        self.position_snapshot_complete = False
+        self.open_orders_snapshot_complete = False
+        self.sync_requested = False
+        self.managed_order_ids = set()
 
     def orderStatus(
         self,
@@ -105,7 +109,13 @@ class Trader(EWrapper, EClient):
         whyHeld,
         mktCapPrice,
     ):
-        if status in ("Filled", "Cancelled"):
+        if status in ("Submitted", "PreSubmitted", "ApiPending", "PendingSubmit"):
+            if orderId == self.buy_order_id:
+                self.pending_buy = False
+            if orderId == self.sell_order_id:
+                self.pending_sell = False
+
+        if status in ("Filled", "Cancelled", "Inactive", "ApiCancelled"):
             if orderId == self.buy_order_id:
                 tprint(f"BUY {orderId} {status} @ {avgFillPrice}")
                 self.pending_buy = False
@@ -114,10 +124,8 @@ class Trader(EWrapper, EClient):
                 tprint(f"SELL {orderId} {status} @ {avgFillPrice}")
                 self.pending_sell = False
                 self.sell_order_id = None
-
-            self.open_symbol_buys = 0
-            self.open_symbol_sells = 0
-            self.reqOpenOrders()
+            self.managed_order_ids.discard(orderId)
+            self.request_open_orders_snapshot()
 
     def tickByTickAllLast(
         self,
@@ -172,13 +180,10 @@ class Trader(EWrapper, EClient):
         tprint(f"nextValidId: {orderId}")
         self.nextOrderId = orderId
 
-        self.reqPositions()
+        self.request_positions_snapshot()
         self.request_today_open_or_prior_close()
         self.reqMktData(MKTDATA_REQ_ID, self.contract, GENERIC_TICKS, False, False, [])
-
-        self.open_symbol_buys = 0
-        self.open_symbol_sells = 0
-        self.reqOpenOrders()
+        self.request_open_orders_snapshot()
 
         self.reqTickByTickData(
             LAST_TRADE_REQ_ID,
@@ -190,16 +195,21 @@ class Trader(EWrapper, EClient):
 
     def openOrder(self, orderId, contract, order, orderState):
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
-            if order.action == "BUY":
-                self.open_symbol_buys += 1
-                self.buy_order_id = orderId
-            elif order.action == "SELL":
-                self.open_symbol_sells += 1
-                self.sell_order_id = orderId
+            if orderId in self.managed_order_ids:
+                if order.action == "BUY":
+                    self.open_symbol_buys += 1
+                    self.buy_order_id = orderId
+                elif order.action == "SELL":
+                    self.open_symbol_sells += 1
+                    self.sell_order_id = orderId
+            else:
+                tprint(f"Ignoring unmanaged open order id={orderId} action={order.action}")
 
     def openOrderEnd(self):
-        self.ready_for_trading = True
-        tprint(f"Open {self.config['symbol']} orders: buys={self.open_symbol_buys}, sells={self.open_symbol_sells}")
+        self.open_orders_snapshot_complete = True
+        self.ready_for_trading = self.position_snapshot_complete and self.open_orders_snapshot_complete
+        tprint(f"Managed {self.config['symbol']} orders: buys={self.open_symbol_buys}, sells={self.open_symbol_sells}")
+        self.maybe_sync_orders()
 
     def error(self, reqId, errorTime, errorCode, errorString, advancedOrderRejectJson=""):
         noisy_codes = {str(x) for x in self.config["ignored_error_codes"]}
@@ -221,7 +231,9 @@ class Trader(EWrapper, EClient):
             self.position_size = int(pos)
 
     def positionEnd(self):
-        return
+        self.position_snapshot_complete = True
+        self.ready_for_trading = self.position_snapshot_complete and self.open_orders_snapshot_complete
+        self.maybe_sync_orders()
 
     def request_today_open_or_prior_close(self):
         tprint("Requesting daily bars for open/prior close")
@@ -287,13 +299,29 @@ class Trader(EWrapper, EClient):
         return o
 
     # Makes the script more robust across IB API versions that differ on
-    # cancelOrder's Python binding
+    # cancelOrder’s Python binding
     def safe_cancel_order(self, order_id: int) -> None:
         try:
             self.cancelOrder(order_id)
         except TypeError:
-            self.cancelOrder(order_id, OrderCancel())
-            
+            self.cancelOrder(order_id, "")
+
+    def request_positions_snapshot(self):
+        self.position_snapshot_complete = False
+        self.position_size = 0
+        self.reqPositions()
+
+    def request_open_orders_snapshot(self):
+        self.open_orders_snapshot_complete = False
+        self.open_symbol_buys = 0
+        self.open_symbol_sells = 0
+        self.reqOpenOrders()
+
+    def maybe_sync_orders(self):
+        if self.sync_requested and self.position_snapshot_complete and self.open_orders_snapshot_complete:
+            self.sync_requested = False
+            self.sync_orders()
+
     def sync_orders(self):
         if not self.ready_for_trading:
             return
@@ -302,62 +330,52 @@ class Trader(EWrapper, EClient):
             return
 
         pos = self.position_size
+        max_pos = int(self.config["max_pos"])
 
-        # MidPrice orders track midpoint and use lmtPrice as buy cap / sell floor.
+        tprint(
+            f"sync_orders: pos={pos} max_pos={max_pos} buys_open={self.open_symbol_buys} "
+            f"sells_open={self.open_symbol_sells} pending_buy={self.pending_buy} "
+            f"pending_sell={self.pending_sell} ref_price={self.ref_price}"
+        )
+
         buy_limit = round(self.ref_price - float(self.config["buy_delta"]), int(self.config["price_round_digits"]))
         sell_limit = round(self.ref_price + float(self.config["sell_delta"]), int(self.config["price_round_digits"]))
 
-        if pos <= 0:
-            desired_side = "BUY"
-            desired_qty = self.config["max_pos"]
-            desired_limit = buy_limit
-        else:
-            desired_side = "SELL"
-            desired_qty = pos
-            desired_limit = sell_limit
-
-        if desired_side == "BUY":
-            if self.sell_order_id is not None:
-                tprint(f"Cancelling opposite SELL order id={self.sell_order_id}")
-                self.safe_cancel_order(self.sell_order_id)
-                self.pending_sell = False
-                self.sell_order_id = None
-                self.open_symbol_sells = 0
-                return
-
-            if self.open_symbol_sells > 0:
-                return
-
-            if desired_qty > 0 and self.open_symbol_buys == 0 and not self.pending_buy:
+        buy_qty = max_pos - pos
+        if buy_qty > 0:
+            if self.open_symbol_buys == 0 and not self.pending_buy:
                 oid = self.nextOrderId
                 self.nextOrderId += 1
                 self.buy_order_id = oid
                 self.pending_buy = True
+                self.managed_order_ids.add(oid)
 
-                order = self.make_midprice_order("BUY", desired_qty, desired_limit)
-                tprint(f"Placing MIDPRICE BUY {desired_qty} cap={desired_limit}, id={oid}")
+                order = self.make_midprice_order("BUY", buy_qty, buy_limit)
+                tprint(f"Placing MIDPRICE BUY {buy_qty} cap={buy_limit}, id={oid}")
                 self.placeOrder(oid, self.contract, order)
         else:
             if self.buy_order_id is not None:
-                tprint(f"Cancelling opposite BUY order id={self.buy_order_id}")
+                tprint(f"Cancelling BUY order id={self.buy_order_id} because position is at max_pos")
                 self.safe_cancel_order(self.buy_order_id)
                 self.pending_buy = False
-                self.buy_order_id = None
-                self.open_symbol_buys = 0
-                return
 
-            if self.open_symbol_buys > 0:
-                return
-
-            if desired_qty > 0 and self.open_symbol_sells == 0 and not self.pending_sell:
+        sell_qty = pos
+        if sell_qty > 0:
+            if self.open_symbol_sells == 0 and not self.pending_sell:
                 oid = self.nextOrderId
                 self.nextOrderId += 1
                 self.sell_order_id = oid
                 self.pending_sell = True
+                self.managed_order_ids.add(oid)
 
-                order = self.make_midprice_order("SELL", desired_qty, desired_limit)
-                tprint(f"Placing MIDPRICE SELL {desired_qty} floor={desired_limit}, id={oid}")
+                order = self.make_midprice_order("SELL", sell_qty, sell_limit)
+                tprint(f"Placing MIDPRICE SELL {sell_qty} floor={sell_limit}, id={oid}")
                 self.placeOrder(oid, self.contract, order)
+        else:
+            if self.sell_order_id is not None:
+                tprint(f"Cancelling SELL order id={self.sell_order_id} because position is zero")
+                self.safe_cancel_order(self.sell_order_id)
+                self.pending_sell = False
 
     def run_loop(self):
         while True:
@@ -365,8 +383,10 @@ class Trader(EWrapper, EClient):
                 tprint("Disconnected from IBKR; exiting run loop")
                 break
             if self.us_regular_hours():
-                self.reqPositions()
-                self.sync_orders()
+                self.sync_requested = True
+                self.request_positions_snapshot()
+                self.request_open_orders_snapshot()
+                self.maybe_sync_orders()
             time.sleep(self.config["loop_seconds"])
 
 
