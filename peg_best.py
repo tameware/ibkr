@@ -111,15 +111,17 @@ class Trader(EWrapper, EClient):
                 tprint(f"BUY {orderId} {status} @ {avgFillPrice}")
                 self.pending_buy = False
                 self.buy_order_id = None
-            if orderId == self.sell_order_id:
+                self.open_symbol_buys = 0
+                self.open_symbol_sells = 0
+                self.reqOpenOrders()
+            elif orderId == self.sell_order_id:
                 tprint(f"SELL {orderId} {status} @ {avgFillPrice}")
                 self.pending_sell = False
                 self.sell_order_id = None
-
-            self.open_symbol_buys = 0
-            self.open_symbol_sells = 0
-            self.reqOpenOrders()
-
+                self.open_symbol_buys = 0
+                self.open_symbol_sells = 0
+                self.reqOpenOrders()
+                
     def tickByTickAllLast(
         self,
         reqId: int,
