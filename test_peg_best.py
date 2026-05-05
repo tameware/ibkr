@@ -1,3 +1,5 @@
+# Usage: python -m unittest test_peg_best.py -v
+
 import unittest
 from unittest.mock import Mock, patch, MagicMock, call
 import json
