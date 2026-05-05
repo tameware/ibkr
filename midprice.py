@@ -93,7 +93,6 @@ class Trader(EWrapper, EClient):
         self.position_snapshot_complete = False
         self.open_orders_snapshot_complete = False
         self.sync_requested = False
-        self.managed_order_ids = set()
 
     def orderStatus(
         self,
@@ -124,7 +123,6 @@ class Trader(EWrapper, EClient):
                 tprint(f"SELL {orderId} {status} @ {avgFillPrice}")
                 self.pending_sell = False
                 self.sell_order_id = None
-            self.managed_order_ids.discard(orderId)
             self.request_open_orders_snapshot()
 
     def tickByTickAllLast(
@@ -195,15 +193,12 @@ class Trader(EWrapper, EClient):
 
     def openOrder(self, orderId, contract, order, orderState):
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
-            if orderId in self.managed_order_ids:
-                if order.action == "BUY":
-                    self.open_symbol_buys += 1
-                    self.buy_order_id = orderId
-                elif order.action == "SELL":
-                    self.open_symbol_sells += 1
-                    self.sell_order_id = orderId
-            else:
-                tprint(f"Ignoring unmanaged open order id={orderId} action={order.action}")
+            if order.action == "BUY":
+                self.open_symbol_buys += 1
+                self.buy_order_id = orderId
+            elif order.action == "SELL":
+                self.open_symbol_sells += 1
+                self.sell_order_id = orderId
 
     def openOrderEnd(self):
         self.open_orders_snapshot_complete = True
@@ -305,7 +300,7 @@ class Trader(EWrapper, EClient):
             self.cancelOrder(order_id)
         except TypeError:
             self.cancelOrder(order_id, "")
-
+            
     def request_positions_snapshot(self):
         self.position_snapshot_complete = False
         self.position_size = 0
@@ -348,8 +343,6 @@ class Trader(EWrapper, EClient):
                 self.nextOrderId += 1
                 self.buy_order_id = oid
                 self.pending_buy = True
-                self.managed_order_ids.add(oid)
-
                 order = self.make_midprice_order("BUY", buy_qty, buy_limit)
                 tprint(f"Placing MIDPRICE BUY {buy_qty} cap={buy_limit}, id={oid}")
                 self.placeOrder(oid, self.contract, order)
@@ -366,8 +359,6 @@ class Trader(EWrapper, EClient):
                 self.nextOrderId += 1
                 self.sell_order_id = oid
                 self.pending_sell = True
-                self.managed_order_ids.add(oid)
-
                 order = self.make_midprice_order("SELL", sell_qty, sell_limit)
                 tprint(f"Placing MIDPRICE SELL {sell_qty} floor={sell_limit}, id={oid}")
                 self.placeOrder(oid, self.contract, order)
