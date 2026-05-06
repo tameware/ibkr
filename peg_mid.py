@@ -373,7 +373,10 @@ class Trader(EWrapper, EClient):
                 self.buy_order_id = oid
                 self.pending_buy = True
                 order = self.make_peg_mid_order("BUY", buy_qty, buy_limit)
-                tprint(f"Placing PEG MID BUY {buy_qty} cap={buy_limit} offset={order.auxPrice}, id={oid}")
+                tprint(
+                    f"Placing PEG MID BUY {buy_qty} cap={buy_limit} "
+                    f"whole={order.midOffsetAtWhole} half={order.midOffsetAtHalf}, id={oid}"
+                )
                 self.placeOrder(oid, self.contract, order)
         else:
             if self.buy_order_id is not None:
@@ -389,7 +392,10 @@ class Trader(EWrapper, EClient):
                 self.sell_order_id = oid
                 self.pending_sell = True
                 order = self.make_peg_mid_order("SELL", sell_qty, sell_limit)
-                tprint(f"Placing PEG MID SELL {sell_qty} floor={sell_limit} offset={order.auxPrice}, id={oid}")
+                tprint(
+                    f"Placing PEG MID SELL {sell_qty} floor={sell_limit} "
+                    f"whole={order.midOffsetAtWhole} half={order.midOffsetAtHalf}, id={oid}"
+                )
                 self.placeOrder(oid, self.contract, order)
         else:
             if self.sell_order_id is not None:
