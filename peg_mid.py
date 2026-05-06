@@ -309,7 +309,6 @@ class Trader(EWrapper, EClient):
         o.totalQuantity = qty
         o.lmtPrice = round(limit_price, int(self.config["price_round_digits"]))
         o.auxPrice = self.current_peg_mid_offset()
-        o.notHeld = True
         o.exchange = self.config["exchange"]
         o.tif = self.config["tif"]
         return o
