@@ -211,7 +211,6 @@ class Trader(EWrapper, EClient):
     def openOrderEnd(self):
         self.open_orders_snapshot_complete = True
         self.ready_for_trading = self.position_snapshot_complete and self.open_orders_snapshot_complete
-        tprint(f"Managed {self.config['symbol']} orders: buys={self.open_symbol_buys}, sells={self.open_symbol_sells}")
         self.maybe_sync_orders()
 
     def error(self, reqId, errorTime, errorCode, errorString, advancedOrderRejectJson=""):
