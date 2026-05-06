@@ -308,9 +308,11 @@ class Trader(EWrapper, EClient):
         o.orderType = "PEG MID"
         o.totalQuantity = qty
         o.lmtPrice = round(limit_price, int(self.config["price_round_digits"]))
-        o.auxPrice = self.current_peg_mid_offset()
+        o.midOffsetAtWhole = float(self.config.get("peg_mid_offset_whole", 0.0))
+        o.midOffsetAtHalf = float(self.config.get("peg_mid_offset_half", 0.005))
         o.exchange = self.config["exchange"]
         o.tif = self.config["tif"]
+        o.notHeld = True
         return o
 
     # Makes the script more robust across IB API versions that differ on
