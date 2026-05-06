@@ -5,7 +5,7 @@
   "symbol": "Your stock's ticker here",
   "sec_type": "STK",
   "currency": "USD",
-  "exchange": "SMART",
+  "exchange": "IBKRATS",
   "primary_exchange": "Your stock's exchange here",
   "max_pos": 200,
   "loop_seconds": 10,
