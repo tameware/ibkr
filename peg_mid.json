@@ -18,9 +18,9 @@
   "tif": "DAY",
   "ignored_error_codes": [2103, 2104, 2106, 2108, 2158],
   "ignore_error_substrings": ["data farm connection is broken"],
-  "buy_delta": 0.05,
-  "sell_delta": 0.05,
-  "peg_mid_offset_whole": 0.01,
-  "peg_mid_offset_half": 0.015,
+  "buy_delta": -0.10,
+  "sell_delta": -0.10,
+  "peg_mid_offset_whole": 0.00,
+  "peg_mid_offset_half": 0.005,
   "resync_debounce_seconds": 0.35
 }
