@@ -363,12 +363,6 @@ class Trader(EWrapper, EClient):
         pos = self.position_size
         max_pos = int(self.config["max_pos"])
 
-        tprint(
-            f"sync_orders: pos={pos} max_pos={max_pos} buys_open={self.open_symbol_buys} "
-            f"sells_open={self.open_symbol_sells} pending_buy={self.pending_buy} "
-            f"pending_sell={self.pending_sell} ref_price={self.ref_price}"
-        )
-
         buy_limit = round(self.ref_price - float(self.config["buy_delta"]), int(self.config["price_round_digits"]))
         sell_limit = round(self.ref_price + float(self.config["sell_delta"]), int(self.config["price_round_digits"]))
 
