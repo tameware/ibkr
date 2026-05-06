@@ -93,6 +93,8 @@ class Trader(EWrapper, EClient):
         self.position_snapshot_complete = False
         self.open_orders_snapshot_complete = False
         self.sync_requested = False
+        self.last_resync_request_ts = 0.0
+        self.resync_debounce_seconds = float(self.config.get("resync_debounce_seconds", 0.35))
 
     def orderStatus(
         self,
@@ -108,6 +110,8 @@ class Trader(EWrapper, EClient):
         whyHeld,
         mktCapPrice,
     ):
+        self.remaining_by_order[orderId] = remaining
+
         if status in ("Submitted", "PreSubmitted", "ApiPending", "PendingSubmit"):
             if orderId == self.buy_order_id:
                 self.pending_buy = False
@@ -123,7 +127,11 @@ class Trader(EWrapper, EClient):
                 tprint(f"SELL {orderId} {status} @ {avgFillPrice}")
                 self.pending_sell = False
                 self.sell_order_id = None
-            self.request_open_orders_snapshot()
+            self.remaining_by_order.pop(orderId, None)
+            self.trigger_resync()
+        elif status == "PartiallyFilled":
+            tprint(f"Order {orderId} partially filled: filled={filled} remaining={remaining} avgFillPrice={avgFillPrice}")
+            self.trigger_resync()
 
     def tickByTickAllLast(
         self,
@@ -316,6 +324,20 @@ class Trader(EWrapper, EClient):
         if self.sync_requested and self.position_snapshot_complete and self.open_orders_snapshot_complete:
             self.sync_requested = False
             self.sync_orders()
+
+    def trigger_resync(self):
+        if not self.isConnected():
+            return
+
+        now = time.monotonic()
+        if now - self.last_resync_request_ts < self.resync_debounce_seconds:
+            return
+
+        self.last_resync_request_ts = now
+        self.sync_requested = True
+        self.request_positions_snapshot()
+        self.request_open_orders_snapshot()
+        self.maybe_sync_orders()
 
     def sync_orders(self):
         if not self.ready_for_trading:
