@@ -37,6 +37,8 @@ class MockOrder:
         self.totalQuantity = 0
         self.lmtPrice = 0.0
         self.auxPrice = 0.0
+        self.midOffsetAtWhole = 0.0
+        self.midOffsetAtHalf = 0.0
         self.notHeld = False
         self.exchange = ""
         self.tif = ""
@@ -287,7 +289,7 @@ class TestTrader(unittest.TestCase):
         self.assertEqual(order.orderType, "PEG MID")
         self.assertEqual(order.totalQuantity, 50)
         self.assertEqual(order.lmtPrice, 150.25)
-        self.assertEqual(order.auxPrice, 0.01)
+        self.assertEqual(order.midOffsetAtWhole, 0.01)
         self.assertTrue(order.notHeld)
         self.assertEqual(order.exchange, "SMART")
         self.assertEqual(order.tif, "DAY")
@@ -302,7 +304,7 @@ class TestTrader(unittest.TestCase):
         self.assertEqual(order.orderType, "PEG MID")
         self.assertEqual(order.totalQuantity, 30)
         self.assertEqual(order.lmtPrice, 155.75)
-        self.assertEqual(order.auxPrice, 0.015)
+        self.assertEqual(order.midOffsetAtHalf, 0.015)
         self.assertTrue(order.notHeld)
     
     def test_next_valid_id(self):
@@ -600,13 +602,13 @@ class TestTrader(unittest.TestCase):
         self.assertEqual(buy_order.totalQuantity, 70)
         self.assertEqual(buy_order.lmtPrice, 149.95)
         self.assertEqual(buy_order.orderType, "PEG MID")
-        self.assertEqual(buy_order.auxPrice, 0.01)
+        self.assertEqual(buy_order.midOffsetAtWhole, 0.01)
         
         # Verify SELL order
         self.assertEqual(sell_order.totalQuantity, 30)
         self.assertEqual(sell_order.lmtPrice, 150.05)
         self.assertEqual(sell_order.orderType, "PEG MID")
-        self.assertEqual(sell_order.auxPrice, 0.01)
+        self.assertEqual(sell_order.midOffsetAtWhole, 0.01)
     
     def test_sync_orders_with_half_penny_offset(self):
         """Test sync_orders uses half-penny offset when midpoint is on half-penny"""
@@ -633,8 +635,8 @@ class TestTrader(unittest.TestCase):
         sell_order = next((order for order in captured_orders if order.action == "SELL"), None)
         
         # Both orders should use half-penny offset
-        self.assertEqual(buy_order.auxPrice, 0.015)
-        self.assertEqual(sell_order.auxPrice, 0.015)
+        self.assertEqual(buy_order.midOffsetAtHalf, 0.015)
+        self.assertEqual(sell_order.midOffsetAtHalf, 0.015)
     
     def test_sync_orders_places_only_buy_when_no_position(self):
         """Test sync_orders places only BUY order when position is 0"""
