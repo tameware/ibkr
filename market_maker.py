@@ -9,8 +9,10 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from ibapi.client import EClient
 from ibapi.common import OrderId, TickerId
@@ -104,6 +106,9 @@ class MarketMaker(EWrapper, EClient):
         self.last_nbbo_ok_ts = 0.0
         self.last_watchdog_log_ts = 0.0
 
+        self.market_tz = ZoneInfo("America/New_York")
+        self.logger.info("Market timezone set to %s", self.market_tz.key)
+        
         self.logger.info(
             "Bot initialized for %s on %s/%s",
             self.contract.symbol, self.contract.exchange, self.contract.primaryExchange
@@ -531,16 +536,21 @@ class MarketMaker(EWrapper, EClient):
         self.sell_order = LiveOrder(order_id=oid, side="SELL", price=px, qty=qty)
         self.logger.info("SELL working id=%s qty=%s px=%.2f", oid, qty, px)
 
+    def _market_now(self) -> datetime:
+        return datetime.now(self.market_tz)
+    
     def flatten_only_mode(self) -> bool:
-        lt = time.localtime()
-        return (lt.tm_hour > self.end_new_positions_hour) or (
-            lt.tm_hour == self.end_new_positions_hour and lt.tm_min >= self.end_new_positions_minute
+        now = self._market_now()
+        return (now.hour > self.end_new_positions_hour) or (
+            now.hour == self.end_new_positions_hour
+            and now.minute >= self.end_new_positions_minute
         )
-
+    
     def hard_flatten_mode(self) -> bool:
-        lt = time.localtime()
-        return (lt.tm_hour > self.flatten_hour) or (
-            lt.tm_hour == self.flatten_hour and lt.tm_min >= self.flatten_minute
+        now = self._market_now()
+        return (now.hour > self.flatten_hour) or (
+            now.hour == self.flatten_hour
+            and now.minute >= self.flatten_minute
         )
 
     def force_flatten(self):
