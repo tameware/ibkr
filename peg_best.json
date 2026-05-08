@@ -8,7 +8,7 @@
   "exchange": "IBKRATS",
   "primary_exchange": "Your stock's exchange here",
   "max_pos": 100,
-  "loop_seconds": 60,
+  "loop_seconds": 10,
   "buy_limit_multiplier": 1.02,
   "sell_limit_multiplier": 0.98,
   "min_compete_size": 50,
