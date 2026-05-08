@@ -142,7 +142,6 @@ class Trader(EWrapper, EClient):
         if float(size) >= float(self.config["last_trade_min_size"]):
             if self.ref_price != price:
                 self.ref_price = price
-                tprint(f"New ref_price from last trade: {price} size={size}")
 
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
         if reqId != MKTDATA_REQ_ID:
@@ -156,7 +155,6 @@ class Trader(EWrapper, EClient):
         if self._bid is not None and self._ask is not None and self._bid > 0 and self._ask > 0:
             mid = (self._bid + self._ask) / 2.0
             if mid != self.ref_price:
-                tprint(f"ref_price updated: bid={self._bid} ask={self._ask} mid={mid}")
                 self.ref_price = mid
 
     def make_us_stock(self, symbol: str, sec_type: str, currency: str, exchange: str, primary_exchange: str) -> Contract:
