@@ -588,7 +588,6 @@ class MarketMaker(EWrapper, EClient):
             if not self.connected_flag or self.shutdown_flag:
                 return
 
-            # Begin new code
             reason = self.market_invalid_reason()
             if reason is not None:
                 # Don't consume the refresh window if the market is invalid
@@ -598,7 +597,6 @@ class MarketMaker(EWrapper, EClient):
                 if self.log_invalid_market_reasons:
                     self.logger.info("Not quoting: %s", reason)
                 return
-            # End new code
 
             if not force and (now - self.last_quote_eval) < self.quote_refresh_seconds:
                 return
@@ -628,9 +626,9 @@ class MarketMaker(EWrapper, EClient):
                 self.logger.warning("Computed invalid quotes buy=%s sell=%s; cancelling.", buy_px, sell_px)
                 return
 
-            # --- NEW: clamp quotes to NBBO ---
-            # if bid is not None:
-            #    buy_px = max(buy_px, bid)   # don't bid below best bid
+            # --- clamp quotes to NBBO ---
+            if bid is not None:
+               buy_px = max(buy_px, bid)   # don't bid below best bid
             if ask is not None:
                 sell_px = min(sell_px, ask) # don't offer above best ask
             
