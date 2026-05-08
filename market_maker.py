@@ -226,14 +226,20 @@ class MarketMaker(EWrapper, EClient):
             self.adoption_phase = True
             self.buy_order = None
             self.sell_order = None
-
+    
         self.reqMarketDataType(1)
         self.reqContractDetails(self.contract_details_req_id, self.contract)
         self.reqPositions()
-        self.reqAllOpenOrders()
+    
+        if self.client_id == 0:
+            self.reqOpenOrders()          # binds currently open manual/TWS orders
+            self.reqAutoOpenOrders(True)  # binds future manual/TWS orders
+        else:
+            self.reqAllOpenOrders()       # visibility only, not cancelable if id=0
+    
         self.reqMktData(self.market_data_req_id, self.contract, "", False, False, [])
         self.logger.info(
-            "Requested contract details, positions, ALL open orders, and live market data."
+            "Requested contract details, positions, open orders, and live market data."
         )
 
     def contractDetails(self, reqId, contractDetails):
@@ -385,18 +391,39 @@ class MarketMaker(EWrapper, EClient):
             return
 
         filled = int(getattr(orderState, "filled", 0) or 0)
-        total_qty = int(order.totalQuantity)
-        remaining = max(0, total_qty - filled)
+        remaining = getattr(orderState, "remaining", None)
+        if remaining is None:
+            remaining = max(0, int(order.totalQuantity) - filled)
+        remaining = int(remaining)
+
+        live_qty = remaining if side == "SELL" else int(order.totalQuantity)
 
         live = LiveOrder(
             order_id=orderId,
             side=side,
             price=float(order.lmtPrice) if getattr(order, "lmtPrice", None) is not None else 0.0,
-            qty=total_qty,
+            qty=live_qty,
             status=orderState.status,
             filled=filled,
             remaining=remaining,
         )
+
+        if not self.adoption_phase:
+            with self.lock:
+                if side == "BUY" and self.buy_order and self.buy_order.order_id == orderId:
+                    self.buy_order = live
+                elif side == "SELL" and self.sell_order and self.sell_order.order_id == orderId:
+                    self.sell_order = live
+            self.logger.info(
+                "openOrder refresh id=%s side=%s qty=%s px=%.2f status=%s remaining=%s",
+                orderId,
+                live.side,
+                live.qty,
+                live.price,
+                live.status,
+                live.remaining,
+            )
+            return
 
         extra_to_cancel = None
 
@@ -437,7 +464,7 @@ class MarketMaker(EWrapper, EClient):
             action,
         )
 
-        if extra_to_cancel is not None:
+        if extra_to_cancel is not None and extra_to_cancel.order_id != live.order_id:
             self._cancel_adopted_extra(extra_to_cancel)
 
     def openOrderEnd(self):
@@ -475,6 +502,8 @@ class MarketMaker(EWrapper, EClient):
                 target.status = status
                 target.filled = int(filled)
                 target.remaining = int(remaining)
+                if target.side == "SELL":
+                    target.qty = int(remaining)
 
                 if status in {"Filled", "Cancelled", "ApiCancelled", "Inactive"} and int(
                     remaining
@@ -622,16 +651,19 @@ class MarketMaker(EWrapper, EClient):
 
     def desired_sizes(self):
         buy_qty = min(self.base_qty, max(0, self.max_position - self.position_qty))
-        sell_qty = 0
-        if self.position_qty >= self.min_inventory_before_offering:
-            sell_qty = min(self.base_qty, self.max_sellable_qty())
+        sell_qty = self.max_sellable_qty()
         return buy_qty, sell_qty
 
     def is_same_order(self, live: Optional[LiveOrder], side: str, qty: int, px: float) -> bool:
         if live is None:
             return False
-        if live.side != side or live.qty != qty:
+        if live.side != side:
             return False
+
+        live_open_qty = live.remaining if side == "SELL" and live.remaining > 0 else live.qty
+        if live_open_qty != qty:
+            return False
+
         if abs(live.price - px) > 1e-9:
             return False
         if live.status in {"Cancelled", "ApiCancelled", "Inactive"}:
@@ -690,28 +722,54 @@ class MarketMaker(EWrapper, EClient):
 
     def place_or_replace_sell(self, qty: int, px: Optional[float]):
         qty = min(qty, self.max_sellable_qty())
-
+    
         if qty <= 0 or px is None:
             if self.sell_order:
                 self.cancel_live_order(self.sell_order)
             return
-
+    
         if self.buy_order and px <= self.buy_order.price:
             px = self.round_up_cent(self.buy_order.price + 0.01)
-
+    
         if px <= 0 or qty <= 0:
             if self.sell_order:
                 self.cancel_live_order(self.sell_order)
             return
-
-        if self.is_same_order(self.sell_order, "SELL", qty, px):
+    
+        # snapshot of prior adopted order (may be id 0)
+        prior = self.sell_order
+    
+        if self.is_same_order(prior, "SELL", qty, px):
             return
-
-        oid = self.sell_order.order_id if self.sell_order else self.next_id()
+    
+        new_oid = self.next_id()
         order = self.build_lmt_order("SELL", qty, px)
-        self.placeOrder(oid, self.contract, order)
-        self.sell_order = LiveOrder(order_id=oid, side="SELL", price=px, qty=qty)
-        self.logger.info("SELL working id=%s qty=%s px=%.2f", oid, qty, px)
+        self.placeOrder(new_oid, self.contract, order)
+        self.sell_order = LiveOrder(
+            order_id=new_oid,
+            side="SELL",
+            price=px,
+            qty=qty,
+            remaining=qty,
+        )
+        self.logger.info("SELL working id=%s qty=%s px=%.2f", new_oid, qty, px)
+    
+        # best-effort cancel of any adopted incumbent with a different id
+        if prior is not None and prior.order_id != new_oid:
+            try:
+                self._ib_cancel_order(prior.order_id)
+                self.logger.info(
+                    "Requested cancel of adopted incumbent id=%s side=%s px=%.2f qty=%s",
+                    prior.order_id,
+                    prior.side,
+                    prior.price,
+                    prior.qty,
+                )
+            except Exception as e:
+                # tolerate failures if prior id is not cancelable by this client
+                self.logger.warning(
+                    "Cancel of adopted incumbent id=%s failed: %s", prior.order_id, e
+                )
 
     def _market_now(self) -> datetime:
         return datetime.now(self.market_tz)
@@ -779,7 +837,8 @@ class MarketMaker(EWrapper, EClient):
             if reason is not None:
                 if self.cancel_on_invalid_market:
                     self.place_or_replace_buy(0, None)
-                    self.place_or_replace_sell(0, None)
+                    if self.position_qty <= 0:
+                        self.place_or_replace_sell(0, None)
                 if self.log_invalid_market_reasons:
                     self.logger.info("Not quoting: %s", reason)
                 return
@@ -792,7 +851,8 @@ class MarketMaker(EWrapper, EClient):
             if reason is not None:
                 if self.cancel_on_invalid_market:
                     self.place_or_replace_buy(0, None)
-                    self.place_or_replace_sell(0, None)
+                    if self.position_qty <= 0:
+                        self.place_or_replace_sell(0, None)
                 if self.log_invalid_market_reasons:
                     self.logger.info("Not quoting: %s", reason)
                 return
@@ -808,7 +868,8 @@ class MarketMaker(EWrapper, EClient):
 
             if buy_px is None or sell_px is None or buy_px >= sell_px:
                 self.place_or_replace_buy(0, None)
-                self.place_or_replace_sell(0, None)
+                if self.position_qty <= 0:
+                    self.place_or_replace_sell(0, None)
                 self.logger.warning(
                     "Computed invalid quotes buy=%s sell=%s; cancelling.",
                     buy_px,
@@ -823,7 +884,8 @@ class MarketMaker(EWrapper, EClient):
 
             if buy_px is None or sell_px is None or buy_px >= sell_px:
                 self.place_or_replace_buy(0, None)
-                self.place_or_replace_sell(0, None)
+                if self.position_qty <= 0:
+                    self.place_or_replace_sell(0, None)
                 self.logger.warning(
                     "Quotes invalid after NBBO clamp buy=%s sell=%s; cancelling.",
                     buy_px,
