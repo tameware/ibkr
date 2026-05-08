@@ -59,25 +59,47 @@ class MarketMaker(EWrapper, EClient):
         self.base_qty = cfg.getint("strategy", "base_qty", fallback=100)
         self.max_position = cfg.getint("strategy", "max_position", fallback=1000)
         self.max_gross_shares = cfg.getint("strategy", "max_gross_shares", fallback=1500)
-        self.min_inventory_before_offering = cfg.getint("strategy", "min_inventory_before_offering", fallback=100)
+        self.min_inventory_before_offering = cfg.getint(
+            "strategy", "min_inventory_before_offering", fallback=100
+        )
         self.min_spread = cfg.getfloat("strategy", "min_spread", fallback=0.20)
         self.inside_improve = cfg.getfloat("strategy", "inside_improve", fallback=0.10)
-        self.inventory_penalty_per_100 = cfg.getfloat("strategy", "inventory_penalty_per_100", fallback=0.05)
-        self.target_roundtrip_capture = cfg.getfloat("strategy", "target_roundtrip_capture", fallback=0.30)
-        self.quote_refresh_seconds = cfg.getfloat("strategy", "quote_refresh_seconds", fallback=3.0)
-        self.max_market_stale_seconds = cfg.getfloat("strategy", "max_market_stale_seconds", fallback=15.0)
+        self.inventory_penalty_per_100 = cfg.getfloat(
+            "strategy", "inventory_penalty_per_100", fallback=0.05
+        )
+        self.target_roundtrip_capture = cfg.getfloat(
+            "strategy", "target_roundtrip_capture", fallback=0.30
+        )
+        self.quote_refresh_seconds = cfg.getfloat(
+            "strategy", "quote_refresh_seconds", fallback=3.0
+        )
+        self.max_market_stale_seconds = cfg.getfloat(
+            "strategy", "max_market_stale_seconds", fallback=15.0
+        )
 
         self.end_new_positions_hour = cfg.getint("risk", "end_new_positions_hour", fallback=15)
-        self.end_new_positions_minute = cfg.getint("risk", "end_new_positions_minute", fallback=40)
+        self.end_new_positions_minute = cfg.getint(
+            "risk", "end_new_positions_minute", fallback=40
+        )
         self.flatten_hour = cfg.getint("risk", "flatten_hour", fallback=15)
         self.flatten_minute = cfg.getint("risk", "flatten_minute", fallback=55)
-        self.cancel_on_invalid_market = cfg.getboolean("risk", "cancel_on_invalid_market", fallback=True)
+        self.cancel_on_invalid_market = cfg.getboolean(
+            "risk", "cancel_on_invalid_market", fallback=True
+        )
         self.require_live_data = cfg.getboolean("risk", "require_live_data", fallback=False)
 
-        self.log_bid_ask_ticks = cfg.getboolean("diagnostics", "log_bid_ask_ticks", fallback=True)
-        self.log_invalid_market_reasons = cfg.getboolean("diagnostics", "log_invalid_market_reasons", fallback=True)
-        self.nbbo_watchdog_seconds = cfg.getfloat("diagnostics", "nbbo_watchdog_seconds", fallback=30.0)
-        self.watchdog_repeat_seconds = cfg.getfloat("diagnostics", "watchdog_repeat_seconds", fallback=60.0)
+        self.log_bid_ask_ticks = cfg.getboolean(
+            "diagnostics", "log_bid_ask_ticks", fallback=True
+        )
+        self.log_invalid_market_reasons = cfg.getboolean(
+            "diagnostics", "log_invalid_market_reasons", fallback=True
+        )
+        self.nbbo_watchdog_seconds = cfg.getfloat(
+            "diagnostics", "nbbo_watchdog_seconds", fallback=30.0
+        )
+        self.watchdog_repeat_seconds = cfg.getfloat(
+            "diagnostics", "watchdog_repeat_seconds", fallback=60.0
+        )
 
         self.lock = threading.RLock()
         self.connected_flag = False
@@ -106,12 +128,18 @@ class MarketMaker(EWrapper, EClient):
         self.last_nbbo_ok_ts = 0.0
         self.last_watchdog_log_ts = 0.0
 
+        self.target_conid: Optional[int] = None
+        self.open_orders_snapshot_done = False
+        self.adoption_phase = False
+
         self.market_tz = ZoneInfo("America/New_York")
         self.logger.info("Market timezone set to %s", self.market_tz.key)
-        
+
         self.logger.info(
             "Bot initialized for %s on %s/%s",
-            self.contract.symbol, self.contract.exchange, self.contract.primaryExchange
+            self.contract.symbol,
+            self.contract.exchange,
+            self.contract.primaryExchange,
         )
 
     @staticmethod
@@ -130,13 +158,15 @@ class MarketMaker(EWrapper, EClient):
         logger.handlers.clear()
         logger.propagate = False
 
-        fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(threadName)s %(message)s")
+        fmt = logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s %(threadName)s %(message)s"
+        )
 
         fh = logging.handlers.RotatingFileHandler(
             log_dir / log_file,
             maxBytes=max_bytes,
             backupCount=backup_count,
-            encoding="utf-8"
+            encoding="utf-8",
         )
         fh.setFormatter(fmt)
         fh.setLevel(getattr(logging, level_name, logging.INFO))
@@ -179,10 +209,10 @@ class MarketMaker(EWrapper, EClient):
         with self.lock:
             self.next_order_id = orderId
             self.connected_flag = True
-        self.logger.info("Connected to IBKR. nextValidId=%s", orderId)
-        if not self.started:
-            self.started = True
-            self.startup()
+            self.logger.info("Connected to IBKR. nextValidId=%s", orderId)
+            if not self.started:
+                self.started = True
+                self.startup()
 
     def marketDataType(self, reqId, marketDataType):
         self.market_data_type = marketDataType
@@ -191,18 +221,29 @@ class MarketMaker(EWrapper, EClient):
             self.logger.warning("Live data required, but market data type is %s", marketDataType)
 
     def startup(self):
+        with self.lock:
+            self.open_orders_snapshot_done = False
+            self.adoption_phase = True
+            self.buy_order = None
+            self.sell_order = None
+
         self.reqMarketDataType(1)
         self.reqContractDetails(self.contract_details_req_id, self.contract)
         self.reqPositions()
-        self.reqOpenOrders()
+        self.reqAllOpenOrders()
         self.reqMktData(self.market_data_req_id, self.contract, "", False, False, [])
-        self.logger.info("Requested contract details, positions, open orders, and live market data.")
+        self.logger.info(
+            "Requested contract details, positions, ALL open orders, and live market data."
+        )
 
     def contractDetails(self, reqId, contractDetails):
         if reqId != self.contract_details_req_id:
             return
+
         summary = contractDetails.contract
         self.contract_resolved = True
+        self.target_conid = getattr(summary, "conId", None)
+
         self.logger.info(
             "Resolved contract: conId=%s symbol=%s localSymbol=%s exchange=%s primaryExchange=%s currency=%s minTick=%s",
             getattr(summary, "conId", None),
@@ -217,6 +258,55 @@ class MarketMaker(EWrapper, EClient):
     def contractDetailsEnd(self, reqId):
         if reqId == self.contract_details_req_id:
             self.logger.info("Contract details request complete for reqId=%s", reqId)
+
+    def _is_target_contract(self, contract) -> bool:
+        if getattr(contract, "secType", None) != self.contract.secType:
+            return False
+        if getattr(contract, "currency", None) != self.contract.currency:
+            return False
+
+        if self.target_conid is not None and getattr(contract, "conId", None):
+            return contract.conId == self.target_conid
+
+        return (
+            getattr(contract, "symbol", None) == self.contract.symbol
+            and getattr(contract, "primaryExchange", None) == self.contract.primaryExchange
+        )
+
+    def _should_keep_order(self, incumbent: LiveOrder, candidate: LiveOrder) -> bool:
+        if incumbent.remaining > 0 and candidate.remaining <= 0:
+            return True
+        if candidate.remaining > 0 and incumbent.remaining <= 0:
+            return False
+
+        active_statuses = {"PreSubmitted", "PendingSubmit", "Submitted"}
+        incumbent_active = incumbent.status in active_statuses
+        candidate_active = candidate.status in active_statuses
+        if incumbent_active and not candidate_active:
+            return True
+        if candidate_active and not incumbent_active:
+            return False
+
+        return incumbent.order_id < candidate.order_id
+
+    def _cancel_adopted_extra(self, live: LiveOrder):
+        try:
+            self._ib_cancel_order(live.order_id)
+            self.logger.warning(
+                "Cancelling extra adopted order id=%s side=%s px=%.2f qty=%s status=%s",
+                live.order_id,
+                live.side,
+                live.price,
+                live.qty,
+                live.status,
+            )
+        except Exception as e:
+            self.logger.exception(
+                "Failed to cancel extra adopted order id=%s side=%s: %s",
+                live.order_id,
+                live.side,
+                e,
+            )
 
     def tickPrice(self, reqId, tickType, price, attrib):
         if reqId != self.market_data_req_id:
@@ -239,7 +329,11 @@ class MarketMaker(EWrapper, EClient):
                 if self.log_bid_ask_ticks:
                     log_msg = f"ASK tick bid={self.quote.bid} ask={self.quote.ask:.2f}"
 
-            if self.quote.bid is not None and self.quote.ask is not None and self.quote.bid < self.quote.ask:
+            if (
+                self.quote.bid is not None
+                and self.quote.ask is not None
+                and self.quote.bid < self.quote.ask
+            ):
                 self.last_nbbo_ok_ts = time.time()
 
         if log_msg:
@@ -271,37 +365,105 @@ class MarketMaker(EWrapper, EClient):
 
         self.logger.info(
             "Position update account=%s symbol=%s position=%s avgCost=%.4f",
-            account, contract.symbol, self.position_qty, self.avg_cost
+            account,
+            contract.symbol,
+            self.position_qty,
+            self.avg_cost,
         )
 
     def positionEnd(self):
         self.logger.info("Initial position snapshot complete.")
 
     def openOrder(self, orderId, contract, order, orderState):
-        if contract.symbol != self.contract.symbol:
+        if not self._is_target_contract(contract):
             return
+
+        side = order.action.upper()
+        if side not in {"BUY", "SELL"}:
+            return
+        if getattr(order, "orderType", "") != "LMT":
+            return
+
+        filled = int(getattr(orderState, "filled", 0) or 0)
+        total_qty = int(order.totalQuantity)
+        remaining = max(0, total_qty - filled)
 
         live = LiveOrder(
             order_id=orderId,
-            side=order.action.upper(),
+            side=side,
             price=float(order.lmtPrice) if getattr(order, "lmtPrice", None) is not None else 0.0,
-            qty=int(order.totalQuantity),
+            qty=total_qty,
             status=orderState.status,
+            filled=filled,
+            remaining=remaining,
         )
+
+        extra_to_cancel = None
 
         with self.lock:
-            if live.side == "BUY":
-                self.buy_order = live
-            elif live.side == "SELL":
-                self.sell_order = live
+            if side == "BUY":
+                incumbent = self.buy_order
+                if incumbent is None:
+                    self.buy_order = live
+                    action = "adopted"
+                elif self._should_keep_order(incumbent, live):
+                    extra_to_cancel = live
+                    action = "kept-incumbent-cancel-candidate"
+                else:
+                    extra_to_cancel = incumbent
+                    self.buy_order = live
+                    action = "replaced-incumbent-cancel-old"
+            else:
+                incumbent = self.sell_order
+                if incumbent is None:
+                    self.sell_order = live
+                    action = "adopted"
+                elif self._should_keep_order(incumbent, live):
+                    extra_to_cancel = live
+                    action = "kept-incumbent-cancel-candidate"
+                else:
+                    extra_to_cancel = incumbent
+                    self.sell_order = live
+                    action = "replaced-incumbent-cancel-old"
 
         self.logger.info(
-            "openOrder id=%s side=%s qty=%s px=%.2f status=%s",
-            orderId, live.side, live.qty, live.price, orderState.status
+            "openOrder adoption id=%s side=%s qty=%s px=%.2f status=%s remaining=%s action=%s",
+            orderId,
+            live.side,
+            live.qty,
+            live.price,
+            live.status,
+            live.remaining,
+            action,
         )
 
-    def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId,
-                    parentId, lastFillPrice, clientId, whyHeld, mktCapPrice):
+        if extra_to_cancel is not None:
+            self._cancel_adopted_extra(extra_to_cancel)
+
+    def openOrderEnd(self):
+        with self.lock:
+            self.open_orders_snapshot_done = True
+            self.adoption_phase = False
+            self.logger.info(
+                "Open orders snapshot complete. Adopted buy_order=%s sell_order=%s",
+                self.buy_order,
+                self.sell_order,
+            )
+
+    def orderStatus(
+        self,
+        orderId,
+        status,
+        filled,
+        remaining,
+        avgFillPrice,
+        permId,
+        parentId,
+        lastFillPrice,
+        clientId,
+        whyHeld,
+        mktCapPrice,
+    ):
         with self.lock:
             target = None
             if self.buy_order and self.buy_order.order_id == orderId:
@@ -314,7 +476,9 @@ class MarketMaker(EWrapper, EClient):
                 target.filled = int(filled)
                 target.remaining = int(remaining)
 
-                if status in {"Filled", "Cancelled", "ApiCancelled", "Inactive"} and int(remaining) == 0:
+                if status in {"Filled", "Cancelled", "ApiCancelled", "Inactive"} and int(
+                    remaining
+                ) == 0:
                     if target.side == "BUY":
                         self.buy_order = None
                     elif target.side == "SELL":
@@ -322,12 +486,16 @@ class MarketMaker(EWrapper, EClient):
 
         self.logger.info(
             "orderStatus id=%s status=%s filled=%s remaining=%s avgFill=%.4f lastFill=%.4f",
-            orderId, status, filled, remaining,
-            float(avgFillPrice or 0.0), float(lastFillPrice or 0.0)
+            orderId,
+            status,
+            filled,
+            remaining,
+            float(avgFillPrice or 0.0),
+            float(lastFillPrice or 0.0),
         )
 
     def execDetails(self, reqId, contract, execution):
-        if contract.symbol != self.contract.symbol:
+        if not self._is_target_contract(contract):
             return
 
         shares = int(execution.shares)
@@ -343,9 +511,15 @@ class MarketMaker(EWrapper, EClient):
 
         self.logger.info(
             "execDetails side=%s shares=%s px=%.4f pos_snapshot=%s gross=%s realized=%.2f execId=%s",
-            side, shares, px, self.position_qty, self.gross_shares_traded,
-            self.realized_pnl, execution.execId
+            side,
+            shares,
+            px,
+            self.position_qty,
+            self.gross_shares_traded,
+            self.realized_pnl,
+            execution.execId,
         )
+
         self.maybe_manage_quotes(force=True)
 
     def next_id(self) -> int:
@@ -381,7 +555,10 @@ class MarketMaker(EWrapper, EClient):
             self.cancelOrder(order_id)
 
     def can_open_new_long(self) -> bool:
-        return self.position_qty < self.max_position and self.gross_shares_traded < self.max_gross_shares
+        return (
+            self.position_qty < self.max_position
+            and self.gross_shares_traded < self.max_gross_shares
+        )
 
     def max_sellable_qty(self) -> int:
         return max(0, self.position_qty)
@@ -538,19 +715,18 @@ class MarketMaker(EWrapper, EClient):
 
     def _market_now(self) -> datetime:
         return datetime.now(self.market_tz)
-    
+
     def flatten_only_mode(self) -> bool:
         now = self._market_now()
         return (now.hour > self.end_new_positions_hour) or (
             now.hour == self.end_new_positions_hour
             and now.minute >= self.end_new_positions_minute
         )
-    
+
     def hard_flatten_mode(self) -> bool:
         now = self._market_now()
         return (now.hour > self.flatten_hour) or (
-            now.hour == self.flatten_hour
-            and now.minute >= self.flatten_minute
+            now.hour == self.flatten_hour and now.minute >= self.flatten_minute
         )
 
     def force_flatten(self):
@@ -567,30 +743,40 @@ class MarketMaker(EWrapper, EClient):
 
         aggressive_sell = self.round_up_cent(max(bid + 0.01, ask - 0.01))
         self.place_or_replace_sell(pos, aggressive_sell)
-        self.logger.info("Force flatten mode active position=%s aggressive_sell=%.2f", pos, aggressive_sell)
+        self.logger.info(
+            "Force flatten mode active position=%s aggressive_sell=%.2f",
+            pos,
+            aggressive_sell,
+        )
 
     def maybe_manage_quotes(self, force=False):
         now = time.time()
 
         with self.lock:
             self.logger.info(
-                "maybe_manage_quotes force=%s connected=%s shutdown=%s dt=%.2f pos=%s gross=%s bid=%s ask=%s",
+                "maybe_manage_quotes force=%s connected=%s shutdown=%s snapshot_done=%s dt=%.2f pos=%s gross=%s bid=%s ask=%s",
                 force,
                 self.connected_flag,
                 self.shutdown_flag,
+                self.open_orders_snapshot_done,
                 now - self.last_quote_eval,
                 self.position_qty,
                 self.gross_shares_traded,
                 self.quote.bid,
                 self.quote.ask,
             )
-    
+
             if not self.connected_flag or self.shutdown_flag:
+                return
+
+            if not self.open_orders_snapshot_done:
+                self.logger.info(
+                    "Open-order snapshot not complete; skipping quote management this cycle."
+                )
                 return
 
             reason = self.market_invalid_reason()
             if reason is not None:
-                # Don't consume the refresh window if the market is invalid
                 if self.cancel_on_invalid_market:
                     self.place_or_replace_buy(0, None)
                     self.place_or_replace_sell(0, None)
@@ -619,28 +805,32 @@ class MarketMaker(EWrapper, EClient):
 
             bid = self.quote.bid
             ask = self.quote.ask
-            
-            if buy_px is None or sell_px is None or buy_px >= sell_px:
-                self.place_or_replace_buy(0, None)
-                self.place_or_replace_sell(0, None)
-                self.logger.warning("Computed invalid quotes buy=%s sell=%s; cancelling.", buy_px, sell_px)
-                return
 
-            # --- clamp quotes to NBBO ---
-            if bid is not None:
-               buy_px = max(buy_px, bid)   # don't bid below best bid
-            if ask is not None:
-                sell_px = min(sell_px, ask) # don't offer above best ask
-            
-            # still ensure buy < sell after clamping
             if buy_px is None or sell_px is None or buy_px >= sell_px:
                 self.place_or_replace_buy(0, None)
                 self.place_or_replace_sell(0, None)
                 self.logger.warning(
-                    "Quotes invalid after NBBO clamp buy=%s sell=%s; cancelling.", buy_px, sell_px
+                    "Computed invalid quotes buy=%s sell=%s; cancelling.",
+                    buy_px,
+                    sell_px,
                 )
                 return
-                
+
+            if bid is not None:
+                buy_px = max(buy_px, bid)
+            if ask is not None:
+                sell_px = min(sell_px, ask)
+
+            if buy_px is None or sell_px is None or buy_px >= sell_px:
+                self.place_or_replace_buy(0, None)
+                self.place_or_replace_sell(0, None)
+                self.logger.warning(
+                    "Quotes invalid after NBBO clamp buy=%s sell=%s; cancelling.",
+                    buy_px,
+                    sell_px,
+                )
+                return
+
             buy_qty, sell_qty = self.desired_sizes()
 
             if self.flatten_only_mode():
@@ -661,17 +851,25 @@ class MarketMaker(EWrapper, EClient):
                 sell_px = self.round_up_cent(self.buy_order.price + 0.01)
 
             if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
-                self.logger.warning("Final anti-self-trade guard triggered; suppressing sell quote.")
+                self.logger.warning(
+                    "Final anti-self-trade guard triggered; suppressing sell quote."
+                )
                 sell_qty = 0
 
-            self.place_or_replace_buy(buy_qty, buy_px if buy_qty > 0 else None)
-            self.place_or_replace_sell(sell_qty, sell_px if sell_qty > 0 else None)
+        self.place_or_replace_buy(buy_qty, buy_px if buy_qty > 0 else None)
+        self.place_or_replace_sell(sell_qty, sell_px if sell_qty > 0 else None)
 
-            self.logger.info(
-                "Quote decision nbbo=%.2f x %.2f pos=%s avg_cost=%.4f desired_buy=%s@%s desired_sell=%s@%s",
-                self.quote.bid, self.quote.ask, self.position_qty, self.avg_cost,
-                buy_qty, buy_px, sell_qty, sell_px
-            )
+        self.logger.info(
+            "Quote decision nbbo=%.2f x %.2f pos=%s avg_cost=%.4f desired_buy=%s@%s desired_sell=%s@%s",
+            self.quote.bid,
+            self.quote.ask,
+            self.position_qty,
+            self.avg_cost,
+            buy_qty,
+            buy_px,
+            sell_qty,
+            sell_px,
+        )
 
     def watchdog_loop(self):
         while not self.shutdown_flag:
@@ -685,28 +883,37 @@ class MarketMaker(EWrapper, EClient):
                 last_nbbo_ok_ts = self.last_nbbo_ok_ts
                 market_data_type = self.market_data_type
 
-            since_start = now - self.start_time
+                since_start = now - self.start_time
 
-            if last_nbbo_ok_ts <= 0:
-                if since_start >= self.nbbo_watchdog_seconds and (now - self.last_watchdog_log_ts) >= self.watchdog_repeat_seconds:
-                    age = None if last_update_ts <= 0 else (now - last_update_ts)
-                    self.logger.warning(
-                        "NBBO watchdog: no valid bid/ask yet after %.1fs; bid=%s ask=%s last_quote_age=%s marketDataType=%s",
-                        since_start,
-                        bid,
-                        ask,
-                        f"{age:.1f}s" if age is not None else "never",
-                        market_data_type,
-                    )
-                    self.last_watchdog_log_ts = now
-            else:
-                age_ok = now - last_nbbo_ok_ts
-                if age_ok >= self.max_market_stale_seconds and (now - self.last_watchdog_log_ts) >= self.watchdog_repeat_seconds:
-                    self.logger.warning(
-                        "NBBO watchdog: last valid NBBO is stale age=%.1fs bid=%s ask=%s marketDataType=%s",
-                        age_ok, bid, ask, market_data_type
-                    )
-                    self.last_watchdog_log_ts = now
+                if last_nbbo_ok_ts <= 0:
+                    if (
+                        since_start >= self.nbbo_watchdog_seconds
+                        and (now - self.last_watchdog_log_ts) >= self.watchdog_repeat_seconds
+                    ):
+                        age = None if last_update_ts <= 0 else (now - last_update_ts)
+                        self.logger.warning(
+                            "NBBO watchdog: no valid bid/ask yet after %.1fs; bid=%s ask=%s last_quote_age=%s marketDataType=%s",
+                            since_start,
+                            bid,
+                            ask,
+                            f"{age:.1f}s" if age is not None else "never",
+                            market_data_type,
+                        )
+                        self.last_watchdog_log_ts = now
+                else:
+                    age_ok = now - last_nbbo_ok_ts
+                    if (
+                        age_ok >= self.max_market_stale_seconds
+                        and (now - self.last_watchdog_log_ts) >= self.watchdog_repeat_seconds
+                    ):
+                        self.logger.warning(
+                            "NBBO watchdog: last valid NBBO is stale age=%.1fs bid=%s ask=%s marketDataType=%s",
+                            age_ok,
+                            bid,
+                            ask,
+                            market_data_type,
+                        )
+                        self.last_watchdog_log_ts = now
 
     def stop(self):
         with self.lock:
@@ -757,7 +964,12 @@ def main():
     signal.signal(signal.SIGINT, handle_sig)
     signal.signal(signal.SIGTERM, handle_sig)
 
-    app.logger.info("Connecting to IBKR host=%s port=%s client_id=%s", app.host, app.port, app.client_id)
+    app.logger.info(
+        "Connecting to IBKR host=%s port=%s client_id=%s",
+        app.host,
+        app.port,
+        app.client_id,
+    )
     app.connect(app.host, app.port, app.client_id)
 
     api_thread = threading.Thread(target=app.run, name="IBAPI", daemon=True)
