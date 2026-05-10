@@ -148,6 +148,10 @@ class MarketMaker(EWrapper, EClient):
         self.max_market_stale_seconds = float(
             config.get("max_market_stale_seconds", 15.0)
         )
+        _mbd = config.get("max_buy_shares_per_run")
+        self.max_buy_shares_per_run: Optional[int] = (
+            None if _mbd is None else int(_mbd)
+        )
 
         self.end_new_positions_hour = int(config.get("end_new_positions_hour", 15))
         self.end_new_positions_minute = int(
@@ -192,6 +196,7 @@ class MarketMaker(EWrapper, EClient):
 
         self.gross_shares_traded = 0
         self.realized_pnl = 0.0
+        self.buy_shares_filled = 0
 
         self.last_quote_eval = 0.0
         self.start_time = time.time()
@@ -603,6 +608,8 @@ class MarketMaker(EWrapper, EClient):
 
         with self.lock:
             self.gross_shares_traded += shares
+            if side in ("BOT", "BUY"):
+                self.buy_shares_filled += shares
 
             if side == "SLD" and self.position_qty > 0 and self.avg_cost > 0:
                 sellable = min(self.position_qty, shares)
@@ -654,10 +661,15 @@ class MarketMaker(EWrapper, EClient):
             self.cancelOrder(order_id)
 
     def can_open_new_long(self) -> bool:
-        return (
-            self.position_qty < self.max_position
-            and self.gross_shares_traded < self.max_gross_shares
-        )
+        with self.lock:
+            if self.position_qty >= self.max_position:
+                return False
+            if self.gross_shares_traded >= self.max_gross_shares:
+                return False
+            if self.max_buy_shares_per_run is not None:
+                if self.buy_shares_filled >= self.max_buy_shares_per_run:
+                    return False
+            return True
 
     def max_sellable_qty(self) -> int:
         return max(0, self.position_qty)
@@ -721,6 +733,9 @@ class MarketMaker(EWrapper, EClient):
 
     def desired_sizes(self):
         buy_qty = min(self.base_qty, max(0, self.max_position - self.position_qty))
+        if self.max_buy_shares_per_run is not None:
+            room = max(0, self.max_buy_shares_per_run - self.buy_shares_filled)
+            buy_qty = min(buy_qty, room)
         sell_qty = self.max_sellable_qty()
         return buy_qty, sell_qty
 
@@ -1101,6 +1116,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base_qty", type=int)
     parser.add_argument("--max_position", type=int)
     parser.add_argument("--max_gross_shares", type=int)
+    parser.add_argument("--max_buy_shares_per_run", type=int)
     parser.add_argument("--min_inventory_before_offering", type=int)
     parser.add_argument("--min_spread", type=float)
     parser.add_argument("--inside_improve", type=float)

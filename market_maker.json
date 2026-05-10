@@ -19,6 +19,7 @@
     "base_qty": 100,
     "max_position": 200,
     "max_gross_shares": 500,
+    "max_buy_shares_per_run": 1000,
     "min_inventory_before_offering": 100,
     "min_spread": 0.1,
     "inside_improve": 0.1,
