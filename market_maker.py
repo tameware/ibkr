@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 
-import configparser
+from __future__ import annotations
+
+import argparse
+import json
 import logging
 import logging.handlers
 import math
@@ -11,7 +14,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
 from ibapi.client import EClient
@@ -42,63 +45,130 @@ class LiveOrder:
     remaining: int = 0
 
 
+def _normalize_config_key(name: str) -> str:
+    return name.replace("-", "_")
+
+
+def flatten_config_sections(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Expand one level of section objects into a flat dict (underscore leaf keys, peg_best-style).
+
+    Top-level scalars and lists stay as-is. Nested dict values merge their snake_case keys into
+    the result; top-level keys (except those starting with ``_``) override section values.
+    """
+    section_flat: Dict[str, Any] = {}
+    top_level: Dict[str, Any] = {}
+    for key, value in data.items():
+        sk = _normalize_config_key(str(key))
+        if sk.startswith("_"):
+            continue
+        if isinstance(value, dict):
+            for subkey, subval in value.items():
+                nk = _normalize_config_key(str(subkey))
+                if nk.startswith("_"):
+                    continue
+                if nk in section_flat:
+                    raise ValueError(f"Duplicate config key {nk!r} (from nested sections)")
+                section_flat[nk] = subval
+        else:
+            top_level[sk] = value
+    merged = dict(section_flat)
+    merged.update(top_level)
+    return merged
+
+
+def load_config_file(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("Config file must contain a JSON object at the top level")
+    return flatten_config_sections(data)
+
+
+def cli_to_config(args: argparse.Namespace) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for key, value in vars(args).items():
+        if key == "config" or value is None:
+            continue
+        result[key] = value
+    return result
+
+
+def merge_config(file_config: Dict[str, Any], cli_config: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(file_config)
+    merged.update(cli_config)
+    return merged
+
+
+def _cfg_bool(config: Dict[str, Any], key: str, default: bool) -> bool:
+    if key not in config:
+        return default
+    v = config[key]
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return bool(v)
+    s = str(v).strip().lower()
+    if s in ("0", "false", "no", "off", ""):
+        return False
+    if s in ("1", "true", "yes", "on"):
+        return True
+    raise ValueError(f"Invalid boolean for {key!r}: {v!r}")
+
+
 class MarketMaker(EWrapper, EClient):
-    def __init__(self, cfg: configparser.ConfigParser):
+    def __init__(self, config: Dict[str, Any]):
         EClient.__init__(self, self)
 
-        self.cfg = cfg
-        self.logger = self._build_logger(cfg)
+        self.config = config
+        self.logger = self._build_logger(config)
 
-        self.host = cfg.get("ibkr", "host", fallback="127.0.0.1")
-        self.port = cfg.getint("ibkr", "port", fallback=7496)
-        self.client_id = cfg.getint("ibkr", "client_id", fallback=901)
-        self.account_filter = cfg.get("ibkr", "account", fallback="").strip() or None
+        self.host = str(config.get("host", "127.0.0.1"))
+        self.port = int(config.get("port", 7496))
+        self.client_id = int(config.get("client_id", 901))
+        raw_acct = config.get("account", "") or ""
+        self.account_filter = str(raw_acct).strip() or None
 
-        self.contract = self.build_contract(cfg)
+        self.contract = self.build_contract(config)
 
-        self.base_qty = cfg.getint("strategy", "base_qty", fallback=100)
-        self.max_position = cfg.getint("strategy", "max_position", fallback=1000)
-        self.max_gross_shares = cfg.getint("strategy", "max_gross_shares", fallback=1500)
-        self.min_inventory_before_offering = cfg.getint(
-            "strategy", "min_inventory_before_offering", fallback=100
+        self.base_qty = int(config.get("base_qty", 100))
+        self.max_position = int(config.get("max_position", 1000))
+        self.max_gross_shares = int(config.get("max_gross_shares", 1500))
+        self.min_inventory_before_offering = int(
+            config.get("min_inventory_before_offering", 100)
         )
-        self.min_spread = cfg.getfloat("strategy", "min_spread", fallback=0.20)
-        self.inside_improve = cfg.getfloat("strategy", "inside_improve", fallback=0.10)
-        self.inventory_penalty_per_100 = cfg.getfloat(
-            "strategy", "inventory_penalty_per_100", fallback=0.05
+        self.min_spread = float(config.get("min_spread", 0.20))
+        self.inside_improve = float(config.get("inside_improve", 0.10))
+        self.inventory_penalty_per_100 = float(
+            config.get("inventory_penalty_per_100", 0.05)
         )
-        self.target_roundtrip_capture = cfg.getfloat(
-            "strategy", "target_roundtrip_capture", fallback=0.30
+        self.target_roundtrip_capture = float(
+            config.get("target_roundtrip_capture", 0.30)
         )
-        self.quote_refresh_seconds = cfg.getfloat(
-            "strategy", "quote_refresh_seconds", fallback=3.0
-        )
-        self.max_market_stale_seconds = cfg.getfloat(
-            "strategy", "max_market_stale_seconds", fallback=15.0
+        self.quote_refresh_seconds = float(config.get("quote_refresh_seconds", 3.0))
+        self.max_market_stale_seconds = float(
+            config.get("max_market_stale_seconds", 15.0)
         )
 
-        self.end_new_positions_hour = cfg.getint("risk", "end_new_positions_hour", fallback=15)
-        self.end_new_positions_minute = cfg.getint(
-            "risk", "end_new_positions_minute", fallback=40
+        self.end_new_positions_hour = int(config.get("end_new_positions_hour", 15))
+        self.end_new_positions_minute = int(
+            config.get("end_new_positions_minute", 40)
         )
-        self.flatten_hour = cfg.getint("risk", "flatten_hour", fallback=15)
-        self.flatten_minute = cfg.getint("risk", "flatten_minute", fallback=55)
-        self.cancel_on_invalid_market = cfg.getboolean(
-            "risk", "cancel_on_invalid_market", fallback=True
+        self.flatten_hour = int(config.get("flatten_hour", 15))
+        self.flatten_minute = int(config.get("flatten_minute", 55))
+        self.cancel_on_invalid_market = _cfg_bool(
+            config, "cancel_on_invalid_market", True
         )
-        self.require_live_data = cfg.getboolean("risk", "require_live_data", fallback=False)
+        self.require_live_data = _cfg_bool(config, "require_live_data", False)
 
-        self.log_bid_ask_ticks = cfg.getboolean(
-            "diagnostics", "log_bid_ask_ticks", fallback=True
+        self.log_bid_ask_ticks = _cfg_bool(config, "log_bid_ask_ticks", True)
+        self.log_invalid_market_reasons = _cfg_bool(
+            config, "log_invalid_market_reasons", True
         )
-        self.log_invalid_market_reasons = cfg.getboolean(
-            "diagnostics", "log_invalid_market_reasons", fallback=True
+        self.nbbo_watchdog_seconds = float(
+            config.get("nbbo_watchdog_seconds", 30.0)
         )
-        self.nbbo_watchdog_seconds = cfg.getfloat(
-            "diagnostics", "nbbo_watchdog_seconds", fallback=30.0
-        )
-        self.watchdog_repeat_seconds = cfg.getfloat(
-            "diagnostics", "watchdog_repeat_seconds", fallback=60.0
+        self.watchdog_repeat_seconds = float(
+            config.get("watchdog_repeat_seconds", 60.0)
         )
 
         self.lock = threading.RLock()
@@ -143,13 +213,13 @@ class MarketMaker(EWrapper, EClient):
         )
 
     @staticmethod
-    def _build_logger(cfg):
-        log_dir = Path(cfg.get("logging", "log_dir", fallback="logs"))
-        log_file = cfg.get("logging", "log_file", fallback="market_maker.log")
-        level_name = cfg.get("logging", "level", fallback="INFO").upper()
-        max_bytes = cfg.getint("logging", "max_bytes", fallback=5_000_000)
-        backup_count = cfg.getint("logging", "backup_count", fallback=10)
-        use_console = cfg.getboolean("logging", "console", fallback=True)
+    def _build_logger(config: Dict[str, Any]):
+        log_dir = Path(str(config.get("log_dir", "logs")))
+        log_file = str(config.get("log_file", "market_maker.log"))
+        level_name = str(config.get("level", "INFO")).upper()
+        max_bytes = int(config.get("max_bytes", 5_000_000))
+        backup_count = int(config.get("backup_count", 10))
+        use_console = _cfg_bool(config, "console", True)
 
         log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -181,13 +251,13 @@ class MarketMaker(EWrapper, EClient):
         return logger
 
     @staticmethod
-    def build_contract(cfg) -> Contract:
+    def build_contract(config: Dict[str, Any]) -> Contract:
         c = Contract()
-        c.symbol = cfg.get("contract", "symbol", fallback="FDX")
-        c.secType = cfg.get("contract", "sec_type", fallback="STK")
-        c.exchange = cfg.get("contract", "exchange", fallback="SMART")
-        c.currency = cfg.get("contract", "currency", fallback="USD")
-        c.primaryExchange = cfg.get("contract", "primary_exchange", fallback="NYSE")
+        c.symbol = str(config.get("symbol", "FDX"))
+        c.secType = str(config.get("sec_type", "STK"))
+        c.exchange = str(config.get("exchange", "SMART"))
+        c.currency = str(config.get("currency", "USD"))
+        c.primaryExchange = str(config.get("primary_exchange", "NYSE"))
         return c
 
     def error(self, reqId, errorCode, errorString, advancedOrderReject="", errorTime=""):
@@ -1006,18 +1076,84 @@ class MarketMaker(EWrapper, EClient):
         self.logger.info("Disconnected cleanly.")
 
 
-def load_config(path: str) -> configparser.ConfigParser:
-    cfg = configparser.ConfigParser()
-    read_files = cfg.read(path)
-    if not read_files:
-        raise FileNotFoundError(f"Config file not found: {path}")
-    return cfg
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="IBKR market-making bot (JSON config with CLI overrides)"
+    )
+    default_config_path = str(Path(__file__).with_suffix(".json"))
+    parser.add_argument(
+        "--config",
+        default=default_config_path,
+        help="Path to JSON config file (default: script name with .json suffix)",
+    )
+
+    parser.add_argument("--host")
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--client_id", type=int)
+    parser.add_argument("--account")
+
+    parser.add_argument("--symbol")
+    parser.add_argument("--sec_type")
+    parser.add_argument("--exchange")
+    parser.add_argument("--currency")
+    parser.add_argument("--primary_exchange")
+
+    parser.add_argument("--base_qty", type=int)
+    parser.add_argument("--max_position", type=int)
+    parser.add_argument("--max_gross_shares", type=int)
+    parser.add_argument("--min_inventory_before_offering", type=int)
+    parser.add_argument("--min_spread", type=float)
+    parser.add_argument("--inside_improve", type=float)
+    parser.add_argument("--inventory_penalty_per_100", type=float)
+    parser.add_argument("--target_roundtrip_capture", type=float)
+    parser.add_argument("--quote_refresh_seconds", type=float)
+    parser.add_argument("--max_market_stale_seconds", type=float)
+
+    parser.add_argument("--end_new_positions_hour", type=int)
+    parser.add_argument("--end_new_positions_minute", type=int)
+    parser.add_argument("--flatten_hour", type=int)
+    parser.add_argument("--flatten_minute", type=int)
+    parser.add_argument(
+        "--cancel_on_invalid_market",
+        action=argparse.BooleanOptionalAction,
+    )
+    parser.add_argument(
+        "--require_live_data",
+        action=argparse.BooleanOptionalAction,
+    )
+
+    parser.add_argument(
+        "--log_bid_ask_ticks",
+        action=argparse.BooleanOptionalAction,
+    )
+    parser.add_argument(
+        "--log_invalid_market_reasons",
+        action=argparse.BooleanOptionalAction,
+    )
+    parser.add_argument("--nbbo_watchdog_seconds", type=float)
+    parser.add_argument("--watchdog_repeat_seconds", type=float)
+
+    parser.add_argument("--log_dir")
+    parser.add_argument("--log_file")
+    parser.add_argument("--level")
+    parser.add_argument("--max_bytes", type=int)
+    parser.add_argument("--backup_count", type=int)
+    parser.add_argument(
+        "--console",
+        action=argparse.BooleanOptionalAction,
+    )
+    return parser
 
 
 def main():
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "market_maker.ini"
-    cfg = load_config(config_path)
-    app = MarketMaker(cfg)
+    parser = build_arg_parser()
+    args = parser.parse_args()
+
+    config_path = Path(args.config)
+    file_config = load_config_file(str(config_path))
+    cli_config = cli_to_config(args)
+    config = merge_config(file_config, cli_config)
+    app = MarketMaker(config)
 
     def handle_sig(*_):
         app.stop()
