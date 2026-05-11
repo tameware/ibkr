@@ -206,6 +206,9 @@ class MarketMaker(EWrapper, EClient):
         self._last_quote_nbbo_snap: Optional[Tuple[Optional[float], Optional[float], int, int]] = (
             None
         )
+        self._last_tick_size_log_key: Optional[
+            Tuple[int, int, Optional[float], Optional[float], int, int]
+        ] = None
         self.start_time = time.time()
         self.last_nbbo_ok_ts = 0.0
         self.last_watchdog_log_ts = 0.0
@@ -463,11 +466,25 @@ class MarketMaker(EWrapper, EClient):
                 return
 
             if self.log_bid_ask_ticks:
-                log_msg = (
-                    f"NBBO size tick tickType={tickType} size={int(size)} "
-                    f"bid={self.quote.bid} ask={self.quote.ask} "
-                    f"bid_sz={self.quote.bid_size} ask_sz={self.quote.ask_size}"
+                key = (
+                    tickType,
+                    int(size),
+                    None
+                    if self.quote.bid is None
+                    else round(float(self.quote.bid), 6),
+                    None
+                    if self.quote.ask is None
+                    else round(float(self.quote.ask), 6),
+                    self.quote.bid_size,
+                    self.quote.ask_size,
                 )
+                if key != self._last_tick_size_log_key:
+                    self._last_tick_size_log_key = key
+                    log_msg = (
+                        f"NBBO size tick tickType={tickType} size={int(size)} "
+                        f"bid={self.quote.bid} ask={self.quote.ask} "
+                        f"bid_sz={self.quote.bid_size} ask_sz={self.quote.ask_size}"
+                    )
 
         if log_msg:
             self.logger.info(log_msg)
