@@ -470,6 +470,46 @@ class TestMarketMakerCore(unittest.TestCase):
             pb.assert_not_called()
             ps.assert_not_called()
 
+    def test_maybe_manage_quotes_runs_when_only_nbbo_size_changes_inside_throttle_window(self):
+        """Old behavior throttled whenever dt < quote_refresh_seconds (unconditional return).
+
+        That skipped a full quote cycle when only NBBO *sizes* changed (e.g. ask_sz 100→300)
+        with the same bid/ask prices, so tick-improve never stepped a sell from 50.77 to 50.76.
+
+        New behavior throttles only if (bid, ask, bid_sz, ask_sz) equals the snapshot from the
+        last Quote decision; a size-only change must re-run."""
+        ts = 2_000_000.0
+        self.mm.connected_flag = True
+        self.mm.shutdown_flag = False
+        self.mm.open_orders_snapshot_done = True
+        self.mm.position_qty = 218
+        self.mm.avg_cost = 50.64
+        self.mm.quote.bid = 50.0
+        self.mm.quote.ask = 50.77
+        self.mm.quote.bid_size = 100
+        self.mm.quote.ask_size = 300
+        self.mm.quote.last_update_ts = ts
+        self.mm.quote_refresh_seconds = 3.0
+        self.mm.last_quote_eval = ts - 0.5
+        self.mm._last_quote_nbbo_snap = (50.0, 50.77, 100, 100)
+        self.mm.next_order_id = 9001
+
+        self.mm.place_or_replace_buy = Mock()
+        self.mm.place_or_replace_sell = Mock()
+
+        with patch("market_maker.time.time", return_value=ts), patch.object(
+            self.mm, "hard_flatten_mode", return_value=False
+        ), patch.object(self.mm, "flatten_only_mode", return_value=True), patch.object(
+            self.mm, "compute_desired_quotes", return_value=(50.0, 51.0)
+        ):
+            self.mm.maybe_manage_quotes(force=False)
+
+        self.mm.place_or_replace_sell.assert_called_once()
+        sell_qty, sell_px = self.mm.place_or_replace_sell.call_args[0]
+        self.assertEqual(sell_qty, 218)
+        self.assertAlmostEqual(sell_px, 50.76)
+        self.mm.place_or_replace_buy.assert_called_once_with(0, None)
+
     def test_maybe_manage_quotes_places_buy_when_flat(self):
         self.mm.connected_flag = True
         self.mm.shutdown_flag = False
