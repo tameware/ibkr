@@ -242,6 +242,19 @@ class TestNbboTickImprove(unittest.TestCase):
         self.assertAlmostEqual(nb, 50.12)
         self.assertAlmostEqual(ns, 50.80)
 
+    def test_skips_further_sell_improve_when_ask_sz_not_gt_order_even_if_inside_spread(self):
+        """ask_depth_ok requires ask_sz > sell_qty (or unknown 0); thin top when already
+        stepped in must not lower sell another tick (OZ: 218 shares, ask_sz=200 at 50.71)."""
+        self.mm.quote.bid = 50.0
+        self.mm.quote.ask = 50.71
+        self.mm.quote.bid_size = 300
+        self.mm.quote.ask_size = 200
+        nb, ns = self.mm._nbbo_tick_improve_quotes(
+            50.0, 50.71, buy_qty=0, sell_qty=218
+        )
+        self.assertAlmostEqual(nb, 50.0)
+        self.assertAlmostEqual(ns, 50.71)
+
 
 class TestMarketMakerStatics(unittest.TestCase):
     """Pure helpers on MarketMaker."""
