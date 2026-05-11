@@ -535,6 +535,18 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertEqual(self.mm.quote.bid, 50.25)
         self.assertEqual(self.mm.quote.ask, 50.75)
 
+    def test_tick_size_triggers_maybe_manage_quotes(self):
+        """NBBO size-only updates can flip tick-improve depth (e.g. ask_sz 200→300); must rerun."""
+        self.mm.market_data_req_id = 1001
+        self.mm.quote.bid = 50.05
+        self.mm.quote.ask = 50.70
+        self.mm.quote.bid_size = 200
+        self.mm.quote.ask_size = 200
+        with patch.object(self.mm, "maybe_manage_quotes") as mmq:
+            self.mm.tickSize(1001, 0, 100)
+        mmq.assert_called_once()
+        self.assertEqual(self.mm.quote.bid_size, 100)
+
     def test_order_status_clears_buy_on_terminal(self):
         self.mm.buy_order = LiveOrder(
             order_id=10,

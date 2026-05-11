@@ -463,11 +463,14 @@ class MarketMaker(EWrapper, EClient):
             return
 
         log_msg: Optional[str] = None
+        updated = False
         with self.lock:
             if tickType == 0:
                 self.quote.bid_size = int(size)
+                updated = True
             elif tickType == 3:
                 self.quote.ask_size = int(size)
+                updated = True
             else:
                 return
 
@@ -494,6 +497,9 @@ class MarketMaker(EWrapper, EClient):
 
         if log_msg:
             self.logger.info(log_msg)
+
+        if updated:
+            self.maybe_manage_quotes()
 
     def position(self, account, contract, position, avgCost):
         if contract.symbol != self.contract.symbol or contract.secType != self.contract.secType:
