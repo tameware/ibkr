@@ -1019,13 +1019,11 @@ class MarketMaker(EWrapper, EClient):
 
         with self.lock:
             self.logger.info(
-                "maybe_manage_quotes force=%s connected=%s shutdown=%s snapshot_done=%s dt=%.2f pos=%s gross=%s "
+                "maybe_manage_quotes force=%s connected=%s shutdown=%s pos=%s gross=%s "
                 "bid=%s ask=%s bid_sz=%s ask_sz=%s",
                 force,
                 self.connected_flag,
                 self.shutdown_flag,
-                self.open_orders_snapshot_done,
-                now - self.last_quote_eval,
                 self.position_qty,
                 self.gross_shares_traded,
                 self.quote.bid,
