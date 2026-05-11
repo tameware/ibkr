@@ -474,6 +474,16 @@ class MarketMaker(EWrapper, EClient):
             else:
                 return
 
+            # Size-only ticks still mean live NBBO data; refresh freshness for staleness / watchdog.
+            now = time.time()
+            self.quote.last_update_ts = now
+            if (
+                self.quote.bid is not None
+                and self.quote.ask is not None
+                and self.quote.bid < self.quote.ask
+            ):
+                self.last_nbbo_ok_ts = now
+
             if self.log_bid_ask_ticks:
                 key = (
                     tickType,

@@ -563,6 +563,24 @@ class TestMarketMakerCore(unittest.TestCase):
         mmq.assert_called_once()
         self.assertEqual(self.mm.quote.bid_size, 100)
 
+    def test_tick_size_refreshes_staleness_timestamps_when_nbbo_valid(self):
+        """Stale checks use last_update_ts / last_nbbo_ok_ts; size-only ticks must refresh them."""
+        self.mm.market_data_req_id = 1001
+        self.mm.max_market_stale_seconds = 60.0
+        self.mm.quote.bid = 50.05
+        self.mm.quote.ask = 50.66
+        self.mm.quote.bid_size = 100
+        self.mm.quote.ask_size = 200
+        self.mm.quote.last_update_ts = 1_000_000.0
+        self.mm.last_nbbo_ok_ts = 1_000_000.0
+        with patch.object(self.mm, "maybe_manage_quotes"):
+            with patch("market_maker.time.time", return_value=2_000_000.0):
+                self.mm.tickSize(1001, 3, 400)
+        self.assertEqual(self.mm.quote.last_update_ts, 2_000_000.0)
+        self.assertEqual(self.mm.last_nbbo_ok_ts, 2_000_000.0)
+        with patch("market_maker.time.time", return_value=2_000_030.0):
+            self.assertIsNone(self.mm.market_invalid_reason())
+
     def test_order_status_clears_buy_on_terminal(self):
         self.mm.buy_order = LiveOrder(
             order_id=10,
