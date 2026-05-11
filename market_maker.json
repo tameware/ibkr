@@ -26,7 +26,7 @@
     "inventory_penalty_per_100": 0.05,
     "target_roundtrip_capture": 0.3,
     "quote_refresh_seconds": 3.0,
-    "max_market_stale_seconds": 300,
+    "max_market_stale_seconds": 1200,
     "min_quote_spread_cents": 50
   },
 
