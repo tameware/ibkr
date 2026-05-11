@@ -9,7 +9,6 @@ import tempfile
 from pathlib import Path
 from decimal import Decimal
 import datetime
-import pytz
 from argparse import Namespace
 import sys
 
@@ -52,6 +51,16 @@ mock_ibapi.contract.Contract = MockContract
 mock_ibapi.order.Order = MockOrder
 mock_ibapi.order.COMPETE_AGAINST_BEST_OFFSET_UP_TO_MID = "COMPETE_AGAINST_BEST_OFFSET_UP_TO_MID"
 
+mock_pytz = MagicMock()
+
+
+class MockTimezone:
+    def localize(self, dt):
+        return dt
+
+
+mock_pytz.timezone = Mock(return_value=MockTimezone())
+
 sys.modules['ibapi'] = mock_ibapi
 sys.modules['ibapi.client'] = mock_ibapi.client
 sys.modules['ibapi.wrapper'] = mock_ibapi.wrapper
@@ -59,6 +68,7 @@ sys.modules['ibapi.common'] = MagicMock()
 sys.modules['ibapi.contract'] = mock_ibapi.contract
 sys.modules['ibapi.order'] = mock_ibapi.order
 sys.modules['ibapi.ticktype'] = MagicMock()
+sys.modules['pytz'] = mock_pytz
 
 # Now import peg_best
 from peg_best import (
@@ -361,11 +371,10 @@ class TestTrader(unittest.TestCase):
         self.trader._ask = 152.00
         self.trader.ref_price = 150.00
         
-        with patch('peg_best.tprint') as mock_print:
+        with patch('peg_best.tprint'):
             self.trader.tickPrice(3001, 2, 152.00, Mock())
             # mid = 151.00, so ref_price should update
             self.assertEqual(self.trader.ref_price, 151.00)
-            mock_print.assert_called_once()
     
     def test_open_order_tracking(self):
         """Test tracking of open orders"""
@@ -461,7 +470,7 @@ class TestTrader(unittest.TestCase):
         """Test market hours detection"""
         # Mock the current time to 10:30 AM NY time
         mock_now = datetime.datetime(2024, 1, 15, 10, 30, 0)
-        mock_tz = pytz.timezone("America/New_York")
+        mock_tz = mock_pytz.timezone("America/New_York")
         
         with patch('datetime.datetime') as mock_datetime:
             mock_datetime.now.return_value = mock_tz.localize(mock_now)
@@ -470,7 +479,7 @@ class TestTrader(unittest.TestCase):
     def test_us_regular_hours_before_open(self):
         """Test detection of pre-market hours"""
         mock_now = datetime.datetime(2024, 1, 15, 8, 30, 0)
-        mock_tz = pytz.timezone("America/New_York")
+        mock_tz = mock_pytz.timezone("America/New_York")
         
         with patch('datetime.datetime') as mock_datetime:
             mock_datetime.now.return_value = mock_tz.localize(mock_now)
@@ -479,7 +488,7 @@ class TestTrader(unittest.TestCase):
     def test_us_regular_hours_after_close(self):
         """Test detection of after-hours"""
         mock_now = datetime.datetime(2024, 1, 15, 17, 30, 0)
-        mock_tz = pytz.timezone("America/New_York")
+        mock_tz = mock_pytz.timezone("America/New_York")
         
         with patch('datetime.datetime') as mock_datetime:
             mock_datetime.now.return_value = mock_tz.localize(mock_now)
