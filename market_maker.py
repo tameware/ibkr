@@ -275,15 +275,21 @@ class MarketMaker(EWrapper, EClient):
         c.primaryExchange = str(config.get("primary_exchange", "NYSE"))
         return c
 
-    def error(self, reqId, errorCode, errorString, advancedOrderReject="", errorTime=""):
-        if "data farm" in advancedOrderReject:
+    def error(
+        self,
+        reqId,
+        errorTime,
+        errorCode,
+        errorString,
+        advancedOrderReject: str = "",
+    ):
+        """IB API passes (reqId, errorTime, errorCode, errorString, advancedOrderReject)."""
+        if "data farm" in (advancedOrderReject or ""):
             return
 
-        msg = f"reqId={reqId} code={errorCode} msg={errorString}"
+        msg = f"reqId={reqId} errorTime={errorTime} code={errorCode} msg={errorString}"
         if advancedOrderReject:
             msg += f" reject={advancedOrderReject}"
-        if errorTime:
-            msg += f" time={errorTime}"
 
         if errorCode in {2104, 2106, 2158}:
             self.logger.info("IB status: %s", msg)
