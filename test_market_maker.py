@@ -220,6 +220,28 @@ class TestNbboTickImprove(unittest.TestCase):
         self.assertAlmostEqual(nb, 98.5)
         self.assertAlmostEqual(ns, 99.99)
 
+    def test_improves_sell_when_ask_size_still_zero_price_only_nbbo(self):
+        """IB often sends bid/ask prices before tickSize; depth unknown => allow step-in."""
+        self.mm.quote.bid = 50.12
+        self.mm.quote.ask = 50.80
+        self.mm.quote.bid_size = 0
+        self.mm.quote.ask_size = 0
+        nb, ns = self.mm._nbbo_tick_improve_quotes(
+            50.12, 50.80, buy_qty=0, sell_qty=218
+        )
+        self.assertAlmostEqual(nb, 50.12)
+        self.assertAlmostEqual(ns, 50.79)
+
+    def test_skips_sell_when_ask_size_known_and_not_greater_than_order(self):
+        self.mm.quote.bid = 50.12
+        self.mm.quote.ask = 50.80
+        self.mm.quote.ask_size = 200
+        nb, ns = self.mm._nbbo_tick_improve_quotes(
+            50.12, 50.80, buy_qty=0, sell_qty=218
+        )
+        self.assertAlmostEqual(nb, 50.12)
+        self.assertAlmostEqual(ns, 50.80)
+
 
 class TestMarketMakerStatics(unittest.TestCase):
     """Pure helpers on MarketMaker."""

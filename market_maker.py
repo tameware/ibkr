@@ -419,13 +419,19 @@ class MarketMaker(EWrapper, EClient):
                 self.quote.last_update_ts = time.time()
                 updated = True
                 if self.log_bid_ask_ticks:
-                    log_msg = f"BID tick bid={self.quote.bid:.2f} ask={self.quote.ask}"
+                    log_msg = (
+                        f"BID tick bid={self.quote.bid:.2f} ask={self.quote.ask} "
+                        f"bid_sz={self.quote.bid_size} ask_sz={self.quote.ask_size}"
+                    )
             elif tickType == 2 and price > 0:
                 self.quote.ask = float(price)
                 self.quote.last_update_ts = time.time()
                 updated = True
                 if self.log_bid_ask_ticks:
-                    log_msg = f"ASK tick bid={self.quote.bid} ask={self.quote.ask:.2f}"
+                    log_msg = (
+                        f"ASK tick bid={self.quote.bid} ask={self.quote.ask:.2f} "
+                        f"bid_sz={self.quote.bid_size} ask_sz={self.quote.ask_size}"
+                    )
 
             if (
                 self.quote.bid is not None
@@ -444,11 +450,24 @@ class MarketMaker(EWrapper, EClient):
         if reqId != self.market_data_req_id:
             return
 
+        log_msg: Optional[str] = None
         with self.lock:
             if tickType == 0:
                 self.quote.bid_size = int(size)
             elif tickType == 3:
                 self.quote.ask_size = int(size)
+            else:
+                return
+
+            if self.log_bid_ask_ticks:
+                log_msg = (
+                    f"NBBO size tick tickType={tickType} size={int(size)} "
+                    f"bid={self.quote.bid} ask={self.quote.ask} "
+                    f"bid_sz={self.quote.bid_size} ask_sz={self.quote.ask_size}"
+                )
+
+        if log_msg:
+            self.logger.info(log_msg)
 
     def position(self, account, contract, position, avgCost):
         if contract.symbol != self.contract.symbol or contract.secType != self.contract.secType:
@@ -680,7 +699,10 @@ class MarketMaker(EWrapper, EClient):
     ) -> Tuple[float, float]:
         """Raise working bid / lower working ask by one minTick when NBBO size exceeds
         our quote size on that side, only if our bid–ask width stays >=
-        min_quote_spread_cents (and quotes remain passive vs NBBO)."""
+        min_quote_spread_cents (and quotes remain passive vs NBBO).
+
+        If bid_size / ask_size are still zero (no tickSize yet from IB), treat depth as
+        unknown and allow improvement so price-only NBBO streams still work."""
         bid = self.quote.bid
         ask = self.quote.ask
         if bid is None or ask is None:
@@ -689,7 +711,10 @@ class MarketMaker(EWrapper, EClient):
         tick = self._effective_min_tick()
         min_width = self.min_quote_spread_cents / 100.0
 
-        if buy_qty > 0 and self.quote.bid_size > buy_qty:
+        bid_depth_ok = self.quote.bid_size == 0 or self.quote.bid_size > buy_qty
+        ask_depth_ok = self.quote.ask_size == 0 or self.quote.ask_size > sell_qty
+
+        if buy_qty > 0 and bid_depth_ok:
             cand_buy = self._quantize_to_tick(buy_px + tick)
             if (
                 cand_buy < ask
@@ -704,7 +729,7 @@ class MarketMaker(EWrapper, EClient):
                     buy_px,
                 )
 
-        if sell_qty > 0 and self.quote.ask_size > sell_qty:
+        if sell_qty > 0 and ask_depth_ok:
             cand_sell = self._quantize_to_tick(sell_px - tick)
             if (
                 cand_sell > bid
@@ -974,7 +999,8 @@ class MarketMaker(EWrapper, EClient):
 
         with self.lock:
             self.logger.info(
-                "maybe_manage_quotes force=%s connected=%s shutdown=%s snapshot_done=%s dt=%.2f pos=%s gross=%s bid=%s ask=%s",
+                "maybe_manage_quotes force=%s connected=%s shutdown=%s snapshot_done=%s dt=%.2f pos=%s gross=%s "
+                "bid=%s ask=%s bid_sz=%s ask_sz=%s",
                 force,
                 self.connected_flag,
                 self.shutdown_flag,
@@ -984,6 +1010,8 @@ class MarketMaker(EWrapper, EClient):
                 self.gross_shares_traded,
                 self.quote.bid,
                 self.quote.ask,
+                self.quote.bid_size,
+                self.quote.ask_size,
             )
 
             if not self.connected_flag or self.shutdown_flag:
@@ -1091,9 +1119,11 @@ class MarketMaker(EWrapper, EClient):
         self.place_or_replace_sell(sell_qty, sell_px if sell_qty > 0 else None)
 
         self.logger.info(
-            "Quote decision nbbo=%.2f x %.2f pos=%s avg_cost=%.4f desired_buy=%s@%s desired_sell=%s@%s",
+            "Quote decision nbbo=%.2f x %.2f (bid_sz=%s ask_sz=%s) pos=%s avg_cost=%.4f desired_buy=%s@%s desired_sell=%s@%s",
             self.quote.bid,
             self.quote.ask,
+            self.quote.bid_size,
+            self.quote.ask_size,
             self.position_qty,
             self.avg_cost,
             buy_qty,
@@ -1110,6 +1140,8 @@ class MarketMaker(EWrapper, EClient):
             with self.lock:
                 bid = self.quote.bid
                 ask = self.quote.ask
+                bid_sz = self.quote.bid_size
+                ask_sz = self.quote.ask_size
                 last_update_ts = self.quote.last_update_ts
                 last_nbbo_ok_ts = self.last_nbbo_ok_ts
                 market_data_type = self.market_data_type
@@ -1123,10 +1155,13 @@ class MarketMaker(EWrapper, EClient):
                     ):
                         age = None if last_update_ts <= 0 else (now - last_update_ts)
                         self.logger.warning(
-                            "NBBO watchdog: no valid bid/ask yet after %.1fs; bid=%s ask=%s last_quote_age=%s marketDataType=%s",
+                            "NBBO watchdog: no valid bid/ask yet after %.1fs; bid=%s ask=%s "
+                            "bid_sz=%s ask_sz=%s last_quote_age=%s marketDataType=%s",
                             since_start,
                             bid,
                             ask,
+                            bid_sz,
+                            ask_sz,
                             f"{age:.1f}s" if age is not None else "never",
                             market_data_type,
                         )
@@ -1138,10 +1173,13 @@ class MarketMaker(EWrapper, EClient):
                         and (now - self.last_watchdog_log_ts) >= self.watchdog_repeat_seconds
                     ):
                         self.logger.warning(
-                            "NBBO watchdog: last valid NBBO is stale age=%.1fs bid=%s ask=%s marketDataType=%s",
+                            "NBBO watchdog: last valid NBBO is stale age=%.1fs bid=%s ask=%s "
+                            "bid_sz=%s ask_sz=%s marketDataType=%s",
                             age_ok,
                             bid,
                             ask,
+                            bid_sz,
+                            ask_sz,
                             market_data_type,
                         )
                         self.last_watchdog_log_ts = now
