@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from ibapi.client import EClient
@@ -174,6 +174,10 @@ class MarketMaker(EWrapper, EClient):
         self.watchdog_repeat_seconds = float(
             config.get("watchdog_repeat_seconds", 60.0)
         )
+        self.min_quote_spread_cents = float(
+            config.get("min_quote_spread_cents", 50.0)
+        )
+        self.min_tick = float(config.get("min_tick", 0.01))
 
         self.lock = threading.RLock()
         self.connected_flag = False
@@ -322,8 +326,21 @@ class MarketMaker(EWrapper, EClient):
             return
 
         summary = contractDetails.contract
-        self.contract_resolved = True
-        self.target_conid = getattr(summary, "conId", None)
+        mt = getattr(contractDetails, "minTick", None)
+        new_min_tick: Optional[float] = None
+        if mt is not None:
+            try:
+                v = float(mt)
+                if v > 0:
+                    new_min_tick = v
+            except (TypeError, ValueError):
+                pass
+
+        with self.lock:
+            self.contract_resolved = True
+            self.target_conid = getattr(summary, "conId", None)
+            if new_min_tick is not None:
+                self.min_tick = new_min_tick
 
         self.logger.info(
             "Resolved contract: conId=%s symbol=%s localSymbol=%s exchange=%s primaryExchange=%s currency=%s minTick=%s",
@@ -643,6 +660,66 @@ class MarketMaker(EWrapper, EClient):
     @staticmethod
     def round_up_cent(x: float) -> float:
         return math.ceil(x * 100.0) / 100.0
+
+    def _effective_min_tick(self) -> float:
+        with self.lock:
+            t = float(self.min_tick)
+            return t if t > 0 else 0.01
+
+    def _quantize_to_tick(self, x: float) -> float:
+        t = self._effective_min_tick()
+        n = round(x / t)
+        return round(n * t, 10)
+
+    def _nbbo_tick_improve_quotes(
+        self,
+        buy_px: float,
+        sell_px: float,
+        buy_qty: int,
+        sell_qty: int,
+    ) -> Tuple[float, float]:
+        """Raise working bid / lower working ask by one minTick when NBBO size exceeds
+        our quote size on that side, only if our bid–ask width stays >=
+        min_quote_spread_cents (and quotes remain passive vs NBBO)."""
+        bid = self.quote.bid
+        ask = self.quote.ask
+        if bid is None or ask is None:
+            return buy_px, sell_px
+
+        tick = self._effective_min_tick()
+        min_width = self.min_quote_spread_cents / 100.0
+
+        if buy_qty > 0 and self.quote.bid_size > buy_qty:
+            cand_buy = self._quantize_to_tick(buy_px + tick)
+            if (
+                cand_buy < ask
+                and cand_buy > bid
+                and sell_px - cand_buy >= min_width
+            ):
+                buy_px = cand_buy
+                self.logger.info(
+                    "NBBO tick improve BUY: bid_size=%s > buy_qty=%s -> buy_px=%.4f",
+                    self.quote.bid_size,
+                    buy_qty,
+                    buy_px,
+                )
+
+        if sell_qty > 0 and self.quote.ask_size > sell_qty:
+            cand_sell = self._quantize_to_tick(sell_px - tick)
+            if (
+                cand_sell > bid
+                and cand_sell < ask
+                and cand_sell - buy_px >= min_width
+            ):
+                sell_px = cand_sell
+                self.logger.info(
+                    "NBBO tick improve SELL: ask_size=%s > sell_qty=%s -> sell_px=%.4f",
+                    self.quote.ask_size,
+                    sell_qty,
+                    sell_px,
+                )
+
+        return buy_px, sell_px
 
     def build_lmt_order(self, action: str, qty: int, px: float) -> Order:
         o = Order()
@@ -991,6 +1068,13 @@ class MarketMaker(EWrapper, EClient):
             if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
                 sell_qty = 0
 
+            buy_px, sell_px = self._nbbo_tick_improve_quotes(
+                buy_px, sell_px, buy_qty, sell_qty
+            )
+
+            if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
+                sell_qty = 0
+
             if self.sell_order and buy_qty > 0 and buy_px >= self.sell_order.price:
                 buy_px = self.round_down_cent(self.sell_order.price - 0.01)
 
@@ -1148,6 +1232,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--nbbo_watchdog_seconds", type=float)
     parser.add_argument("--watchdog_repeat_seconds", type=float)
+    parser.add_argument("--min_quote_spread_cents", type=float)
+    parser.add_argument("--min_tick", type=float)
 
     parser.add_argument("--log_dir")
     parser.add_argument("--log_file")

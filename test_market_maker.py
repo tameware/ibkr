@@ -154,6 +154,73 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(merged["extra"], "x")
 
 
+class TestNbboTickImprove(unittest.TestCase):
+    """NBBO one-tick improvement vs size and min quote width."""
+
+    def setUp(self):
+        self._log_patcher = patch.object(
+            MarketMaker, "_build_logger", return_value=MagicMock()
+        )
+        self._log_patcher.start()
+        self.addCleanup(self._log_patcher.stop)
+        self.mm = MarketMaker(
+            {
+                "symbol": "FDX",
+                "sec_type": "STK",
+                "currency": "USD",
+                "exchange": "SMART",
+                "primary_exchange": "NYSE",
+                "console": False,
+                "min_quote_spread_cents": 50.0,
+                "min_tick": 0.01,
+            }
+        )
+
+    def test_improves_buy_when_bid_size_exceeds_order_and_width_ok(self):
+        self.mm.quote.bid = 100.0
+        self.mm.quote.ask = 102.0
+        self.mm.quote.bid_size = 500
+        self.mm.quote.ask_size = 40
+        nb, ns = self.mm._nbbo_tick_improve_quotes(
+            100.0, 101.0, buy_qty=100, sell_qty=50
+        )
+        self.assertAlmostEqual(nb, 100.01)
+        self.assertAlmostEqual(ns, 101.0)
+
+    def test_skips_buy_when_bid_size_not_greater_than_order(self):
+        self.mm.quote.bid = 100.0
+        self.mm.quote.ask = 102.0
+        self.mm.quote.bid_size = 100
+        self.mm.quote.ask_size = 40
+        nb, ns = self.mm._nbbo_tick_improve_quotes(
+            100.0, 101.0, buy_qty=100, sell_qty=50
+        )
+        self.assertAlmostEqual(nb, 100.0)
+        self.assertAlmostEqual(ns, 101.0)
+
+    def test_skips_buy_when_tick_would_narrow_below_min_cents(self):
+        self.mm.quote.bid = 100.0
+        self.mm.quote.ask = 101.0
+        self.mm.quote.bid_size = 500
+        self.mm.quote.ask_size = 500
+        nb, ns = self.mm._nbbo_tick_improve_quotes(
+            100.0, 100.50, buy_qty=100, sell_qty=50
+        )
+        self.assertAlmostEqual(nb, 100.0)
+        self.assertAlmostEqual(ns, 100.50)
+
+    def test_improves_sell_when_ask_size_exceeds_order(self):
+        self.mm.quote.bid = 98.0
+        self.mm.quote.ask = 100.0
+        self.mm.quote.bid_size = 50
+        self.mm.quote.ask_size = 400
+        nb, ns = self.mm._nbbo_tick_improve_quotes(
+            98.5, 100.0, buy_qty=50, sell_qty=80
+        )
+        self.assertAlmostEqual(nb, 98.5)
+        self.assertAlmostEqual(ns, 99.99)
+
+
 class TestMarketMakerStatics(unittest.TestCase):
     """Pure helpers on MarketMaker."""
 
