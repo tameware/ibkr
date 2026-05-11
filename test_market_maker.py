@@ -527,6 +527,22 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm._ib_cancel_order(42)
         self.assertEqual(self.mm.cancelOrder.call_count, 2)
 
+    def test_place_or_replace_sell_reuses_order_id_when_price_changes(self):
+        """IB modifies a limit in place when placeOrder uses the same order id (no cancel/replace)."""
+        self.mm.next_order_id = 500
+        self.mm.position_qty = 218
+        self.mm.buy_order = None
+        self.mm.sell_order = None
+        self.mm.placeOrder = Mock()
+        self.mm.cancelOrder = Mock()
+        self.mm.place_or_replace_sell(218, 50.70)
+        self.mm.place_or_replace_sell(218, 50.69)
+        self.assertEqual(self.mm.sell_order.order_id, 500)
+        self.assertEqual(self.mm.placeOrder.call_count, 2)
+        oids = [c[0][0] for c in self.mm.placeOrder.call_args_list]
+        self.assertEqual(oids, [500, 500])
+        self.mm.cancelOrder.assert_not_called()
+
     def test_tick_price_updates_quote(self):
         self.mm.market_data_req_id = 1001
         with patch.object(self.mm, "maybe_manage_quotes"):

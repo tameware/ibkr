@@ -998,40 +998,23 @@ class MarketMaker(EWrapper, EClient):
                 self.cancel_live_order(self.sell_order)
             return
     
-        # snapshot of prior adopted order (may be id 0)
         prior = self.sell_order
-    
+
         if self.is_same_order(prior, "SELL", qty, px):
             return
-    
-        new_oid = self.next_id()
+
+        # Reuse working order id (IB modify-in-place), same pattern as ``place_or_replace_buy``.
+        oid = prior.order_id if prior is not None else self.next_id()
         order = self.build_lmt_order("SELL", qty, px)
-        self.placeOrder(new_oid, self.contract, order)
+        self.placeOrder(oid, self.contract, order)
         self.sell_order = LiveOrder(
-            order_id=new_oid,
+            order_id=oid,
             side="SELL",
             price=px,
             qty=qty,
             remaining=qty,
         )
-        self.logger.info("SELL working id=%s qty=%s px=%.2f", new_oid, qty, px)
-    
-        # best-effort cancel of any adopted incumbent with a different id
-        if prior is not None and prior.order_id != new_oid:
-            try:
-                self._ib_cancel_order(prior.order_id)
-                self.logger.info(
-                    "Requested cancel of adopted incumbent id=%s side=%s px=%.2f qty=%s",
-                    prior.order_id,
-                    prior.side,
-                    prior.price,
-                    prior.qty,
-                )
-            except Exception as e:
-                # tolerate failures if prior id is not cancelable by this client
-                self.logger.warning(
-                    "Cancel of adopted incumbent id=%s failed: %s", prior.order_id, e
-                )
+        self.logger.info("SELL working id=%s qty=%s px=%.2f", oid, qty, px)
 
     def _market_now(self) -> datetime:
         return datetime.now(self.market_tz)
