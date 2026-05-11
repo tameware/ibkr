@@ -7,3 +7,5 @@ Requires IB's TWS app and its IBJts library. The scripts are tested with library
 *midprice.py* places orders with a user-specified delta around the midpoint between the NBBO bid and ask.
 
 *peg_mid.py* also places orders with a user-specified delta around the midpoint between the NBBO bid and ask, with a different IB order type.
+
+*market_maker.py* makes a market in a security. It tries to get just inside the NBBO spread for both buys and sells, narrowing the spread while another order chases it, without chasing itself.
