@@ -203,6 +203,9 @@ class MarketMaker(EWrapper, EClient):
         self.buy_shares_filled = 0
 
         self.last_quote_eval = 0.0
+        self._last_quote_nbbo_snap: Optional[Tuple[Optional[float], Optional[float], int, int]] = (
+            None
+        )
         self.start_time = time.time()
         self.last_nbbo_ok_ts = 0.0
         self.last_watchdog_log_ts = 0.0
@@ -723,7 +726,7 @@ class MarketMaker(EWrapper, EClient):
             ):
                 buy_px = cand_buy
                 self.logger.info(
-                    "NBBO tick improve BUY: bid_size=%s > buy_qty=%s -> buy_px=%.4f",
+                    "NBBO tick improve BUY: bid_sz=%s buy_qty=%s -> buy_px=%.4f",
                     self.quote.bid_size,
                     buy_qty,
                     buy_px,
@@ -738,7 +741,7 @@ class MarketMaker(EWrapper, EClient):
             ):
                 sell_px = cand_sell
                 self.logger.info(
-                    "NBBO tick improve SELL: ask_size=%s > sell_qty=%s -> sell_px=%.4f",
+                    "NBBO tick improve SELL: ask_sz=%s sell_qty=%s -> sell_px=%.4f",
                     self.quote.ask_size,
                     sell_qty,
                     sell_px,
@@ -1034,7 +1037,14 @@ class MarketMaker(EWrapper, EClient):
                 return
 
             if not force and (now - self.last_quote_eval) < self.quote_refresh_seconds:
-                return
+                snap = (
+                    self.quote.bid,
+                    self.quote.ask,
+                    self.quote.bid_size,
+                    self.quote.ask_size,
+                )
+                if snap == self._last_quote_nbbo_snap:
+                    return
             self.last_quote_eval = now
 
             reason = self.market_invalid_reason()
@@ -1117,6 +1127,14 @@ class MarketMaker(EWrapper, EClient):
 
         self.place_or_replace_buy(buy_qty, buy_px if buy_qty > 0 else None)
         self.place_or_replace_sell(sell_qty, sell_px if sell_qty > 0 else None)
+
+        with self.lock:
+            self._last_quote_nbbo_snap = (
+                self.quote.bid,
+                self.quote.ask,
+                self.quote.bid_size,
+                self.quote.ask_size,
+            )
 
         self.logger.info(
             "Quote decision nbbo=%.2f x %.2f (bid_sz=%s ask_sz=%s) pos=%s avg_cost=%.4f desired_buy=%s@%s desired_sell=%s@%s",
