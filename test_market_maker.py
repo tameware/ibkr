@@ -423,6 +423,92 @@ class TestMarketMakerCore(unittest.TestCase):
         )
         self.assertTrue(self.mm._should_keep_order(inc, cand))
 
+    def test_should_keep_sell_adoption_prefers_larger_working_size(self):
+        self.mm.position_qty = 200
+        small = LiveOrder(
+            order_id=1,
+            side="SELL",
+            price=50.0,
+            qty=100,
+            status="Submitted",
+            filled=0,
+            remaining=100,
+        )
+        big = LiveOrder(
+            order_id=2,
+            side="SELL",
+            price=50.0,
+            qty=200,
+            status="Submitted",
+            filled=0,
+            remaining=200,
+        )
+        self.assertTrue(self.mm._should_keep_sell_adoption(big, small))
+        self.assertFalse(self.mm._should_keep_sell_adoption(small, big))
+
+    def test_needs_quote_despite_nbbo_throttle_no_sell_long(self):
+        self.mm.position_qty = 150
+        self.mm.sell_order = None
+        self.assertTrue(self.mm._needs_quote_despite_nbbo_throttle())
+
+    def test_needs_quote_despite_nbbo_throttle_undersized_sell(self):
+        self.mm.position_qty = 200
+        self.mm.sell_order = LiveOrder(
+            order_id=3,
+            side="SELL",
+            price=50.0,
+            qty=80,
+            status="Submitted",
+            filled=0,
+            remaining=80,
+        )
+        self.assertTrue(self.mm._needs_quote_despite_nbbo_throttle())
+
+    def test_needs_quote_despite_nbbo_throttle_ok_when_sell_covers_position(self):
+        self.mm.position_qty = 200
+        self.mm.sell_order = LiveOrder(
+            order_id=3,
+            side="SELL",
+            price=50.0,
+            qty=200,
+            status="Submitted",
+            filled=0,
+            remaining=200,
+        )
+        self.assertFalse(self.mm._needs_quote_despite_nbbo_throttle())
+
+    def test_maybe_manage_quotes_bypasses_throttle_when_long_without_working_sell(self):
+        ts = 3_000_000.0
+        self.mm.connected_flag = True
+        self.mm.shutdown_flag = False
+        self.mm.open_orders_snapshot_done = True
+        self.mm.position_qty = 200
+        self.mm.avg_cost = 48.0
+        self.mm.sell_order = None
+        self.mm.quote.bid = 50.0
+        self.mm.quote.ask = 51.0
+        self.mm.quote.bid_size = 100
+        self.mm.quote.ask_size = 100
+        self.mm.quote.last_update_ts = ts
+        self.mm.quote_refresh_seconds = 3.0
+        self.mm.last_quote_eval = ts - 0.5
+        self.mm._last_quote_nbbo_snap = (50.0, 51.0, 100, 100)
+        self.mm.next_order_id = 7001
+
+        self.mm.place_or_replace_buy = Mock()
+        self.mm.place_or_replace_sell = Mock()
+
+        with patch("market_maker.time.time", return_value=ts), patch.object(
+            self.mm, "hard_flatten_mode", return_value=False
+        ), patch.object(self.mm, "flatten_only_mode", return_value=True), patch.object(
+            self.mm, "compute_desired_quotes", return_value=(50.0, 51.0)
+        ):
+            self.mm.maybe_manage_quotes(force=False)
+
+        self.mm.place_or_replace_sell.assert_called_once()
+        sell_qty, _ = self.mm.place_or_replace_sell.call_args[0]
+        self.assertEqual(sell_qty, 200)
+
     def test_ib_cancel_order_two_arg_fallback(self):
         self.mm.cancelOrder = Mock(side_effect=[TypeError(), None])
         self.mm._ib_cancel_order(42)

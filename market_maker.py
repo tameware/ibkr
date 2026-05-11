@@ -582,7 +582,7 @@ class MarketMaker(EWrapper, EClient):
                 if incumbent is None:
                     self.sell_order = live
                     action = "adopted"
-                elif self._should_keep_order(incumbent, live):
+                elif self._should_keep_sell_adoption(incumbent, live):
                     extra_to_cancel = live
                     action = "kept-incumbent-cancel-candidate"
                 else:
@@ -867,13 +867,56 @@ class MarketMaker(EWrapper, EClient):
         sell_qty = self.max_sellable_qty()
         return buy_qty, sell_qty
 
+    def _sell_working_open_qty(self, live: LiveOrder) -> int:
+        """Working size for a sell (prefer IB ``remaining``, else last ``qty``)."""
+        if live.remaining > 0:
+            return int(live.remaining)
+        return int(live.qty)
+
+    def _needs_quote_despite_nbbo_throttle(self) -> bool:
+        """If True, run a quote cycle even when bid/ask and NBBO sizes are unchanged.
+
+        Covers: long inventory with no working sell, or a sell smaller than the position
+        (e.g. after adding to the position, or stale adoption), so we place or bump size
+        without waiting for an NBBO tick.
+        """
+        if self.position_qty <= 0:
+            return False
+        if self.sell_order is None:
+            return True
+        st = self.sell_order.status
+        if st in {"Filled", "Cancelled", "ApiCancelled", "Inactive"}:
+            return True
+        if self.sell_order.remaining <= 0 and st not in {
+            "PreSubmitted",
+            "PendingSubmit",
+            "Submitted",
+        }:
+            return True
+        return self._sell_working_open_qty(self.sell_order) < self.position_qty
+
+    def _should_keep_sell_adoption(self, incumbent: LiveOrder, candidate: LiveOrder) -> bool:
+        """During ``reqOpenOrders`` adoption: prefer the sell that covers more shares."""
+        pos = self.position_qty
+        ir = self._sell_working_open_qty(incumbent)
+        cr = self._sell_working_open_qty(candidate)
+        active_statuses = {"PreSubmitted", "PendingSubmit", "Submitted"}
+        i_act = incumbent.status in active_statuses and ir > 0
+        c_act = candidate.status in active_statuses and cr > 0
+        if pos > 0 and i_act and c_act and ir != cr:
+            return ir > cr
+        return self._should_keep_order(incumbent, candidate)
+
     def is_same_order(self, live: Optional[LiveOrder], side: str, qty: int, px: float) -> bool:
         if live is None:
             return False
         if live.side != side:
             return False
 
-        live_open_qty = live.remaining if side == "SELL" and live.remaining > 0 else live.qty
+        if side == "SELL":
+            live_open_qty = self._sell_working_open_qty(live)
+        else:
+            live_open_qty = live.qty
         if live_open_qty != qty:
             return False
 
@@ -1064,7 +1107,7 @@ class MarketMaker(EWrapper, EClient):
                     self.quote.bid_size,
                     self.quote.ask_size,
                 )
-                if snap == self._last_quote_nbbo_snap:
+                if snap == self._last_quote_nbbo_snap and not self._needs_quote_despite_nbbo_throttle():
                     return
             self.last_quote_eval = now
 
