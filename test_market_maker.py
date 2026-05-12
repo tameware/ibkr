@@ -523,9 +523,24 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertEqual(sell_qty, 200)
 
     def test_ib_cancel_order_two_arg_fallback(self):
+        self.mm.isConnected = Mock(return_value=True)
+        self.mm.serverVersion = Mock(return_value=157)
         self.mm.cancelOrder = Mock(side_effect=[TypeError(), None])
         self.mm._ib_cancel_order(42)
         self.assertEqual(self.mm.cancelOrder.call_count, 2)
+
+    def test_ib_cancel_order_skips_when_not_connected(self):
+        self.mm.isConnected = Mock(return_value=False)
+        self.mm.cancelOrder = Mock()
+        self.mm._ib_cancel_order(99)
+        self.mm.cancelOrder.assert_not_called()
+
+    def test_ib_cancel_order_skips_when_server_version_none(self):
+        self.mm.isConnected = Mock(return_value=True)
+        self.mm.serverVersion = Mock(return_value=None)
+        self.mm.cancelOrder = Mock()
+        self.mm._ib_cancel_order(99)
+        self.mm.cancelOrder.assert_not_called()
 
     def test_place_or_replace_sell_reuses_order_id_when_price_changes(self):
         """IB modifies a limit in place when placeOrder uses the same order id (no cancel/replace)."""

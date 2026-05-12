@@ -799,6 +799,11 @@ class MarketMaker(EWrapper, EClient):
         return o
 
     def _ib_cancel_order(self, order_id: int):
+        # ibapi cancelOrder/cancelMktData hit useProtoBuf() first; if serverVersion() is
+        # None (e.g. mid-disconnect), that raises TypeError — do not fall back to legacy
+        # one-arg cancelOrder (new ibapi requires OrderCancel).
+        if not self.isConnected() or self.serverVersion() is None:
+            return
         try:
             self.cancelOrder(order_id, OrderCancel())
         except TypeError:
@@ -1272,7 +1277,8 @@ class MarketMaker(EWrapper, EClient):
         self.logger.info("Shutdown requested.")
 
         try:
-            self.cancelMktData(self.market_data_req_id)
+            if self.isConnected() and self.serverVersion() is not None:
+                self.cancelMktData(self.market_data_req_id)
         except Exception as e:
             self.logger.warning("cancelMktData failed: %s", e)
 
