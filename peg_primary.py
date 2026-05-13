@@ -122,8 +122,10 @@ class Trader(EWrapper, EClient):
         self.open_price = None
         self._bars: list[Any] = []
 
-        self.buy_order_id = None
-        self.sell_order_id = None
+        self.buy_order_id: int | None = None
+        self.sell_order_id: int | None = None
+        self.buy_order_qty: int | None = None
+        self.sell_order_qty: int | None = None
 
         self.ref_price = None
         self._bid = None
@@ -234,12 +236,14 @@ class Trader(EWrapper, EClient):
                 )
                 self.pending_buy = False
                 self.buy_order_id = None
+                self.buy_order_qty = None
             if orderId == self.sell_order_id:
                 tprint(
                     f"SELL {orderId} {status} filled={filled} avgFillPrice={avgFillPrice}"
                 )
                 self.pending_sell = False
                 self.sell_order_id = None
+                self.sell_order_qty = None
             self.remaining_by_order.pop(orderId, None)
             self.filled_by_order.pop(orderId, None)
             self.trigger_resync()
@@ -319,12 +323,18 @@ class Trader(EWrapper, EClient):
 
     def openOrder(self, orderId, contract, order, orderState):
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
+            try:
+                qty = int(float(order.totalQuantity))
+            except (TypeError, ValueError):
+                qty = None
             if order.action == "BUY":
                 self.open_symbol_buys += 1
                 self.buy_order_id = orderId
+                self.buy_order_qty = qty
             elif order.action == "SELL":
                 self.open_symbol_sells += 1
                 self.sell_order_id = orderId
+                self.sell_order_qty = qty
 
     def openOrderEnd(self):
         self.open_orders_snapshot_complete = True
@@ -459,6 +469,75 @@ class Trader(EWrapper, EClient):
             self.sync_requested = False
             self.sync_orders()
 
+    def _clear_order_state(self, action: str) -> None:
+        if action == "BUY":
+            self.pending_buy = False
+            self.buy_order_id = None
+            self.buy_order_qty = None
+            self.open_symbol_buys = 0
+        else:
+            self.pending_sell = False
+            self.sell_order_id = None
+            self.sell_order_qty = None
+            self.open_symbol_sells = 0
+
+    def _maybe_resize_existing(
+        self,
+        *,
+        action: str,
+        oid: int,
+        current_total_qty: int,
+        desired_remaining: int,
+        limit_price: float,
+    ) -> bool:
+        """Reconcile an existing working order to ``desired_remaining`` shares.
+
+        IB partial fills change the position without changing the same-side
+        order's working size (its ``remaining`` already reflects the desired
+        target), but the opposite-side order's ``totalQuantity`` becomes
+        stale. When the working ``remaining`` no longer matches what we
+        want, modify the order in place via ``placeOrder`` with the same
+        ``orderId`` (IB treats this as an amendment), preserving fills.
+
+        Returns ``True`` when any side-effect (modify/cancel) was issued.
+        """
+        remaining_raw = self.remaining_by_order.get(oid)
+        if remaining_raw is None:
+            return False
+        try:
+            remaining_now = int(float(remaining_raw))
+        except (TypeError, ValueError):
+            return False
+
+        if remaining_now == desired_remaining:
+            return False
+
+        filled_now = max(0, current_total_qty - remaining_now)
+
+        if desired_remaining < self.min_order_size:
+            tprint(
+                f"Cancelling {action} id={oid} (desired remaining "
+                f"{desired_remaining} < min_order_size {self.min_order_size}; "
+                f"filled={filled_now})"
+            )
+            self.safe_cancel_order(oid)
+            self._clear_order_state(action)
+            return True
+
+        new_total = filled_now + desired_remaining
+        tprint(
+            f"Modifying {action} id={oid} totalQty {current_total_qty}->{new_total} "
+            f"(filled={filled_now} remaining {remaining_now}->{desired_remaining} "
+            f"lmtPrice={limit_price})"
+        )
+        order = self.build_rel_order(action, new_total, limit_price)
+        self.placeOrder(oid, self.contract, order)
+        if action == "BUY":
+            self.buy_order_qty = new_total
+        else:
+            self.sell_order_qty = new_total
+        return True
+
     def trigger_resync(self):
         if not self.isConnected():
             return
@@ -491,6 +570,7 @@ class Trader(EWrapper, EClient):
                 self.safe_cancel_order(self.sell_order_id)
                 self.pending_sell = False
                 self.sell_order_id = None
+                self.sell_order_qty = None
                 self.open_symbol_sells = 0
                 return
 
@@ -498,7 +578,15 @@ class Trader(EWrapper, EClient):
                 return
 
             buy_qty = max_pos
-            if (
+            if self.buy_order_id is not None and self.buy_order_qty is not None:
+                self._maybe_resize_existing(
+                    action="BUY",
+                    oid=self.buy_order_id,
+                    current_total_qty=self.buy_order_qty,
+                    desired_remaining=buy_qty,
+                    limit_price=buy_limit,
+                )
+            elif (
                 self._meets_min_order_size(buy_qty)
                 and self.open_symbol_buys == 0
                 and not self.pending_buy
@@ -506,6 +594,7 @@ class Trader(EWrapper, EClient):
                 oid = self.nextOrderId
                 self.nextOrderId += 1
                 self.buy_order_id = oid
+                self.buy_order_qty = buy_qty
                 self.pending_buy = True
                 order = self.build_rel_order("BUY", buy_qty, buy_limit)
                 off = order.auxPrice
@@ -522,6 +611,7 @@ class Trader(EWrapper, EClient):
                 self.safe_cancel_order(self.buy_order_id)
                 self.pending_buy = False
                 self.buy_order_id = None
+                self.buy_order_qty = None
                 self.open_symbol_buys = 0
                 return
 
@@ -529,7 +619,15 @@ class Trader(EWrapper, EClient):
                 return
 
             sell_qty = pos
-            if (
+            if self.sell_order_id is not None and self.sell_order_qty is not None:
+                self._maybe_resize_existing(
+                    action="SELL",
+                    oid=self.sell_order_id,
+                    current_total_qty=self.sell_order_qty,
+                    desired_remaining=sell_qty,
+                    limit_price=sell_limit,
+                )
+            elif (
                 self._meets_min_order_size(sell_qty)
                 and self.open_symbol_sells == 0
                 and not self.pending_sell
@@ -537,6 +635,7 @@ class Trader(EWrapper, EClient):
                 oid = self.nextOrderId
                 self.nextOrderId += 1
                 self.sell_order_id = oid
+                self.sell_order_qty = sell_qty
                 self.pending_sell = True
                 order = self.build_rel_order("SELL", sell_qty, sell_limit)
                 off = order.auxPrice
@@ -551,7 +650,15 @@ class Trader(EWrapper, EClient):
         buy_qty = max_pos - pos
         sell_qty = pos
 
-        if (
+        if self.buy_order_id is not None and self.buy_order_qty is not None:
+            self._maybe_resize_existing(
+                action="BUY",
+                oid=self.buy_order_id,
+                current_total_qty=self.buy_order_qty,
+                desired_remaining=buy_qty,
+                limit_price=buy_limit,
+            )
+        elif (
             self._meets_min_order_size(buy_qty)
             and self.open_symbol_buys == 0
             and not self.pending_buy
@@ -559,6 +666,7 @@ class Trader(EWrapper, EClient):
             oid = self.nextOrderId
             self.nextOrderId += 1
             self.buy_order_id = oid
+            self.buy_order_qty = buy_qty
             self.pending_buy = True
             order = self.build_rel_order("BUY", buy_qty, buy_limit)
             off = order.auxPrice
@@ -568,7 +676,15 @@ class Trader(EWrapper, EClient):
             )
             self.placeOrder(oid, self.contract, order)
 
-        if (
+        if self.sell_order_id is not None and self.sell_order_qty is not None:
+            self._maybe_resize_existing(
+                action="SELL",
+                oid=self.sell_order_id,
+                current_total_qty=self.sell_order_qty,
+                desired_remaining=sell_qty,
+                limit_price=sell_limit,
+            )
+        elif (
             self._meets_min_order_size(sell_qty)
             and self.open_symbol_sells == 0
             and not self.pending_sell
@@ -576,6 +692,7 @@ class Trader(EWrapper, EClient):
             oid = self.nextOrderId
             self.nextOrderId += 1
             self.sell_order_id = oid
+            self.sell_order_qty = sell_qty
             self.pending_sell = True
             order = self.build_rel_order("SELL", sell_qty, sell_limit)
             off = order.auxPrice

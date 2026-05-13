@@ -534,6 +534,221 @@ class TestExecutionLogging(unittest.TestCase):
                                self._execution())
         tp.assert_not_called()
 
+    def test_terminal_status_clears_order_qty(self):
+        self.t.buy_order_id = 5
+        self.t.buy_order_qty = 100
+        self._order_status(orderId=5, status="Filled", filled=100,
+                           remaining=0, avgFillPrice=50.0)
+        self.assertIsNone(self.t.buy_order_id)
+        self.assertIsNone(self.t.buy_order_qty)
+
+    def test_open_order_records_total_quantity(self):
+        contract = MockContract()
+        contract.symbol = "TEST"
+        contract.secType = "STK"
+        order = MockOrder()
+        order.action = "BUY"
+        order.totalQuantity = 75
+        self.t.openOrder(123, contract, order, None)
+        self.assertEqual(self.t.buy_order_id, 123)
+        self.assertEqual(self.t.buy_order_qty, 75)
+
+        sell_order = MockOrder()
+        sell_order.action = "SELL"
+        sell_order.totalQuantity = 40
+        self.t.openOrder(124, contract, sell_order, None)
+        self.assertEqual(self.t.sell_order_id, 124)
+        self.assertEqual(self.t.sell_order_qty, 40)
+
+
+class TestResizeOppositeAfterPartialFill(unittest.TestCase):
+    """After a partial fill the opposite-side order's totalQuantity is stale.
+    sync_orders should modify it in place (placeOrder with the same orderId)
+    so the working remaining matches the new desired size."""
+
+    def setUp(self):
+        self.cfg = _minimal_config()
+        self.t = Trader(self.cfg)
+        self.t.ready_for_trading = True
+        self.t.ref_price = 50.0
+        self.t.nextOrderId = 500
+        self.t.placeOrder = Mock()
+        self.t.safe_cancel_order = Mock()
+
+    def test_partial_buy_fill_grows_existing_sell(self):
+        """Position was 20 with SELL sized 20. BUY partially filled to 50.
+        SELL should be amended to total 50 (filled 0 + desired 50)."""
+        self.cfg["max_pos"] = 100
+        self.t.position_size = 50
+        self.t.buy_order_id = 10
+        self.t.buy_order_qty = 80
+        self.t.remaining_by_order[10] = 50
+        self.t.sell_order_id = 11
+        self.t.sell_order_qty = 20
+        self.t.remaining_by_order[11] = 20
+        self.t.open_symbol_buys = 1
+        self.t.open_symbol_sells = 1
+
+        self.t.sync_orders()
+
+        self.t.placeOrder.assert_called_once()
+        oid, _, order = self.t.placeOrder.call_args[0]
+        self.assertEqual(oid, 11)
+        self.assertEqual(order.action, "SELL")
+        self.assertEqual(order.totalQuantity, 50)
+        self.assertEqual(order.lmtPrice, 50.05)
+        self.assertEqual(self.t.sell_order_qty, 50)
+
+    def test_partial_sell_fill_grows_existing_buy(self):
+        """Position dropped from 30 to 10 (SELL partial fill of 20). The
+        existing BUY's remaining (70) is now smaller than desired (90).
+        BUY should be amended to total 90 (filled 0 + desired 90)."""
+        self.cfg["max_pos"] = 100
+        self.t.position_size = 10
+        self.t.buy_order_id = 20
+        self.t.buy_order_qty = 70
+        self.t.remaining_by_order[20] = 70
+        self.t.sell_order_id = 21
+        self.t.sell_order_qty = 30
+        self.t.remaining_by_order[21] = 10
+        self.t.open_symbol_buys = 1
+        self.t.open_symbol_sells = 1
+
+        self.t.sync_orders()
+
+        self.t.placeOrder.assert_called_once()
+        oid, _, order = self.t.placeOrder.call_args[0]
+        self.assertEqual(oid, 20)
+        self.assertEqual(order.action, "BUY")
+        self.assertEqual(order.totalQuantity, 90)
+        self.assertEqual(order.lmtPrice, 49.95)
+        self.assertEqual(self.t.buy_order_qty, 90)
+
+    def test_no_resize_when_remaining_matches_desired(self):
+        """When the working size already matches desired (e.g., a same-side
+        partial fill where remaining naturally equals max_pos - pos),
+        sync_orders should not modify or cancel."""
+        self.cfg["max_pos"] = 100
+        self.t.position_size = 30
+        self.t.buy_order_id = 30
+        self.t.buy_order_qty = 100
+        self.t.remaining_by_order[30] = 70
+        self.t.sell_order_id = 31
+        self.t.sell_order_qty = 30
+        self.t.remaining_by_order[31] = 30
+        self.t.open_symbol_buys = 1
+        self.t.open_symbol_sells = 1
+
+        self.t.sync_orders()
+
+        self.t.placeOrder.assert_not_called()
+        self.t.safe_cancel_order.assert_not_called()
+
+    def test_resize_below_min_order_size_cancels(self):
+        """Shrink to below min_order_size cancels the order."""
+        self.cfg["max_pos"] = 96
+        self.cfg["min_order_size"] = 10
+        self.t.min_order_size = 10
+        self.t.position_size = 95
+        self.t.buy_order_id = 40
+        self.t.buy_order_qty = 100
+        self.t.remaining_by_order[40] = 5
+        self.t.sell_order_id = 41
+        self.t.sell_order_qty = 95
+        self.t.remaining_by_order[41] = 95
+        self.t.open_symbol_buys = 1
+        self.t.open_symbol_sells = 1
+
+        self.t.sync_orders()
+
+        self.t.safe_cancel_order.assert_called_once_with(40)
+        self.t.placeOrder.assert_not_called()
+        self.assertIsNone(self.t.buy_order_id)
+        self.assertIsNone(self.t.buy_order_qty)
+        self.assertEqual(self.t.open_symbol_buys, 0)
+
+    def test_flat_branch_resizes_existing_buy_back_to_max_pos(self):
+        """Transition to flat (SELL fully filled). An existing BUY left over
+        from partial state should be amended up to the flat target."""
+        self.cfg["max_pos"] = 100
+        self.t.position_size = 0
+        self.t.buy_order_id = 50
+        self.t.buy_order_qty = 70
+        self.t.remaining_by_order[50] = 40
+        self.t.sell_order_id = None
+        self.t.sell_order_qty = None
+        self.t.open_symbol_buys = 1
+        self.t.open_symbol_sells = 0
+
+        self.t.sync_orders()
+
+        self.t.placeOrder.assert_called_once()
+        oid, _, order = self.t.placeOrder.call_args[0]
+        self.assertEqual(oid, 50)
+        self.assertEqual(order.action, "BUY")
+        # filled = 70 - 40 = 30; new_total = 30 + 100 = 130
+        self.assertEqual(order.totalQuantity, 130)
+        self.assertEqual(self.t.buy_order_qty, 130)
+
+    def test_at_max_branch_resizes_existing_sell_up_to_pos(self):
+        """Transition to at-max (BUY fully filled). An existing SELL left over
+        from partial state should be amended up to the at-max target."""
+        self.cfg["max_pos"] = 100
+        self.t.position_size = 100
+        self.t.buy_order_id = None
+        self.t.buy_order_qty = None
+        self.t.sell_order_id = 60
+        self.t.sell_order_qty = 80
+        self.t.remaining_by_order[60] = 80
+        self.t.open_symbol_buys = 0
+        self.t.open_symbol_sells = 1
+
+        self.t.sync_orders()
+
+        self.t.placeOrder.assert_called_once()
+        oid, _, order = self.t.placeOrder.call_args[0]
+        self.assertEqual(oid, 60)
+        self.assertEqual(order.action, "SELL")
+        self.assertEqual(order.totalQuantity, 100)
+        self.assertEqual(self.t.sell_order_qty, 100)
+
+    def test_resize_modifies_via_same_order_id(self):
+        """Critical: modification uses the same orderId so IB amends rather
+        than placing a second order."""
+        self.cfg["max_pos"] = 100
+        self.t.position_size = 50
+        self.t.buy_order_id = 70
+        self.t.buy_order_qty = 80
+        self.t.remaining_by_order[70] = 50
+        self.t.sell_order_id = 71
+        self.t.sell_order_qty = 20
+        self.t.remaining_by_order[71] = 20
+        self.t.open_symbol_buys = 1
+        self.t.open_symbol_sells = 1
+        initial_next_id = self.t.nextOrderId
+
+        self.t.sync_orders()
+
+        oid, _, _ = self.t.placeOrder.call_args[0]
+        self.assertEqual(oid, 71)
+        self.assertEqual(self.t.nextOrderId, initial_next_id)
+
+    def test_resize_skipped_when_remaining_not_yet_known(self):
+        """Before any orderStatus has arrived for an order (no entry in
+        remaining_by_order), don't try to resize."""
+        self.cfg["max_pos"] = 100
+        self.t.position_size = 50
+        self.t.sell_order_id = 80
+        self.t.sell_order_qty = 20
+        self.t.open_symbol_buys = 0
+        self.t.open_symbol_sells = 1
+
+        self.t.sync_orders()
+
+        sell_calls = [c for c in self.t.placeOrder.call_args_list
+                      if c[0][0] == 80]
+        self.assertEqual(sell_calls, [])
+
 
 class TestBuildArgParser(unittest.TestCase):
     def test_defaults(self):
