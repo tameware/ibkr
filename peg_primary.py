@@ -130,6 +130,7 @@ class Trader(EWrapper, EClient):
         self._ask = None
 
         self.remaining_by_order: Dict[int, Any] = {}
+        self.filled_by_order: Dict[int, float] = {}
         self.open_symbol_buys = 0
         self.open_symbol_sells = 0
         self.pending_buy = False
@@ -192,29 +193,72 @@ class Trader(EWrapper, EClient):
     ):
         self.remaining_by_order[orderId] = remaining
 
+        try:
+            filled_f = float(filled)
+        except (TypeError, ValueError):
+            filled_f = 0.0
+        try:
+            remaining_f = float(remaining)
+        except (TypeError, ValueError):
+            remaining_f = 0.0
+
+        prev_filled = self.filled_by_order.get(orderId, 0.0)
+
         if status in ("Submitted", "PreSubmitted", "ApiPending", "PendingSubmit"):
             if orderId == self.buy_order_id:
                 self.pending_buy = False
             if orderId == self.sell_order_id:
                 self.pending_sell = False
 
+            # IB reports partial fills via Submitted with cumulative filled increasing
+            # and remaining > 0. Log only the delta vs. last seen filled.
+            if filled_f > prev_filled and remaining_f > 0:
+                side = (
+                    "BUY"
+                    if orderId == self.buy_order_id
+                    else "SELL"
+                    if orderId == self.sell_order_id
+                    else "ORDER"
+                )
+                tprint(
+                    f"{side} {orderId} partial fill: filled={filled} remaining={remaining} "
+                    f"avgFillPrice={avgFillPrice} lastFillPrice={lastFillPrice}"
+                )
+                self.filled_by_order[orderId] = filled_f
+                self.trigger_resync()
+
         if status in ("Filled", "Cancelled", "Inactive", "ApiCancelled"):
             if orderId == self.buy_order_id:
-                tprint(f"BUY {orderId} {status} @ {avgFillPrice}")
+                tprint(
+                    f"BUY {orderId} {status} filled={filled} avgFillPrice={avgFillPrice}"
+                )
                 self.pending_buy = False
                 self.buy_order_id = None
             if orderId == self.sell_order_id:
-                tprint(f"SELL {orderId} {status} @ {avgFillPrice}")
+                tprint(
+                    f"SELL {orderId} {status} filled={filled} avgFillPrice={avgFillPrice}"
+                )
                 self.pending_sell = False
                 self.sell_order_id = None
             self.remaining_by_order.pop(orderId, None)
+            self.filled_by_order.pop(orderId, None)
             self.trigger_resync()
-        elif status == "PartiallyFilled":
-            tprint(
-                f"Order {orderId} partially filled: filled={filled} remaining={remaining} "
-                f"avgFillPrice={avgFillPrice}"
-            )
-            self.trigger_resync()
+
+    def execDetails(self, reqId, contract, execution):
+        if (
+            contract.symbol != self.config["symbol"]
+            or contract.secType != self.config["sec_type"]
+        ):
+            return
+
+        raw_side = getattr(execution, "side", "")
+        side = "BUY" if raw_side == "BOT" else "SELL" if raw_side == "SLD" else raw_side
+        tprint(
+            f"Execution {side} orderId={execution.orderId} execId={execution.execId} "
+            f"shares={execution.shares} price={execution.price} "
+            f"exchange={execution.exchange} cumQty={execution.cumQty} "
+            f"avgPrice={execution.avgPrice} time={execution.time}"
+        )
 
     def tickByTickAllLast(
         self,

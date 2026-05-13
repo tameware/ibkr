@@ -395,6 +395,146 @@ class TestTrader(unittest.TestCase):
         tp.assert_called_once()
 
 
+class TestExecutionLogging(unittest.TestCase):
+    def setUp(self):
+        self.cfg = _minimal_config()
+        self.t = Trader(self.cfg)
+        self.t.trigger_resync = Mock()
+
+    def _order_status(self, *, orderId, status, filled, remaining,
+                      avgFillPrice=0.0, lastFillPrice=0.0):
+        self.t.orderStatus(
+            orderId, status, filled, remaining, avgFillPrice,
+            0, 0, lastFillPrice, 0, "", 0.0,
+        )
+
+    def test_order_status_logs_filled_terminal(self):
+        self.t.buy_order_id = 42
+        with patch("peg_primary.tprint") as tp:
+            self._order_status(orderId=42, status="Filled", filled=100,
+                               remaining=0, avgFillPrice=49.95)
+        msgs = [c.args[0] for c in tp.call_args_list]
+        self.assertTrue(any("BUY 42 Filled" in m and "filled=100" in m
+                            and "avgFillPrice=49.95" in m for m in msgs))
+        self.assertIsNone(self.t.buy_order_id)
+        self.t.trigger_resync.assert_called()
+
+    def test_order_status_logs_cancelled_terminal(self):
+        self.t.sell_order_id = 7
+        with patch("peg_primary.tprint") as tp:
+            self._order_status(orderId=7, status="Cancelled", filled=0,
+                               remaining=0)
+        msgs = [c.args[0] for c in tp.call_args_list]
+        self.assertTrue(any("SELL 7 Cancelled" in m for m in msgs))
+        self.assertIsNone(self.t.sell_order_id)
+
+    def test_order_status_partial_fill_via_submitted(self):
+        """IB sends partial fills as Submitted with cumulative filled > 0
+        and remaining > 0. The script should log a partial-fill line."""
+        self.t.buy_order_id = 99
+        with patch("peg_primary.tprint") as tp:
+            self._order_status(orderId=99, status="Submitted", filled=10,
+                               remaining=90, avgFillPrice=50.0,
+                               lastFillPrice=50.0)
+        msgs = [c.args[0] for c in tp.call_args_list]
+        self.assertTrue(any("BUY 99 partial fill" in m and "filled=10" in m
+                            and "remaining=90" in m for m in msgs))
+        self.assertEqual(self.t.filled_by_order[99], 10.0)
+        self.t.trigger_resync.assert_called()
+
+    def test_order_status_partial_fill_logged_only_on_delta(self):
+        """Repeated Submitted callbacks with the same cumulative filled
+        should not relog the partial fill."""
+        self.t.buy_order_id = 99
+        with patch("peg_primary.tprint") as tp:
+            self._order_status(orderId=99, status="Submitted", filled=10,
+                               remaining=90, avgFillPrice=50.0)
+            self._order_status(orderId=99, status="Submitted", filled=10,
+                               remaining=90, avgFillPrice=50.0)
+        partial_msgs = [c.args[0] for c in tp.call_args_list
+                        if "partial fill" in c.args[0]]
+        self.assertEqual(len(partial_msgs), 1)
+
+        with patch("peg_primary.tprint") as tp2:
+            self._order_status(orderId=99, status="Submitted", filled=25,
+                               remaining=75, avgFillPrice=50.1)
+        partial_msgs = [c.args[0] for c in tp2.call_args_list
+                        if "partial fill" in c.args[0]]
+        self.assertEqual(len(partial_msgs), 1)
+        self.assertIn("filled=25", partial_msgs[0])
+
+    def test_order_status_no_partial_log_when_filled_zero(self):
+        self.t.buy_order_id = 99
+        with patch("peg_primary.tprint") as tp:
+            self._order_status(orderId=99, status="Submitted", filled=0,
+                               remaining=100)
+        self.assertFalse(any("partial fill" in c.args[0]
+                             for c in tp.call_args_list))
+
+    def test_order_status_clears_filled_tracking_on_terminal(self):
+        self.t.buy_order_id = 99
+        self._order_status(orderId=99, status="Submitted", filled=10,
+                           remaining=90)
+        self.assertIn(99, self.t.filled_by_order)
+        self._order_status(orderId=99, status="Filled", filled=100,
+                           remaining=0, avgFillPrice=50.0)
+        self.assertNotIn(99, self.t.filled_by_order)
+
+    def _execution(self, **kwargs):
+        e = MagicMock()
+        defaults = {
+            "orderId": 1, "execId": "ex-1", "side": "BOT", "shares": 25,
+            "price": 49.97, "exchange": "ARCA", "cumQty": 25,
+            "avgPrice": 49.97, "time": "20260513 17:00:00",
+        }
+        defaults.update(kwargs)
+        for k, v in defaults.items():
+            setattr(e, k, v)
+        return e
+
+    def _contract(self, symbol="TEST", sec_type="STK"):
+        c = MockContract()
+        c.symbol = symbol
+        c.secType = sec_type
+        return c
+
+    def test_exec_details_logs_buy(self):
+        with patch("peg_primary.tprint") as tp:
+            self.t.execDetails(0, self._contract(),
+                               self._execution(side="BOT", orderId=42,
+                                               execId="x-42-1", shares=25,
+                                               price=49.97, exchange="ARCA",
+                                               cumQty=25, avgPrice=49.97))
+        msgs = [c.args[0] for c in tp.call_args_list]
+        self.assertEqual(len(msgs), 1)
+        m = msgs[0]
+        self.assertIn("Execution BUY", m)
+        self.assertIn("orderId=42", m)
+        self.assertIn("execId=x-42-1", m)
+        self.assertIn("shares=25", m)
+        self.assertIn("price=49.97", m)
+        self.assertIn("exchange=ARCA", m)
+        self.assertIn("cumQty=25", m)
+
+    def test_exec_details_logs_sell(self):
+        with patch("peg_primary.tprint") as tp:
+            self.t.execDetails(0, self._contract(),
+                               self._execution(side="SLD"))
+        self.assertIn("Execution SELL", tp.call_args_list[0].args[0])
+
+    def test_exec_details_filters_other_symbols(self):
+        with patch("peg_primary.tprint") as tp:
+            self.t.execDetails(0, self._contract(symbol="OTHER"),
+                               self._execution())
+        tp.assert_not_called()
+
+    def test_exec_details_filters_other_sec_types(self):
+        with patch("peg_primary.tprint") as tp:
+            self.t.execDetails(0, self._contract(sec_type="OPT"),
+                               self._execution())
+        tp.assert_not_called()
+
+
 class TestBuildArgParser(unittest.TestCase):
     def test_defaults(self):
         p = build_arg_parser()
