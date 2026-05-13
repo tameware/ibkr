@@ -175,7 +175,7 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(o.auxPrice, 0.012)
         self.assertEqual(o.exchange, "SMART")
         self.assertEqual(o.tif, "DAY")
-        self.assertTrue(o.notHeld)
+        self.assertFalse(getattr(o, "notHeld", False))
 
 
 class TestAdjustedRelLimits(unittest.TestCase):
@@ -252,6 +252,64 @@ class TestTrader(unittest.TestCase):
         self.assertEqual(sell_order.totalQuantity, 75)
         self.assertEqual(sell_order.lmtPrice, 50.05)
         self.assertEqual(self.t.nextOrderId, 202)
+
+    def test_default_min_order_size_is_ten(self):
+        cfg = _minimal_config()
+        cfg.pop("min_order_size", None)
+        t = Trader(cfg)
+        self.assertEqual(t.min_order_size, 10)
+
+    def test_sync_orders_partial_skips_buy_below_min_order_size(self):
+        self.cfg["max_pos"] = 105
+        self.cfg["min_order_size"] = 10
+        self.t.ready_for_trading = True
+        self.t.ref_price = 50.0
+        self.t.nextOrderId = 200
+        self.t.position_size = 100
+        self.t.open_symbol_buys = 0
+        self.t.open_symbol_sells = 0
+        self.t.pending_buy = False
+        self.t.pending_sell = False
+        self.t.placeOrder = Mock()
+        self.t.sync_orders()
+        self.t.placeOrder.assert_called_once()
+        _, _, order = self.t.placeOrder.call_args[0]
+        self.assertEqual(order.action, "SELL")
+        self.assertEqual(order.totalQuantity, 100)
+
+    def test_sync_orders_partial_skips_sell_below_min_order_size(self):
+        self.cfg["max_pos"] = 115
+        self.cfg["min_order_size"] = 10
+        self.t.ready_for_trading = True
+        self.t.ref_price = 50.0
+        self.t.nextOrderId = 200
+        self.t.position_size = 8
+        self.t.open_symbol_buys = 0
+        self.t.open_symbol_sells = 0
+        self.t.pending_buy = False
+        self.t.pending_sell = False
+        self.t.placeOrder = Mock()
+        self.t.sync_orders()
+        self.t.placeOrder.assert_called_once()
+        _, _, order = self.t.placeOrder.call_args[0]
+        self.assertEqual(order.action, "BUY")
+        self.assertEqual(order.totalQuantity, 107)
+
+    def test_sync_orders_flat_skips_buy_below_min_order_size(self):
+        self.cfg["max_pos"] = 5
+        self.cfg["min_order_size"] = 10
+        self.t.ready_for_trading = True
+        self.t.ref_price = 50.0
+        self.t.nextOrderId = 100
+        self.t.position_size = 0
+        self.t.open_symbol_buys = 0
+        self.t.open_symbol_sells = 0
+        self.t.pending_buy = False
+        self.t.pending_sell = False
+        self.t.placeOrder = Mock()
+        self.t.sync_orders()
+        self.t.placeOrder.assert_not_called()
+        self.assertEqual(self.t.nextOrderId, 100)
 
     def test_sync_orders_at_max_places_sell_only(self):
         self.cfg["max_pos"] = 100

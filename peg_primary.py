@@ -7,7 +7,8 @@ when flat or capped; both sides may rest when partially filled.
 
 Protective REL ``lmtPrice`` values are derived from ``ref_price`` and deltas,
 then adjusted so ``sell_limit - buy_limit >= min_spread`` (same idea as
-``min_quote_spread_cents`` / working width in ``market_maker.py``).
+``min_quote_spread_cents`` / working width in ``market_maker.py``). Orders are
+not submitted when computed quantity is below ``min_order_size`` (default 10).
 
 The TWS API exposes Pegged-to-Primary as ``orderType = "REL"`` with ``lmtPrice``
 as the protective cap (buy ceiling / sell floor) and ``auxPrice`` as the offset
@@ -96,7 +97,8 @@ def make_rel_order(
     o.auxPrice = round(offset, aux_round_digits)
     o.exchange = exchange
     o.tif = tif
-    o.notHeld = True
+    # Do not set ``notHeld`` on REL: IB rejects with 10297 "Not Held attribute is
+    # invalid for this order" for many SMART / Pegged-to-Primary routes.
     return o
 
 
@@ -137,6 +139,8 @@ class Trader(EWrapper, EClient):
         self.sync_requested = False
         self.last_resync_request_ts = 0.0
         self.resync_debounce_seconds = float(self.config.get("resync_debounce_seconds", 0.35))
+        _mos = int(self.config.get("min_order_size", 10))
+        self.min_order_size = max(1, _mos)
 
     def make_us_stock(
         self, symbol: str, sec_type: str, currency: str, exchange: str, primary_exchange: str
@@ -167,6 +171,10 @@ class Trader(EWrapper, EClient):
             price_round_digits=int(self.config["price_round_digits"]),
             aux_round_digits=int(self.config.get("aux_round_digits", self.config["price_round_digits"])),
         )
+
+    def _meets_min_order_size(self, qty: int) -> bool:
+        """Do not submit REL orders smaller than ``min_order_size`` (default 10)."""
+        return qty >= self.min_order_size
 
     def orderStatus(
         self,
@@ -446,7 +454,11 @@ class Trader(EWrapper, EClient):
                 return
 
             buy_qty = max_pos
-            if buy_qty > 0 and self.open_symbol_buys == 0 and not self.pending_buy:
+            if (
+                self._meets_min_order_size(buy_qty)
+                and self.open_symbol_buys == 0
+                and not self.pending_buy
+            ):
                 oid = self.nextOrderId
                 self.nextOrderId += 1
                 self.buy_order_id = oid
@@ -473,7 +485,11 @@ class Trader(EWrapper, EClient):
                 return
 
             sell_qty = pos
-            if sell_qty > 0 and self.open_symbol_sells == 0 and not self.pending_sell:
+            if (
+                self._meets_min_order_size(sell_qty)
+                and self.open_symbol_sells == 0
+                and not self.pending_sell
+            ):
                 oid = self.nextOrderId
                 self.nextOrderId += 1
                 self.sell_order_id = oid
@@ -491,7 +507,11 @@ class Trader(EWrapper, EClient):
         buy_qty = max_pos - pos
         sell_qty = pos
 
-        if buy_qty > 0 and self.open_symbol_buys == 0 and not self.pending_buy:
+        if (
+            self._meets_min_order_size(buy_qty)
+            and self.open_symbol_buys == 0
+            and not self.pending_buy
+        ):
             oid = self.nextOrderId
             self.nextOrderId += 1
             self.buy_order_id = oid
@@ -504,7 +524,11 @@ class Trader(EWrapper, EClient):
             )
             self.placeOrder(oid, self.contract, order)
 
-        if sell_qty > 0 and self.open_symbol_sells == 0 and not self.pending_sell:
+        if (
+            self._meets_min_order_size(sell_qty)
+            and self.open_symbol_sells == 0
+            and not self.pending_sell
+        ):
             oid = self.nextOrderId
             self.nextOrderId += 1
             self.sell_order_id = oid
@@ -553,6 +577,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--buy_delta", type=float)
     parser.add_argument("--sell_delta", type=float)
     parser.add_argument("--min_spread", type=float)
+    parser.add_argument("--min_order_size", type=int)
     parser.add_argument("--rel_offset", type=float)
     parser.add_argument("--rel_offset_buy", type=float)
     parser.add_argument("--rel_offset_sell", type=float)
