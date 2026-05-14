@@ -6,11 +6,11 @@ above ``max_pos``: sell-only for the full position. Mutually exclusive buy/sell
 when flat or capped; both sides may rest when partially filled.
 
 Protective REL ``lmtPrice`` values use the NBBO **mid** only (``(bid+ask)/2``
-rounded like ``ref_price`` in :meth:`tickPrice`): buy ceiling ``mid -
-mid_delta`` and sell floor ``mid + mid_delta`` (``mid_delta`` defaults to
-``0.02``), each rounded with ``price_round_digits``. After rounding, limits are
-nudged if needed so the buy cap stays strictly below mid and the sell floor
-strictly above mid on the price grid.
+rounded like ``ref_price`` in :meth:`tickPrice`): buy ceiling ``mid - d`` and
+sell floor ``mid + d`` where ``d = max(mid_delta, one_tick)``. ``mid_delta``
+defaults to ``0.02``; raising ``d`` to at least one price tick
+(``10 ** -price_round_digits``) keeps the rounded buy cap strictly below mid
+and the sell floor strictly above mid.
 
 REL ``auxPrice`` is ``(ask - bid) * offset_pct`` (``offset_pct`` clamped below
 ``0.5``), rounded with ``price_round_digits``.
@@ -459,36 +459,18 @@ class Trader(EWrapper, EClient):
     def adjusted_rel_limits(self) -> tuple[float, float]:
         """REL buy/sell ``lmtPrice`` from NBBO mid and ``mid_delta``.
 
-        ``buy_limit = mid - mid_delta``, ``sell_limit = mid + mid_delta`` with
-        ``mid = round((bid+ask)/2, price_round_digits)``. Caller must ensure
-        :meth:`_has_valid_nbbo` is true.
-
-        After rounding, limits are nudged so the buy cap stays strictly below
-        ``mid`` and the sell floor strictly above ``mid`` when rounding would
-        otherwise violate that; then ``sell_limit > buy_limit`` is enforced.
+        ``buy_limit = round(mid - d, digits)``, ``sell_limit = round(mid + d, digits)``
+        with ``mid = round((bid+ask)/2, digits)`` and ``d = max(mid_delta, tick)``
+        so the buy cap stays strictly below ``mid`` and the sell floor strictly
+        above ``mid``. Caller must ensure :meth:`_has_valid_nbbo` is true.
         """
         assert self._has_valid_nbbo()
         digits = int(self.config["price_round_digits"])
         step = 10.0 ** (-digits)
-        mid_delta = float(self.config.get("mid_delta", 0.02))
+        mid_delta = max(float(self.config.get("mid_delta", 0.02)), step)
         mid = round((float(self._bid) + float(self._ask)) / 2.0, digits)
         buy_limit = round(mid - mid_delta, digits)
         sell_limit = round(mid + mid_delta, digits)
-
-        max_buy = round(mid - step, digits)
-        min_sell = round(mid + step, digits)
-        if buy_limit >= mid:
-            buy_limit = max_buy
-        if sell_limit <= mid:
-            sell_limit = min_sell
-
-        if sell_limit <= buy_limit:
-            sell_limit = round(buy_limit + step, digits)
-            if sell_limit <= mid:
-                sell_limit = min_sell
-            if sell_limit <= buy_limit:
-                buy_limit = round(min(max_buy, sell_limit - step), digits)
-
         return buy_limit, sell_limit
 
     def request_positions_snapshot(self):
@@ -855,7 +837,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mid_delta",
         type=float,
-        help="Half-width around NBBO mid for REL caps: buy at mid-delta, sell at mid+delta (default 0.02)",
+        help="Half-width around NBBO mid for REL caps (default 0.02; raised to >= one price tick)",
     )
     parser.add_argument(
         "--offset_pct",

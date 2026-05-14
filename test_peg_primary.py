@@ -210,6 +210,19 @@ class TestAdjustedRelLimits(unittest.TestCase):
         self.assertEqual(buy_l, 49.98)
         self.assertEqual(sell_l, 50.02)
 
+    def test_mid_delta_clamped_to_at_least_one_tick(self):
+        """Configured mid_delta below one tick is treated as one tick."""
+        cfg = _minimal_config(mid_delta=0.001, price_round_digits=2)
+        t = Trader(cfg)
+        t._bid = 49.90
+        t._ask = 50.10
+        buy_l, sell_l = t.adjusted_rel_limits()
+        mid = 50.0
+        self.assertEqual(buy_l, 49.99)
+        self.assertEqual(sell_l, 50.01)
+        self.assertLess(buy_l, mid)
+        self.assertGreater(sell_l, mid)
+
     def test_limits_strictly_split_across_nbbo_mid(self):
         """Buy cap < mid and sell floor > mid on the price grid."""
         cfg = _minimal_config(mid_delta=0.02, price_round_digits=2)
