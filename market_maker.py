@@ -848,6 +848,19 @@ class MarketMaker(EWrapper, EClient):
 
         return None
 
+    def _abort_quotes_if_market_invalid(self) -> bool:
+        """If the book is not quotable, optionally cancel and log; return True to skip the rest."""
+        reason = self.market_invalid_reason()
+        if reason is None:
+            return False
+        if self.cancel_on_invalid_market:
+            self.place_or_replace_buy(0, None)
+            if self.position_qty <= 0:
+                self.place_or_replace_sell(0, None)
+        if self.log_invalid_market_reasons:
+            self.logger.info("Not quoting: %s", reason)
+        return True
+
     def market_is_valid(self) -> bool:
         return self.market_invalid_reason() is None
 
@@ -1094,14 +1107,7 @@ class MarketMaker(EWrapper, EClient):
                 )
                 return
 
-            reason = self.market_invalid_reason()
-            if reason is not None:
-                if self.cancel_on_invalid_market:
-                    self.place_or_replace_buy(0, None)
-                    if self.position_qty <= 0:
-                        self.place_or_replace_sell(0, None)
-                if self.log_invalid_market_reasons:
-                    self.logger.info("Not quoting: %s", reason)
+            if self._abort_quotes_if_market_invalid():
                 return
 
             if not force and (now - self.last_quote_eval) < self.quote_refresh_seconds:
@@ -1114,16 +1120,6 @@ class MarketMaker(EWrapper, EClient):
                 if snap == self._last_quote_nbbo_snap and not self._needs_quote_despite_nbbo_throttle():
                     return
             self.last_quote_eval = now
-
-            reason = self.market_invalid_reason()
-            if reason is not None:
-                if self.cancel_on_invalid_market:
-                    self.place_or_replace_buy(0, None)
-                    if self.position_qty <= 0:
-                        self.place_or_replace_sell(0, None)
-                if self.log_invalid_market_reasons:
-                    self.logger.info("Not quoting: %s", reason)
-                return
 
             if self.hard_flatten_mode():
                 self.force_flatten()
