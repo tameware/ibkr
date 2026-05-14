@@ -16,7 +16,7 @@
   "market_close_hour": 16,
   "price_round_digits": 2,
   "aux_round_digits": 4,
-  "last_trade_min_size": 100.0,
+  "last_trade_min_size": 10.0,
   "tif": "DAY",
   "ignored_error_codes": [2103, 2104, 2106, 2108, 2158],
   "ignore_error_substrings": ["data farm connection is broken"],
