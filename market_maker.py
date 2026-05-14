@@ -13,7 +13,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple
 
 from ibapi.client import EClient
 from ibapi.common import OrderId, TickerId
@@ -988,67 +988,58 @@ class MarketMaker(EWrapper, EClient):
         except Exception as e:
             self.logger.exception("Cancel failed for order id=%s side=%s: %s", oid, side, e)
 
-    def place_or_replace_buy(self, qty: int, px: Optional[float]):
+    def _place_or_replace_lmt(
+        self, side: Literal["BUY", "SELL"], qty: int, px: Optional[float]
+    ) -> None:
+        if side == "BUY":
+            prior = self.buy_order
+        else:
+            prior = self.sell_order
+            qty = min(qty, self.max_sellable_qty())
+
         if qty <= 0 or px is None:
-            if self.buy_order:
-                self.cancel_live_order(self.buy_order)
+            if prior:
+                self.cancel_live_order(prior)
             return
 
-        if not self.can_open_new_long():
-            if self.buy_order:
-                self.cancel_live_order(self.buy_order)
+        if side == "BUY":
+            if not self.can_open_new_long():
+                if self.buy_order:
+                    self.cancel_live_order(self.buy_order)
+                return
+            if self.sell_order and px >= self.sell_order.price:
+                px = self.round_down_cent(self.sell_order.price - 0.01)
+        elif self.buy_order and px <= self.buy_order.price:
+            px = self.round_up_cent(self.buy_order.price + 0.01)
+
+        if px <= 0 or qty <= 0:
+            if prior:
+                self.cancel_live_order(prior)
             return
 
-        if self.sell_order and px >= self.sell_order.price:
-            px = self.round_down_cent(self.sell_order.price - 0.01)
-
-        if px <= 0:
-            if self.buy_order:
-                self.cancel_live_order(self.buy_order)
+        if self.is_same_order(prior, side, qty, px):
             return
 
-        if self.is_same_order(self.buy_order, "BUY", qty, px):
-            return
-
-        oid = self.buy_order.order_id if self.buy_order else self.next_id()
-        order = self.build_lmt_order("BUY", qty, px)
+        oid = prior.order_id if prior is not None else self.next_id()
+        order = self.build_lmt_order(side, qty, px)
         self.placeOrder(oid, self.contract, order)
-        self.buy_order = LiveOrder(order_id=oid, side="BUY", price=px, qty=qty)
-        self.logger.info("BUY working id=%s qty=%s px=%.2f", oid, qty, px)
+        if side == "BUY":
+            self.buy_order = LiveOrder(order_id=oid, side="BUY", price=px, qty=qty)
+        else:
+            self.sell_order = LiveOrder(
+                order_id=oid,
+                side="SELL",
+                price=px,
+                qty=qty,
+                remaining=qty,
+            )
+        self.logger.info("%s working id=%s qty=%s px=%.2f", side, oid, qty, px)
+
+    def place_or_replace_buy(self, qty: int, px: Optional[float]):
+        self._place_or_replace_lmt("BUY", qty, px)
 
     def place_or_replace_sell(self, qty: int, px: Optional[float]):
-        qty = min(qty, self.max_sellable_qty())
-    
-        if qty <= 0 or px is None:
-            if self.sell_order:
-                self.cancel_live_order(self.sell_order)
-            return
-    
-        if self.buy_order and px <= self.buy_order.price:
-            px = self.round_up_cent(self.buy_order.price + 0.01)
-    
-        if px <= 0 or qty <= 0:
-            if self.sell_order:
-                self.cancel_live_order(self.sell_order)
-            return
-    
-        prior = self.sell_order
-
-        if self.is_same_order(prior, "SELL", qty, px):
-            return
-
-        # Reuse working order id (IB modify-in-place), same pattern as ``place_or_replace_buy``.
-        oid = prior.order_id if prior is not None else self.next_id()
-        order = self.build_lmt_order("SELL", qty, px)
-        self.placeOrder(oid, self.contract, order)
-        self.sell_order = LiveOrder(
-            order_id=oid,
-            side="SELL",
-            price=px,
-            qty=qty,
-            remaining=qty,
-        )
-        self.logger.info("SELL working id=%s qty=%s px=%.2f", oid, qty, px)
+        self._place_or_replace_lmt("SELL", qty, px)
 
     def maybe_manage_quotes(self, force=False):
         now = time.time()
