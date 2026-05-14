@@ -19,8 +19,8 @@
   "tif": "DAY",
   "ignored_error_codes": [2103, 2104, 2106, 2108, 2158],
   "ignore_error_substrings": ["data farm connection is broken"],
-  "offset_pct": 0.25,
-  "_comment": "Any offset_pct above 0.25 should have no effect",
+  "offset_pct": 0.5,
+  "_comment": "Any offset_pct above 0.5 should have no effect",
   "min_order_size": 10,
   "resync_debounce_seconds": 0.35
 }
