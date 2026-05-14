@@ -8,7 +8,10 @@ when flat or capped; both sides may rest when partially filled.
 Protective REL ``lmtPrice`` values use the NBBO only:
 buy ceiling ``bid + (ask - bid) * offset_pct`` and sell floor
 ``ask - (ask - bid) * offset_pct``, with ``offset_pct`` clamped below ``0.5`` so
-the sell floor stays above the buy ceiling before rounding. If ``sell_limit <=
+the sell floor stays above the buy ceiling before rounding. After a qualifying
+last-trade print (tick-by-tick ``Last``), limits are also clamped: buy ceiling at
+most ``last_trade * (1 + last_trade_safety_pct)`` and sell floor at least
+``last_trade * (1 - last_trade_safety_pct)`` (default 1% each). If ``sell_limit <=
 buy_limit`` after rounding, the sell floor is bumped by one price step. The
 bot does not place, modify, or cancel orders until both bid and ask are valid
 (positive and ask > bid). Orders are
@@ -132,6 +135,7 @@ class Trader(EWrapper, EClient):
         self.sell_order_qty: int | None = None
 
         self.ref_price = None
+        self.last_trade_price: float | None = None
         self._bid = None
         self._ask = None
 
@@ -286,6 +290,7 @@ class Trader(EWrapper, EClient):
             return
 
         if float(size) >= float(self.config["last_trade_min_size"]):
+            self.last_trade_price = float(price)
             if self.ref_price != price:
                 self.ref_price = price
                 tprint(f"New ref_price from last trade: {price} size={size}")
@@ -446,6 +451,11 @@ class Trader(EWrapper, EClient):
         ``buy_limit = bid + spread * p``, ``sell_limit = ask - spread * p`` with
         ``p`` in ``[0, 0.5)``. Caller must ensure :meth:`_has_valid_nbbo` is true.
 
+        If :attr:`last_trade_price` is set (from tick-by-tick last sales), then
+        ``buy_limit`` is capped by ``last_trade_price * (1 + last_trade_safety_pct)``
+        and ``sell_limit`` floored by ``last_trade_price * (1 - last_trade_safety_pct)``
+        (``last_trade_safety_pct`` defaults to ``0.01`` = 1%).
+
         After rounding, if ``sell_limit <= buy_limit``, ``sell_limit`` is raised
         by one price step.
         """
@@ -456,6 +466,12 @@ class Trader(EWrapper, EClient):
         p = max(0.0, min(float(self.config["offset_pct"]), 0.5 - 1e-9))
         buy_limit = float(self._bid) + spread * p
         sell_limit = float(self._ask) - spread * p
+
+        lt = self.last_trade_price
+        if lt is not None and float(lt) > 0:
+            safety_pct = float(self.config.get("last_trade_safety_pct", 0.01))
+            buy_limit = min(buy_limit, float(lt) * (1.0 + safety_pct))
+            sell_limit = max(sell_limit, float(lt) * (1.0 - safety_pct))
 
         buy_limit = round(buy_limit, digits)
         sell_limit = round(sell_limit, digits)
@@ -765,6 +781,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--offset_pct",
         type=float,
         help="Fraction of NBBO spread for lmtPrice caps (effective max < 0.5 so sell > buy inside the band)",
+    )
+    parser.add_argument(
+        "--last_trade_safety_pct",
+        type=float,
+        help="Cap buy at last_trade*(1+pct) and floor sell at last_trade*(1-pct); default 0.01",
     )
     return parser
 

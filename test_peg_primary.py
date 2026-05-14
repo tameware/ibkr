@@ -96,6 +96,7 @@ def _minimal_config(**overrides):
         "market_open_minute": 30,
         "market_close_hour": 16,
         "last_trade_min_size": 1.0,
+        "last_trade_safety_pct": 0.01,
         "tif": "DAY",
         "price_round_digits": 2,
         "ignored_error_codes": [],
@@ -189,6 +190,30 @@ class TestAdjustedRelLimits(unittest.TestCase):
         self.assertEqual(sell_l, 100.05)
         self.assertGreater(sell_l, buy_l)
 
+    def test_last_trade_safety_caps_buy(self):
+        """Buy ceiling cannot exceed last_trade * (1 + safety_pct)."""
+        cfg = _minimal_config(offset_pct=0.4, last_trade_safety_pct=0.01)
+        t = Trader(cfg)
+        t._bid = 100.0
+        t._ask = 110.0
+        t.last_trade_price = 100.0
+        buy_l, sell_l = t.adjusted_rel_limits()
+        self.assertEqual(buy_l, 101.0)
+        self.assertEqual(sell_l, 106.0)
+        self.assertGreater(sell_l, buy_l)
+
+    def test_last_trade_safety_raises_sell_floor(self):
+        """Sell floor cannot go below last_trade * (1 - safety_pct)."""
+        cfg = _minimal_config(offset_pct=0.1, last_trade_safety_pct=0.01)
+        t = Trader(cfg)
+        t._bid = 99.0
+        t._ask = 101.0
+        t.last_trade_price = 102.0
+        buy_l, sell_l = t.adjusted_rel_limits()
+        self.assertEqual(buy_l, 99.2)
+        self.assertEqual(sell_l, 100.98)
+        self.assertGreater(sell_l, buy_l)
+
     def test_offset_pct_ge_half_clamped_for_band(self):
         """offset_pct >= 0.5 is clamped; rounding may tie — profit nudge applies."""
         cfg = _minimal_config(offset_pct=0.99)
@@ -207,6 +232,7 @@ class TestTrader(unittest.TestCase):
         # NBBO so sync_orders / adjusted_rel_limits can run (matches offset_pct=0.25 → 49.95 / 50.05)
         self.t._bid = 49.90
         self.t._ask = 50.10
+        self.t.last_trade_price = 50.0
 
     def test_build_rel_order_uses_asymmetric_offsets(self):
         self.cfg["rel_offset_buy"] = 0.02
@@ -597,6 +623,7 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         self.t.nextOrderId = 500
         self.t._bid = 49.90
         self.t._ask = 50.10
+        self.t.last_trade_price = 50.0
         self.t.placeOrder = Mock()
         self.t.safe_cancel_order = Mock()
 
