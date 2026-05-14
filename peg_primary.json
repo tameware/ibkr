@@ -15,13 +15,11 @@
   "market_open_minute": 30,
   "market_close_hour": 16,
   "price_round_digits": 2,
-  "last_trade_min_size": 10.0,
-  "last_trade_safety_pct": 0.01,
+  "mid_delta": 0.02,
   "tif": "DAY",
   "ignored_error_codes": [2103, 2104, 2106, 2108, 2158],
   "ignore_error_substrings": ["data farm connection is broken"],
-  "offset_pct": 0.35,
+  "offset_pct": 0.20,
   "min_order_size": 10,
-  "rel_offset": 0.05,
   "resync_debounce_seconds": 0.35
 }

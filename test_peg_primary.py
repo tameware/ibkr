@@ -90,13 +90,11 @@ def _minimal_config(**overrides):
         "max_pos": 100,
         "loop_seconds": 1.0,
         "offset_pct": 0.25,
-        "rel_offset": 0.01,
         "market_timezone": "America/New_York",
         "market_open_hour": 9,
         "market_open_minute": 30,
         "market_close_hour": 16,
-        "last_trade_min_size": 1.0,
-        "last_trade_safety_pct": 0.01,
+        "mid_delta": 0.02,
         "tif": "DAY",
         "price_round_digits": 2,
         "ignored_error_codes": [],
@@ -177,50 +175,51 @@ class TestHelpers(unittest.TestCase):
 
 
 class TestAdjustedRelLimits(unittest.TestCase):
-    def test_offset_pct_from_nbbo_only(self):
-        """With NBBO, limits come only from offset_pct (fraction of spread)."""
-        cfg = _minimal_config(offset_pct=0.25)
+    def test_mid_delta_symmetric_limits(self):
+        """Buy/sell caps are mid ± mid_delta (NBBO mid rounded)."""
+        cfg = _minimal_config(mid_delta=0.02)
         t = Trader(cfg)
         t.ref_price = 999.0
         t._bid = 99.9
         t._ask = 100.1
         buy_l, sell_l = t.adjusted_rel_limits()
-        self.assertEqual(buy_l, 99.95)
-        self.assertEqual(sell_l, 100.05)
+        self.assertEqual(buy_l, 99.98)
+        self.assertEqual(sell_l, 100.02)
+        mid = 100.0
+        self.assertLess(buy_l, mid)
+        self.assertGreater(sell_l, mid)
         self.assertGreater(sell_l, buy_l)
 
-    def test_last_trade_safety_caps_buy(self):
-        """Buy ceiling cannot exceed last_trade * (1 + safety_pct)."""
-        cfg = _minimal_config(offset_pct=0.4, last_trade_safety_pct=0.01)
+    def test_mid_delta_custom(self):
+        cfg = _minimal_config(mid_delta=0.05)
         t = Trader(cfg)
-        t._bid = 100.0
-        t._ask = 110.0
-        t.last_trade_price = 100.0
+        t._bid = 10.0
+        t._ask = 10.2
         buy_l, sell_l = t.adjusted_rel_limits()
-        self.assertEqual(buy_l, 101.0)
-        self.assertEqual(sell_l, 106.0)
-        self.assertGreater(sell_l, buy_l)
+        self.assertEqual(buy_l, 10.05)
+        self.assertEqual(sell_l, 10.15)
 
-    def test_last_trade_safety_raises_sell_floor(self):
-        """Sell floor cannot go below last_trade * (1 - safety_pct)."""
-        cfg = _minimal_config(offset_pct=0.1, last_trade_safety_pct=0.01)
+    def test_mid_delta_default_from_config_get(self):
+        """Omit mid_delta in file → code uses default 0.02."""
+        cfg = _minimal_config()
+        cfg.pop("mid_delta", None)
         t = Trader(cfg)
-        t._bid = 99.0
-        t._ask = 101.0
-        t.last_trade_price = 102.0
+        t._bid = 49.90
+        t._ask = 50.10
         buy_l, sell_l = t.adjusted_rel_limits()
-        self.assertEqual(buy_l, 99.2)
-        self.assertEqual(sell_l, 100.98)
-        self.assertGreater(sell_l, buy_l)
+        self.assertEqual(buy_l, 49.98)
+        self.assertEqual(sell_l, 50.02)
 
-    def test_offset_pct_ge_half_clamped_for_band(self):
-        """offset_pct >= 0.5 is clamped; rounding may tie — profit nudge applies."""
-        cfg = _minimal_config(offset_pct=0.99)
+    def test_limits_strictly_split_across_nbbo_mid(self):
+        """Buy cap < mid and sell floor > mid on the price grid."""
+        cfg = _minimal_config(mid_delta=0.02, price_round_digits=2)
         t = Trader(cfg)
-        t.ref_price = 100.0
         t._bid = 100.0
         t._ask = 101.0
         buy_l, sell_l = t.adjusted_rel_limits()
+        mid = round((100.0 + 101.0) / 2.0, 2)
+        self.assertLess(buy_l, mid)
+        self.assertGreater(sell_l, mid)
         self.assertGreater(sell_l, buy_l)
 
 
@@ -228,18 +227,22 @@ class TestTrader(unittest.TestCase):
     def setUp(self):
         self.cfg = _minimal_config()
         self.t = Trader(self.cfg)
-        # NBBO so sync_orders / adjusted_rel_limits can run (matches offset_pct=0.25 → 49.95 / 50.05)
+        # NBBO so sync_orders / adjusted_rel_limits can run (mid 50.00, mid_delta 0.02 → 49.98 / 50.02)
         self.t._bid = 49.90
         self.t._ask = 50.10
-        self.t.last_trade_price = 50.0
 
-    def test_build_rel_order_uses_asymmetric_offsets(self):
-        self.cfg["rel_offset_buy"] = 0.02
-        self.cfg["rel_offset_sell"] = 0.03
-        b = self.t.build_rel_order("BUY", 10, 100.0)
-        self.assertEqual(b.auxPrice, 0.02)
-        s = self.t.build_rel_order("SELL", 10, 100.0)
-        self.assertEqual(s.auxPrice, 0.03)
+    def test_build_rel_order_aux_from_spread_times_offset_pct(self):
+        """REL auxPrice = (ask - bid) * offset_pct."""
+        self.cfg["offset_pct"] = 0.25
+        b = self.t.build_rel_order("BUY", 10, 49.98)
+        self.assertEqual(b.auxPrice, 0.05)
+        s = self.t.build_rel_order("SELL", 10, 50.02)
+        self.assertEqual(s.auxPrice, 0.05)
+        self.cfg["offset_pct"] = 0.1
+        self.t._bid = 100.0
+        self.t._ask = 100.5
+        o = self.t.build_rel_order("BUY", 1, 100.2)
+        self.assertEqual(o.auxPrice, 0.05)
 
     def test_sync_orders_flat_places_buy_only(self):
         self.t.ready_for_trading = True
@@ -258,8 +261,8 @@ class TestTrader(unittest.TestCase):
         self.assertEqual(order.action, "BUY")
         self.assertEqual(order.orderType, "REL")
         self.assertEqual(order.totalQuantity, 100)
-        # bid=49.90 ask=50.10 spread 0.20 * offset_pct 0.25 = 0.05 → buy 49.95 / sell 50.05
-        self.assertEqual(order.lmtPrice, 49.95)
+        # bid=49.90 ask=50.10 mid 50.00 ± mid_delta 0.02 → buy 49.98 / sell 50.02
+        self.assertEqual(order.lmtPrice, 49.98)
         self.assertEqual(self.t.nextOrderId, 101)
 
     def test_sync_orders_skips_when_no_nbbo(self):
@@ -293,7 +296,7 @@ class TestTrader(unittest.TestCase):
         self.t.placeOrder.assert_called_once()
         oid, _, order = self.t.placeOrder.call_args[0]
         self.assertEqual(oid, 77)
-        self.assertEqual(order.lmtPrice, 49.95)
+        self.assertEqual(order.lmtPrice, 49.98)
 
     def test_sync_orders_partial_places_buy_and_sell(self):
         self.cfg["max_pos"] = 100
@@ -313,10 +316,10 @@ class TestTrader(unittest.TestCase):
         sell_order = calls[1][0][2]
         self.assertEqual(buy_order.action, "BUY")
         self.assertEqual(buy_order.totalQuantity, 25)
-        self.assertEqual(buy_order.lmtPrice, 49.95)
+        self.assertEqual(buy_order.lmtPrice, 49.98)
         self.assertEqual(sell_order.action, "SELL")
         self.assertEqual(sell_order.totalQuantity, 75)
-        self.assertEqual(sell_order.lmtPrice, 50.05)
+        self.assertEqual(sell_order.lmtPrice, 50.02)
         self.assertEqual(self.t.nextOrderId, 202)
 
     def test_default_min_order_size_is_ten(self):
@@ -393,7 +396,7 @@ class TestTrader(unittest.TestCase):
         _, _, order = self.t.placeOrder.call_args[0]
         self.assertEqual(order.action, "SELL")
         self.assertEqual(order.totalQuantity, 100)
-        self.assertEqual(order.lmtPrice, 50.05)
+        self.assertEqual(order.lmtPrice, 50.02)
 
     def test_sync_orders_at_max_cancels_buy_first(self):
         self.cfg["max_pos"] = 100
@@ -640,7 +643,6 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         self.t.nextOrderId = 500
         self.t._bid = 49.90
         self.t._ask = 50.10
-        self.t.last_trade_price = 50.0
         self.t.placeOrder = Mock()
         self.t.safe_cancel_order = Mock()
 
@@ -665,7 +667,7 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         self.assertEqual(oid, 11)
         self.assertEqual(order.action, "SELL")
         self.assertEqual(order.totalQuantity, 50)
-        self.assertEqual(order.lmtPrice, 50.05)
+        self.assertEqual(order.lmtPrice, 50.02)
         self.assertEqual(self.t.sell_order_qty, 50)
 
     def test_partial_sell_fill_grows_existing_buy(self):
@@ -690,7 +692,7 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         self.assertEqual(oid, 20)
         self.assertEqual(order.action, "BUY")
         self.assertEqual(order.totalQuantity, 90)
-        self.assertEqual(order.lmtPrice, 49.95)
+        self.assertEqual(order.lmtPrice, 49.98)
         self.assertEqual(self.t.buy_order_qty, 90)
 
     def test_no_resize_when_remaining_matches_desired(self):

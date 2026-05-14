@@ -5,26 +5,28 @@ REL buy for remaining capacity and REL sell for the current position. At or
 above ``max_pos``: sell-only for the full position. Mutually exclusive buy/sell
 when flat or capped; both sides may rest when partially filled.
 
-Protective REL ``lmtPrice`` values use the NBBO only:
-buy ceiling ``bid + (ask - bid) * offset_pct`` and sell floor
-``ask - (ask - bid) * offset_pct``, with ``offset_pct`` clamped below ``0.5`` so
-the sell floor stays above the buy ceiling before rounding. After a qualifying
-last-trade print (tick-by-tick ``Last``), limits are also clamped: buy ceiling at
-most ``last_trade * (1 + last_trade_safety_pct)`` and sell floor at least
-``last_trade * (1 - last_trade_safety_pct)`` (default 1% each). If ``sell_limit <=
-buy_limit`` after rounding, the sell floor is bumped by one price step. The
-bot does not place, modify, or cancel orders until both bid and ask are valid
+Protective REL ``lmtPrice`` values use the NBBO **mid** only (``(bid+ask)/2``
+rounded like ``ref_price`` in :meth:`tickPrice`): buy ceiling ``mid -
+mid_delta`` and sell floor ``mid + mid_delta`` (``mid_delta`` defaults to
+``0.02``), each rounded with ``price_round_digits``. After rounding, limits are
+nudged if needed so the buy cap stays strictly below mid and the sell floor
+strictly above mid on the price grid.
+
+REL ``auxPrice`` is ``(ask - bid) * offset_pct`` (``offset_pct`` clamped below
+``0.5``), rounded with ``price_round_digits``.
+
+The bot does not place, modify, or cancel orders until both bid and ask are valid
 (positive and ask > bid). Orders are
 not submitted when computed quantity is below ``min_order_size`` (default 10).
 
 On each connection, after the first ``reqOpenOrders`` snapshot completes, all
 open orders for the configured symbol are printed, then ``sync_orders`` may
-resize or re-peg existing working orders to match current NBBO / safety limits.
+resize or re-peg existing working orders to match current NBBO / limits.
 
 The TWS API exposes Pegged-to-Primary as ``orderType = "REL"`` with ``lmtPrice``
 as the protective cap (buy ceiling / sell floor) and ``auxPrice`` as the offset
-from the primary quote (both rounded with ``price_round_digits``). IB adjusts
-the working price with the NBBO; the client
+from the primary quote in **dollars**, here ``(ask - bid) * offset_pct``; IB
+adjusts the working price with the NBBO; the client
 does not need a tick-improve loop like ``market_maker.py``.
 
 See: https://www.interactivebrokers.com/campus/ibkr-api-page/order-types/
@@ -38,21 +40,19 @@ import datetime
 import json
 import threading
 import time
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict
 
 import pytz
 
 from ibapi.client import EClient
-from ibapi.common import TickAttrib, TickAttribLast, TickerId
+from ibapi.common import TickAttrib, TickerId
 from ibapi.contract import Contract
 from ibapi.order import Order
 from ibapi.ticktype import TickType
 from ibapi.wrapper import EWrapper
 
 HIST_REQ_ID = 1001
-LAST_TRADE_REQ_ID = 2001
 MKTDATA_REQ_ID = 3001
 
 
@@ -140,7 +140,6 @@ class Trader(EWrapper, EClient):
         self.sell_order_qty: int | None = None
 
         self.ref_price = None
-        self.last_trade_price: float | None = None
         self._bid = None
         self._ask = None
 
@@ -174,19 +173,23 @@ class Trader(EWrapper, EClient):
         c.primaryExch = primary_exchange
         return c
 
-    def _rel_offset_buy(self) -> float:
-        return float(self.config.get("rel_offset_buy", self.config["rel_offset"]))
-
-    def _rel_offset_sell(self) -> float:
-        return float(self.config.get("rel_offset_sell", self.config["rel_offset"]))
+    def _offset_pct_fraction(self) -> float:
+        """``offset_pct`` clamped to ``[0, 0.5)`` for REL ``auxPrice``."""
+        return max(0.0, min(float(self.config["offset_pct"]), 0.5 - 1e-9))
 
     def build_rel_order(self, action: str, qty: int, limit_price: float) -> Order:
-        off = self._rel_offset_buy() if action == "BUY" else self._rel_offset_sell()
+        """Build a REL order. ``auxPrice`` is ``(ask - bid) * offset_pct``.
+
+        Requires a valid NBBO; callers must gate on :meth:`_has_valid_nbbo`.
+        """
+        assert self._has_valid_nbbo()
+        spread = float(self._ask) - float(self._bid)
+        aux_off = spread * self._offset_pct_fraction()
         return make_rel_order(
             action=action,
             qty=qty,
             limit_price=limit_price,
-            offset=off,
+            offset=aux_off,
             exchange=self.config["exchange"],
             tif=self.config["tif"],
             price_round_digits=int(self.config["price_round_digits"]),
@@ -283,29 +286,6 @@ class Trader(EWrapper, EClient):
             f"avgPrice={execution.avgPrice} time={execution.time}"
         )
 
-    def tickByTickAllLast(
-        self,
-        reqId: int,
-        tickType: int,
-        time_value: int,
-        price: float,
-        size: Decimal,
-        tickAttribLast: TickAttribLast,
-        exchange: str,
-        specialConditions: str,
-    ):
-        if reqId != LAST_TRADE_REQ_ID:
-            return
-
-        if size is None:
-            return
-
-        if float(size) >= float(self.config["last_trade_min_size"]):
-            self.last_trade_price = float(price)
-            if self.ref_price != price:
-                self.ref_price = price
-                tprint(f"New ref_price from last trade: {price} size={size}")
-
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
         if reqId != MKTDATA_REQ_ID:
             return
@@ -324,7 +304,6 @@ class Trader(EWrapper, EClient):
 
     def nextValidId(self, orderId: int):
         GENERIC_TICKS = ""
-        TICK_BY_TICK_TYPE = "Last"
 
         tprint(f"nextValidId: {orderId}")
         self.nextOrderId = orderId
@@ -334,14 +313,6 @@ class Trader(EWrapper, EClient):
         self.request_today_open_or_prior_close()
         self.reqMktData(MKTDATA_REQ_ID, self.contract, GENERIC_TICKS, False, False, [])
         self.request_open_orders_snapshot()
-
-        self.reqTickByTickData(
-            LAST_TRADE_REQ_ID,
-            self.contract,
-            TICK_BY_TICK_TYPE,
-            0,
-            False,
-        )
 
     def openOrder(self, orderId, contract, order, orderState):
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
@@ -486,37 +457,38 @@ class Trader(EWrapper, EClient):
             self.cancelOrder(order_id, "")
 
     def adjusted_rel_limits(self) -> tuple[float, float]:
-        """REL buy/sell ``lmtPrice`` from NBBO and ``offset_pct`` only.
+        """REL buy/sell ``lmtPrice`` from NBBO mid and ``mid_delta``.
 
-        ``buy_limit = bid + spread * p``, ``sell_limit = ask - spread * p`` with
-        ``p`` in ``[0, 0.5)``. Caller must ensure :meth:`_has_valid_nbbo` is true.
+        ``buy_limit = mid - mid_delta``, ``sell_limit = mid + mid_delta`` with
+        ``mid = round((bid+ask)/2, price_round_digits)``. Caller must ensure
+        :meth:`_has_valid_nbbo` is true.
 
-        If :attr:`last_trade_price` is set (from tick-by-tick last sales), then
-        ``buy_limit`` is capped by ``last_trade_price * (1 + last_trade_safety_pct)``
-        and ``sell_limit`` floored by ``last_trade_price * (1 - last_trade_safety_pct)``
-        (``last_trade_safety_pct`` defaults to ``0.01`` = 1%).
-
-        After rounding, if ``sell_limit <= buy_limit``, ``sell_limit`` is raised
-        by one price step.
+        After rounding, limits are nudged so the buy cap stays strictly below
+        ``mid`` and the sell floor strictly above ``mid`` when rounding would
+        otherwise violate that; then ``sell_limit > buy_limit`` is enforced.
         """
         assert self._has_valid_nbbo()
         digits = int(self.config["price_round_digits"])
         step = 10.0 ** (-digits)
-        spread = float(self._ask) - float(self._bid)
-        p = max(0.0, min(float(self.config["offset_pct"]), 0.5 - 1e-9))
-        buy_limit = float(self._bid) + spread * p
-        sell_limit = float(self._ask) - spread * p
+        mid_delta = float(self.config.get("mid_delta", 0.02))
+        mid = round((float(self._bid) + float(self._ask)) / 2.0, digits)
+        buy_limit = round(mid - mid_delta, digits)
+        sell_limit = round(mid + mid_delta, digits)
 
-        lt = self.last_trade_price
-        if lt is not None and float(lt) > 0:
-            safety_pct = float(self.config.get("last_trade_safety_pct", 0.01))
-            buy_limit = min(buy_limit, float(lt) * (1.0 + safety_pct))
-            sell_limit = max(sell_limit, float(lt) * (1.0 - safety_pct))
+        max_buy = round(mid - step, digits)
+        min_sell = round(mid + step, digits)
+        if buy_limit >= mid:
+            buy_limit = max_buy
+        if sell_limit <= mid:
+            sell_limit = min_sell
 
-        buy_limit = round(buy_limit, digits)
-        sell_limit = round(sell_limit, digits)
         if sell_limit <= buy_limit:
             sell_limit = round(buy_limit + step, digits)
+            if sell_limit <= mid:
+                sell_limit = min_sell
+            if sell_limit <= buy_limit:
+                buy_limit = round(min(max_buy, sell_limit - step), digits)
+
         return buy_limit, sell_limit
 
     def request_positions_snapshot(self):
@@ -636,9 +608,11 @@ class Trader(EWrapper, EClient):
             new_a, digits
         ):
             return False
+        mid = round((float(self._bid) + float(self._ask)) / 2.0, digits)
         tprint(
             f"Updating {action} id={oid} lmtPrice {old_l}->{new_l} "
-            f"auxPrice {old_a}->{new_a} (totalQty={total_qty})"
+            f"auxPrice {old_a}->{new_a} (totalQty={total_qty} "
+            f"bid={self._bid} ask={self._ask} mid={mid})"
         )
         self.placeOrder(oid, self.contract, new_order)
         self._note_order_cache(oid, new_order)
@@ -871,26 +845,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_pos", type=int)
     parser.add_argument("--loop_seconds", type=float)
     parser.add_argument("--min_order_size", type=int)
-    parser.add_argument("--rel_offset", type=float)
-    parser.add_argument("--rel_offset_buy", type=float)
-    parser.add_argument("--rel_offset_sell", type=float)
     parser.add_argument("--market_timezone")
     parser.add_argument("--market_open_hour", type=int)
     parser.add_argument("--market_open_minute", type=int)
     parser.add_argument("--market_close_hour", type=int)
-    parser.add_argument("--last_trade_min_size", type=float)
     parser.add_argument("--tif")
     parser.add_argument("--price_round_digits", type=int)
     parser.add_argument("--resync_debounce_seconds", type=float)
     parser.add_argument(
-        "--offset_pct",
+        "--mid_delta",
         type=float,
-        help="Fraction of NBBO spread for lmtPrice caps (effective max < 0.5 so sell > buy inside the band)",
+        help="Half-width around NBBO mid for REL caps: buy at mid-delta, sell at mid+delta (default 0.02)",
     )
     parser.add_argument(
-        "--last_trade_safety_pct",
+        "--offset_pct",
         type=float,
-        help="Cap buy at last_trade*(1+pct) and floor sell at last_trade*(1-pct); default 0.01",
+        help="Fraction of NBBO spread for REL auxPrice only (effective max < 0.5)",
     )
     return parser
 
@@ -915,12 +885,11 @@ def main() -> None:
         "max_pos",
         "loop_seconds",
         "offset_pct",
-        "rel_offset",
         "market_timezone",
         "market_open_hour",
         "market_open_minute",
         "market_close_hour",
-        "last_trade_min_size",
+        "mid_delta",
         "tif",
         "price_round_digits",
         "ignored_error_codes",
