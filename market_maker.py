@@ -837,15 +837,19 @@ class MarketMaker(EWrapper, EClient):
 
         return None
 
+    def _cancel_working_quotes_flat_inventory(self) -> None:
+        """Cancel working buy; cancel sell only when flat or short (no inventory to lift)."""
+        self.place_or_replace_buy(0, None)
+        if self.position_qty <= 0:
+            self.place_or_replace_sell(0, None)
+
     def _abort_quotes_if_market_invalid(self) -> bool:
         """If the book is not quotable, optionally cancel and log; return True to skip the rest."""
         reason = self.market_invalid_reason()
         if reason is None:
             return False
         if self.cancel_on_invalid_market:
-            self.place_or_replace_buy(0, None)
-            if self.position_qty <= 0:
-                self.place_or_replace_sell(0, None)
+            self._cancel_working_quotes_flat_inventory()
         if self.log_invalid_market_reasons:
             self.logger.info("Not quoting: %s", reason)
         return True
@@ -859,9 +863,7 @@ class MarketMaker(EWrapper, EClient):
         """If the buy/sell quote pair is unusable, cancel working quotes, log, return True."""
         if buy_px is not None and sell_px is not None and buy_px < sell_px:
             return False
-        self.place_or_replace_buy(0, None)
-        if self.position_qty <= 0:
-            self.place_or_replace_sell(0, None)
+        self._cancel_working_quotes_flat_inventory()
         self.logger.warning(warning_msg, buy_px, sell_px)
         return True
 
