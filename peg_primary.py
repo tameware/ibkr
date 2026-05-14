@@ -296,7 +296,8 @@ class Trader(EWrapper, EClient):
             self._ask = price
 
         if self._bid is not None and self._ask is not None and self._bid > 0 and self._ask > 0:
-            mid = (self._bid + self._ask) / 2.0
+            digits = int(self.config["price_round_digits"])
+            mid = round((self._bid + self._ask) / 2.0, digits)
             if mid != self.ref_price:
                 tprint(f"ref_price updated: bid={self._bid} ask={self._ask} mid={mid}")
                 self.ref_price = mid

@@ -22,8 +22,8 @@
   "ignore_error_substrings": ["data farm connection is broken"],
   "buy_delta": -0.10,
   "sell_delta": -0.10,
-  "min_spread": 0.1,
+  "min_spread": 0.11,
   "min_order_size": 10,
-  "rel_offset": 0.01,
+  "rel_offset": 0.05,
   "resync_debounce_seconds": 0.35
 }
