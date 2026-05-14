@@ -12,10 +12,8 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
-from zoneinfo import ZoneInfo
 
 from ibapi.client import EClient
 from ibapi.common import OrderId, TickerId
@@ -153,12 +151,6 @@ class MarketMaker(EWrapper, EClient):
             None if _mbd is None else int(_mbd)
         )
 
-        self.end_new_positions_hour = int(config.get("end_new_positions_hour", 15))
-        self.end_new_positions_minute = int(
-            config.get("end_new_positions_minute", 40)
-        )
-        self.flatten_hour = int(config.get("flatten_hour", 15))
-        self.flatten_minute = int(config.get("flatten_minute", 55))
         self.cancel_on_invalid_market = _cfg_bool(
             config, "cancel_on_invalid_market", True
         )
@@ -216,9 +208,6 @@ class MarketMaker(EWrapper, EClient):
         self.target_conid: Optional[int] = None
         self.open_orders_snapshot_done = False
         self.adoption_phase = False
-
-        self.market_tz = ZoneInfo("America/New_York")
-        self.logger.info("Market timezone set to %s", self.market_tz.key)
 
         self.logger.info(
             "Bot initialized for %s on %s/%s",
@@ -1044,42 +1033,6 @@ class MarketMaker(EWrapper, EClient):
         )
         self.logger.info("SELL working id=%s qty=%s px=%.2f", oid, qty, px)
 
-    def _market_now(self) -> datetime:
-        return datetime.now(self.market_tz)
-
-    def flatten_only_mode(self) -> bool:
-        now = self._market_now()
-        return (now.hour > self.end_new_positions_hour) or (
-            now.hour == self.end_new_positions_hour
-            and now.minute >= self.end_new_positions_minute
-        )
-
-    def hard_flatten_mode(self) -> bool:
-        now = self._market_now()
-        return (now.hour > self.flatten_hour) or (
-            now.hour == self.flatten_hour and now.minute >= self.flatten_minute
-        )
-
-    def force_flatten(self):
-        with self.lock:
-            pos = self.position_qty
-            bid = self.quote.bid
-            ask = self.quote.ask
-
-        self.place_or_replace_buy(0, None)
-
-        if pos <= 0 or bid is None or ask is None:
-            self.place_or_replace_sell(0, None)
-            return
-
-        aggressive_sell = self.round_up_cent(max(bid + 0.01, ask - 0.01))
-        self.place_or_replace_sell(pos, aggressive_sell)
-        self.logger.info(
-            "Force flatten mode active position=%s aggressive_sell=%.2f",
-            pos,
-            aggressive_sell,
-        )
-
     def maybe_manage_quotes(self, force=False):
         now = time.time()
 
@@ -1121,10 +1074,6 @@ class MarketMaker(EWrapper, EClient):
                     return
             self.last_quote_eval = now
 
-            if self.hard_flatten_mode():
-                self.force_flatten()
-                return
-
             buy_px, sell_px = self.compute_desired_quotes()
 
             bid = self.quote.bid
@@ -1158,10 +1107,6 @@ class MarketMaker(EWrapper, EClient):
                 return
 
             buy_qty, sell_qty = self.desired_sizes()
-
-            if self.flatten_only_mode():
-                buy_qty = 0
-                sell_qty = self.max_sellable_qty()
 
             sell_qty = min(sell_qty, self.position_qty)
             if self.position_qty <= 0:
@@ -1330,10 +1275,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quote_refresh_seconds", type=float)
     parser.add_argument("--max_market_stale_seconds", type=float)
 
-    parser.add_argument("--end_new_positions_hour", type=int)
-    parser.add_argument("--end_new_positions_minute", type=int)
-    parser.add_argument("--flatten_hour", type=int)
-    parser.add_argument("--flatten_minute", type=int)
     parser.add_argument(
         "--cancel_on_invalid_market",
         action=argparse.BooleanOptionalAction,

@@ -31,10 +31,6 @@
   },
 
   "risk": {
-    "end_new_positions_hour": 15,
-    "end_new_positions_minute": 40,
-    "flatten_hour": 15,
-    "flatten_minute": 55,
     "cancel_on_invalid_market": true,
     "require_live_data": false
   },

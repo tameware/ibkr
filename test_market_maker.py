@@ -512,8 +512,6 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.place_or_replace_sell = Mock()
 
         with patch("market_maker.time.time", return_value=ts), patch.object(
-            self.mm, "hard_flatten_mode", return_value=False
-        ), patch.object(self.mm, "flatten_only_mode", return_value=True), patch.object(
             self.mm, "compute_desired_quotes", return_value=(50.0, 51.0)
         ):
             self.mm.maybe_manage_quotes(force=False)
@@ -521,6 +519,9 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.place_or_replace_sell.assert_called_once()
         sell_qty, _ = self.mm.place_or_replace_sell.call_args[0]
         self.assertEqual(sell_qty, 200)
+        self.mm.place_or_replace_buy.assert_called_once()
+        buy_qty, _ = self.mm.place_or_replace_buy.call_args[0]
+        self.assertGreater(buy_qty, 0)
 
     def test_ib_cancel_order_two_arg_fallback(self):
         self.mm.isConnected = Mock(return_value=True)
@@ -658,8 +659,6 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.place_or_replace_sell = Mock()
 
         with patch("market_maker.time.time", return_value=ts), patch.object(
-            self.mm, "hard_flatten_mode", return_value=False
-        ), patch.object(self.mm, "flatten_only_mode", return_value=True), patch.object(
             self.mm, "compute_desired_quotes", return_value=(50.0, 51.0)
         ):
             self.mm.maybe_manage_quotes(force=False)
@@ -668,7 +667,7 @@ class TestMarketMakerCore(unittest.TestCase):
         sell_qty, sell_px = self.mm.place_or_replace_sell.call_args[0]
         self.assertEqual(sell_qty, 218)
         self.assertAlmostEqual(sell_px, 50.76)
-        self.mm.place_or_replace_buy.assert_called_once_with(0, None)
+        self.mm.place_or_replace_buy.assert_called_once()
 
     def test_maybe_manage_quotes_places_buy_when_flat(self):
         self.mm.connected_flag = True
@@ -682,27 +681,11 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.position_qty = 0
         self.mm.last_quote_eval = 0.0
         with patch("market_maker.time.time", return_value=now), patch.object(
-            self.mm, "hard_flatten_mode", return_value=False
-        ), patch.object(self.mm, "flatten_only_mode", return_value=False), patch.object(
             self.mm, "place_or_replace_buy"
         ) as pb, patch.object(self.mm, "place_or_replace_sell") as ps:
             self.mm.maybe_manage_quotes(force=True)
             pb.assert_called_once()
             ps.assert_called_once()
-
-    def test_flatten_only_mode(self):
-        fixed = self.mm._market_now().replace(
-            year=2026, month=5, day=10, hour=15, minute=45, second=0
-        )
-        with patch.object(MarketMaker, "_market_now", return_value=fixed):
-            self.assertTrue(self.mm.flatten_only_mode())
-
-    def test_hard_flatten_mode(self):
-        fixed = self.mm._market_now().replace(
-            year=2026, month=5, day=10, hour=15, minute=56, second=0
-        )
-        with patch.object(MarketMaker, "_market_now", return_value=fixed):
-            self.assertTrue(self.mm.hard_flatten_mode())
 
 
 class TestArgParser(unittest.TestCase):
