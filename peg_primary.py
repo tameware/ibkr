@@ -20,7 +20,7 @@ The bot does not place, modify, or cancel orders until both bid and ask are vali
 not submitted when computed quantity is below ``min_order_size`` (default 10).
 
 On each connection, after the first ``reqOpenOrders`` snapshot completes, all
-open orders for the configured symbol are printed, then ``sync_orders`` may
+open orders for the configured symbol are logged, then ``sync_orders`` may
 resize or re-peg existing working orders to match current NBBO / limits.
 
 The TWS API exposes Pegged-to-Primary as ``orderType = "REL"`` with ``lmtPrice``
@@ -38,10 +38,13 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import logging
+import logging.handlers
+import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 import pytz
 
@@ -56,9 +59,61 @@ HIST_REQ_ID = 1001
 MKTDATA_REQ_ID = 3001
 
 
-def tprint(msg: str) -> None:
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"{now} {msg}")
+def _cfg_bool(config: Dict[str, Any], key: str, default: bool) -> bool:
+    if key not in config:
+        return default
+    v = config[key]
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return bool(v)
+    s = str(v).strip().lower()
+    if s in ("0", "false", "no", "off", ""):
+        return False
+    if s in ("1", "true", "yes", "on"):
+        return True
+    raise ValueError(f"Invalid boolean for {key!r}: {v!r}")
+
+
+def _build_logger(config: Dict[str, Any]) -> logging.Logger:
+    """Configure a dedicated logger (file + optional console), same style as ``market_maker``."""
+    log_dir = Path(str(config.get("log_dir", "logs")))
+    log_file = str(config.get("log_file", "peg_primary.log"))
+    level_name = str(config.get("level", "INFO")).upper()
+    max_bytes = int(config.get("max_bytes", 5_000_000))
+    backup_count = int(config.get("backup_count", 10))
+    use_console = _cfg_bool(config, "console", True)
+
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    logger = logging.getLogger("peg_primary")
+    logger.setLevel(getattr(logging, level_name, logging.INFO))
+    for h in list(logger.handlers):
+        logger.removeHandler(h)
+        h.close()
+    logger.propagate = False
+
+    fmt = logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s %(threadName)s %(message)s"
+    )
+
+    fh = logging.handlers.RotatingFileHandler(
+        log_dir / log_file,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding="utf-8",
+    )
+    fh.setFormatter(fmt)
+    fh.setLevel(getattr(logging, level_name, logging.INFO))
+    logger.addHandler(fh)
+
+    if use_console:
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setFormatter(fmt)
+        ch.setLevel(getattr(logging, level_name, logging.INFO))
+        logger.addHandler(ch)
+
+    return logger
 
 
 def load_config_file(path: str) -> Dict[str, Any]:
@@ -165,6 +220,13 @@ class Trader(EWrapper, EClient):
         self.order_working_lmt: Dict[int, float] = {}
         self.order_working_aux: Dict[int, float] = {}
 
+        self.logger = _build_logger(config)
+        self.logger.info(
+            "REL quoter initialized symbol=%s exchange=%s",
+            self.config["symbol"],
+            self.config["exchange"],
+        )
+
     def make_us_stock(
         self, symbol: str, sec_type: str, currency: str, exchange: str, primary_exchange: str
     ) -> Contract:
@@ -245,7 +307,7 @@ class Trader(EWrapper, EClient):
                     if orderId == self.sell_order_id
                     else "ORDER"
                 )
-                tprint(
+                self.logger.info(
                     f"{side} {orderId} partial fill: filled={filled} remaining={remaining} "
                     f"avgFillPrice={avgFillPrice} lastFillPrice={lastFillPrice}"
                 )
@@ -254,14 +316,14 @@ class Trader(EWrapper, EClient):
 
         if status in ("Filled", "Cancelled", "Inactive", "ApiCancelled"):
             if orderId == self.buy_order_id:
-                tprint(
+                self.logger.info(
                     f"BUY {orderId} {status} filled={filled} avgFillPrice={avgFillPrice}"
                 )
                 self.pending_buy = False
                 self.buy_order_id = None
                 self.buy_order_qty = None
             if orderId == self.sell_order_id:
-                tprint(
+                self.logger.info(
                     f"SELL {orderId} {status} filled={filled} avgFillPrice={avgFillPrice}"
                 )
                 self.pending_sell = False
@@ -282,7 +344,7 @@ class Trader(EWrapper, EClient):
 
         raw_side = getattr(execution, "side", "")
         side = "BUY" if raw_side == "BOT" else "SELL" if raw_side == "SLD" else raw_side
-        tprint(
+        self.logger.info(
             f"Execution {side} orderId={execution.orderId} execId={execution.execId} "
             f"shares={execution.shares} price={execution.price} "
             f"exchange={execution.exchange} cumQty={execution.cumQty} "
@@ -301,13 +363,15 @@ class Trader(EWrapper, EClient):
         if self._bid is not None and self._ask is not None and self._bid > 0 and self._ask > 0:
             mid = self._nbbo_mid_rounded()
             if mid != self.ref_price:
-                tprint(f"ref_price updated: bid={self._bid} ask={self._ask} mid={mid}")
+                self.logger.info(
+                    f"ref_price updated: bid={self._bid} ask={self._ask} mid={mid}"
+                )
                 self.ref_price = mid
 
     def nextValidId(self, orderId: int):
         GENERIC_TICKS = ""
 
-        tprint(f"nextValidId: {orderId}")
+        self.logger.info("nextValidId: %s", orderId)
         self.nextOrderId = orderId
         self._startup_open_orders_logged = False
 
@@ -353,14 +417,16 @@ class Trader(EWrapper, EClient):
         if not self._startup_open_orders_logged:
             sym = self.config["symbol"]
             if self._snapshot_open_order_lines:
-                tprint(
+                self.logger.info(
                     f"Open orders at startup for {sym} ({self.config['sec_type']}): "
                     f"{len(self._snapshot_open_order_lines)}"
                 )
                 for ln in self._snapshot_open_order_lines:
-                    tprint(ln)
+                    self.logger.info(ln)
             else:
-                tprint(f"Open orders at startup for {sym} ({self.config['sec_type']}): none")
+                self.logger.info(
+                    f"Open orders at startup for {sym} ({self.config['sec_type']}): none"
+                )
             self._startup_open_orders_logged = True
         self.maybe_sync_orders()
 
@@ -374,9 +440,13 @@ class Trader(EWrapper, EClient):
         if any(text in error_text for text in ignored_substrings):
             return
 
-        tprint(
-            f"Error reqId={reqId} errorTime={errorTime} errorCode={errorCode} "
-            f"errorString={error_text} advancedOrderRejectJson={advancedOrderRejectJson}"
+        self.logger.warning(
+            "Error reqId=%s errorTime=%s errorCode=%s errorString=%s advancedOrderRejectJson=%s",
+            reqId,
+            errorTime,
+            errorCode,
+            error_text,
+            advancedOrderRejectJson,
         )
 
     def position(self, account, contract, pos, avgCost):
@@ -389,7 +459,7 @@ class Trader(EWrapper, EClient):
         self.maybe_sync_orders()
 
     def request_today_open_or_prior_close(self):
-        tprint("Requesting daily bars for open/prior close")
+        self.logger.info("Requesting daily bars for open/prior close")
         self._bars = []
         self.reqHistoricalData(
             HIST_REQ_ID,
@@ -414,17 +484,17 @@ class Trader(EWrapper, EClient):
             return
 
         if not self._bars:
-            tprint("No historical bars returned; cannot set open_price")
+            self.logger.info("No historical bars returned; cannot set open_price")
             return
 
         last_bar = self._bars[-1]
 
         if last_bar.open and last_bar.open > 0:
             self.open_price = last_bar.open
-            tprint(f"Today's open price: {self.open_price}")
+            self.logger.info("Today's open price: %s", self.open_price)
         else:
             self.open_price = last_bar.close
-            tprint(f"No valid open; using prior close: {self.open_price}")
+            self.logger.info("No valid open; using prior close: %s", self.open_price)
 
         if self.ref_price is None:
             self.ref_price = self.open_price
@@ -547,7 +617,7 @@ class Trader(EWrapper, EClient):
         filled_now = max(0, current_total_qty - remaining_now)
 
         if desired_remaining < self.min_order_size:
-            tprint(
+            self.logger.info(
                 f"Cancelling {action} id={oid} (desired remaining "
                 f"{desired_remaining} < min_order_size {self.min_order_size}; "
                 f"filled={filled_now})"
@@ -557,7 +627,7 @@ class Trader(EWrapper, EClient):
             return True
 
         new_total = filled_now + desired_remaining
-        tprint(
+        self.logger.info(
             f"Modifying {action} id={oid} totalQty {current_total_qty}->{new_total} "
             f"(filled={filled_now} remaining {remaining_now}->{desired_remaining} "
             f"lmtPrice={limit_price})"
@@ -594,7 +664,7 @@ class Trader(EWrapper, EClient):
         ) == round(new_a, self._digits):
             return False
         mid = self._nbbo_mid_rounded()
-        tprint(
+        self.logger.info(
             f"Updating {action} id={oid} lmtPrice {old_l}->{new_l} "
             f"auxPrice {old_a}->{new_a} (totalQty={total_qty} "
             f"bid={self._bid} ask={self._ask} mid={mid})"
@@ -634,7 +704,10 @@ class Trader(EWrapper, EClient):
 
         if pos <= 0:
             if self.sell_order_id is not None:
-                tprint(f"Cancelling SELL order id={self.sell_order_id} (flat or flat target)")
+                self.logger.info(
+                    "Cancelling SELL order id=%s (flat or flat target)",
+                    self.sell_order_id,
+                )
                 sid = self.sell_order_id
                 self.safe_cancel_order(sid)
                 self.pending_sell = False
@@ -673,9 +746,12 @@ class Trader(EWrapper, EClient):
                 self.pending_buy = True
                 order = self.build_rel_order("BUY", buy_qty, buy_limit)
                 off = order.auxPrice
-                tprint(
-                    f"Placing REL (peg primary) BUY qty={buy_qty} lmtPrice={buy_limit} "
-                    f"auxPrice={off} id={oid}"
+                self.logger.info(
+                    "Placing REL (peg primary) BUY qty=%s lmtPrice=%s auxPrice=%s id=%s",
+                    buy_qty,
+                    buy_limit,
+                    off,
+                    oid,
                 )
                 self.placeOrder(oid, self.contract, order)
                 self._note_order_cache(oid, order)
@@ -683,7 +759,10 @@ class Trader(EWrapper, EClient):
 
         if pos >= max_pos:
             if self.buy_order_id is not None:
-                tprint(f"Cancelling BUY order id={self.buy_order_id} (at or above max_pos)")
+                self.logger.info(
+                    "Cancelling BUY order id=%s (at or above max_pos)",
+                    self.buy_order_id,
+                )
                 buy_oid = self.buy_order_id
                 self.safe_cancel_order(buy_oid)
                 self.pending_buy = False
@@ -722,9 +801,12 @@ class Trader(EWrapper, EClient):
                 self.pending_sell = True
                 order = self.build_rel_order("SELL", sell_qty, sell_limit)
                 off = order.auxPrice
-                tprint(
-                    f"Placing REL (peg primary) SELL qty={sell_qty} lmtPrice={sell_limit} "
-                    f"auxPrice={off} id={oid}"
+                self.logger.info(
+                    "Placing REL (peg primary) SELL qty=%s lmtPrice=%s auxPrice=%s id=%s",
+                    sell_qty,
+                    sell_limit,
+                    off,
+                    oid,
                 )
                 self.placeOrder(oid, self.contract, order)
                 self._note_order_cache(oid, order)
@@ -758,9 +840,12 @@ class Trader(EWrapper, EClient):
             self.pending_buy = True
             order = self.build_rel_order("BUY", buy_qty, buy_limit)
             off = order.auxPrice
-            tprint(
-                f"Placing REL (peg primary) BUY qty={buy_qty} lmtPrice={buy_limit} "
-                f"auxPrice={off} id={oid}"
+            self.logger.info(
+                "Placing REL (peg primary) BUY qty=%s lmtPrice=%s auxPrice=%s id=%s",
+                buy_qty,
+                buy_limit,
+                off,
+                oid,
             )
             self.placeOrder(oid, self.contract, order)
             self._note_order_cache(oid, order)
@@ -789,9 +874,12 @@ class Trader(EWrapper, EClient):
             self.pending_sell = True
             order = self.build_rel_order("SELL", sell_qty, sell_limit)
             off = order.auxPrice
-            tprint(
-                f"Placing REL (peg primary) SELL qty={sell_qty} lmtPrice={sell_limit} "
-                f"auxPrice={off} id={oid}"
+            self.logger.info(
+                "Placing REL (peg primary) SELL qty=%s lmtPrice=%s auxPrice=%s id=%s",
+                sell_qty,
+                sell_limit,
+                off,
+                oid,
             )
             self.placeOrder(oid, self.contract, order)
             self._note_order_cache(oid, order)
@@ -799,7 +887,7 @@ class Trader(EWrapper, EClient):
     def run_loop(self):
         while True:
             if not self.isConnected():
-                tprint("Disconnected from IBKR; exiting run loop")
+                self.logger.info("Disconnected from IBKR; exiting run loop")
                 break
             if self.us_regular_hours():
                 self.sync_requested = True
@@ -847,6 +935,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         help="Fraction of NBBO spread for REL auxPrice only (effective max < 0.5)",
     )
+
+    cli_flags: Tuple[Tuple[str, Dict[str, Any]], ...] = (
+        ("--log_dir", {}),
+        ("--log_file", {}),
+        ("--level", {}),
+        ("--max_bytes", {"type": int}),
+        ("--backup_count", {"type": int}),
+        ("--console", {"action": argparse.BooleanOptionalAction}),
+    )
+    for flag, kwargs in cli_flags:
+        parser.add_argument(flag, **kwargs)
     return parser
 
 
@@ -892,7 +991,7 @@ def main() -> None:
     try:
         app.run_loop()
     except KeyboardInterrupt:
-        tprint("Stopping...")
+        app.logger.info("Stopping...")
     finally:
         app.disconnect()
 

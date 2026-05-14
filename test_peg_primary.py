@@ -77,6 +77,14 @@ from peg_primary import (
 )
 
 
+def _log_line(call) -> str:
+    """First log argument as a single string (handles %-formatting calls)."""
+    a = call.args
+    if len(a) == 1:
+        return str(a[0])
+    return str(a[0] % tuple(a[1:]))
+
+
 def _minimal_config(**overrides):
     base = {
         "host": "127.0.0.1",
@@ -100,6 +108,7 @@ def _minimal_config(**overrides):
         "ignored_error_codes": [],
         "ignore_error_substrings": [],
         "resync_debounce_seconds": 0.0,
+        "console": False,
     }
     base.update(overrides)
     return base
@@ -467,14 +476,14 @@ class TestTrader(unittest.TestCase):
 
     def test_error_filters_ignored_code(self):
         self.cfg["ignored_error_codes"] = [2104]
-        with patch("peg_primary.tprint") as tp:
+        with patch.object(self.t.logger, "warning") as w:
             self.t.error(0, "", 2104, "Market data farm connected", "")
-        tp.assert_not_called()
+        w.assert_not_called()
 
     def test_error_prints_other(self):
-        with patch("peg_primary.tprint") as tp:
+        with patch.object(self.t.logger, "warning") as w:
             self.t.error(1, "t", 1999, "oops", "")
-        tp.assert_called_once()
+        w.assert_called_once()
 
 
 class TestExecutionLogging(unittest.TestCase):
@@ -492,10 +501,10 @@ class TestExecutionLogging(unittest.TestCase):
 
     def test_order_status_logs_filled_terminal(self):
         self.t.buy_order_id = 42
-        with patch("peg_primary.tprint") as tp:
+        with patch.object(self.t.logger, "info") as tp:
             self._order_status(orderId=42, status="Filled", filled=100,
                                remaining=0, avgFillPrice=49.95)
-        msgs = [c.args[0] for c in tp.call_args_list]
+        msgs = [_log_line(c) for c in tp.call_args_list]
         self.assertTrue(any("BUY 42 Filled" in m and "filled=100" in m
                             and "avgFillPrice=49.95" in m for m in msgs))
         self.assertIsNone(self.t.buy_order_id)
@@ -503,10 +512,10 @@ class TestExecutionLogging(unittest.TestCase):
 
     def test_order_status_logs_cancelled_terminal(self):
         self.t.sell_order_id = 7
-        with patch("peg_primary.tprint") as tp:
+        with patch.object(self.t.logger, "info") as tp:
             self._order_status(orderId=7, status="Cancelled", filled=0,
                                remaining=0)
-        msgs = [c.args[0] for c in tp.call_args_list]
+        msgs = [_log_line(c) for c in tp.call_args_list]
         self.assertTrue(any("SELL 7 Cancelled" in m for m in msgs))
         self.assertIsNone(self.t.sell_order_id)
 
@@ -514,11 +523,11 @@ class TestExecutionLogging(unittest.TestCase):
         """IB sends partial fills as Submitted with cumulative filled > 0
         and remaining > 0. The script should log a partial-fill line."""
         self.t.buy_order_id = 99
-        with patch("peg_primary.tprint") as tp:
+        with patch.object(self.t.logger, "info") as tp:
             self._order_status(orderId=99, status="Submitted", filled=10,
                                remaining=90, avgFillPrice=50.0,
                                lastFillPrice=50.0)
-        msgs = [c.args[0] for c in tp.call_args_list]
+        msgs = [_log_line(c) for c in tp.call_args_list]
         self.assertTrue(any("BUY 99 partial fill" in m and "filled=10" in m
                             and "remaining=90" in m for m in msgs))
         self.assertEqual(self.t.filled_by_order[99], 10.0)
@@ -528,29 +537,29 @@ class TestExecutionLogging(unittest.TestCase):
         """Repeated Submitted callbacks with the same cumulative filled
         should not relog the partial fill."""
         self.t.buy_order_id = 99
-        with patch("peg_primary.tprint") as tp:
+        with patch.object(self.t.logger, "info") as tp:
             self._order_status(orderId=99, status="Submitted", filled=10,
                                remaining=90, avgFillPrice=50.0)
             self._order_status(orderId=99, status="Submitted", filled=10,
                                remaining=90, avgFillPrice=50.0)
-        partial_msgs = [c.args[0] for c in tp.call_args_list
-                        if "partial fill" in c.args[0]]
+        partial_msgs = [_log_line(c) for c in tp.call_args_list
+                        if "partial fill" in _log_line(c)]
         self.assertEqual(len(partial_msgs), 1)
 
-        with patch("peg_primary.tprint") as tp2:
+        with patch.object(self.t.logger, "info") as tp2:
             self._order_status(orderId=99, status="Submitted", filled=25,
                                remaining=75, avgFillPrice=50.1)
-        partial_msgs = [c.args[0] for c in tp2.call_args_list
-                        if "partial fill" in c.args[0]]
+        partial_msgs = [_log_line(c) for c in tp2.call_args_list
+                        if "partial fill" in _log_line(c)]
         self.assertEqual(len(partial_msgs), 1)
         self.assertIn("filled=25", partial_msgs[0])
 
     def test_order_status_no_partial_log_when_filled_zero(self):
         self.t.buy_order_id = 99
-        with patch("peg_primary.tprint") as tp:
+        with patch.object(self.t.logger, "info") as tp:
             self._order_status(orderId=99, status="Submitted", filled=0,
                                remaining=100)
-        self.assertFalse(any("partial fill" in c.args[0]
+        self.assertFalse(any("partial fill" in _log_line(c)
                              for c in tp.call_args_list))
 
     def test_order_status_clears_filled_tracking_on_terminal(self):
@@ -581,13 +590,13 @@ class TestExecutionLogging(unittest.TestCase):
         return c
 
     def test_exec_details_logs_buy(self):
-        with patch("peg_primary.tprint") as tp:
+        with patch.object(self.t.logger, "info") as tp:
             self.t.execDetails(0, self._contract(),
                                self._execution(side="BOT", orderId=42,
                                                execId="x-42-1", shares=25,
                                                price=49.97, exchange="ARCA",
                                                cumQty=25, avgPrice=49.97))
-        msgs = [c.args[0] for c in tp.call_args_list]
+        msgs = [_log_line(c) for c in tp.call_args_list]
         self.assertEqual(len(msgs), 1)
         m = msgs[0]
         self.assertIn("Execution BUY", m)
@@ -599,19 +608,19 @@ class TestExecutionLogging(unittest.TestCase):
         self.assertIn("cumQty=25", m)
 
     def test_exec_details_logs_sell(self):
-        with patch("peg_primary.tprint") as tp:
+        with patch.object(self.t.logger, "info") as tp:
             self.t.execDetails(0, self._contract(),
                                self._execution(side="SLD"))
-        self.assertIn("Execution SELL", tp.call_args_list[0].args[0])
+        self.assertIn("Execution SELL", _log_line(tp.call_args_list[0]))
 
     def test_exec_details_filters_other_symbols(self):
-        with patch("peg_primary.tprint") as tp:
+        with patch.object(self.t.logger, "info") as tp:
             self.t.execDetails(0, self._contract(symbol="OTHER"),
                                self._execution())
         tp.assert_not_called()
 
     def test_exec_details_filters_other_sec_types(self):
-        with patch("peg_primary.tprint") as tp:
+        with patch.object(self.t.logger, "info") as tp:
             self.t.execDetails(0, self._contract(sec_type="OPT"),
                                self._execution())
         tp.assert_not_called()
@@ -858,18 +867,18 @@ class TestStartupOpenOrders(unittest.TestCase):
         state = MagicMock()
         state.status = "Submitted"
         t.reqOpenOrders = Mock()
-        with patch("peg_primary.tprint") as tp:
+        with patch.object(t.logger, "info") as tp:
             t.request_open_orders_snapshot()
             t.openOrder(7, contract, order, state)
             t.openOrderEnd()
-        lines = [str(c.args[0]) for c in tp.call_args_list]
+        lines = [_log_line(c) for c in tp.call_args_list]
         self.assertTrue(any("Open orders at startup for TEST" in x for x in lines))
         self.assertTrue(any("id=7" in x for x in lines))
 
-        with patch("peg_primary.tprint") as tp2:
+        with patch.object(t.logger, "info") as tp2:
             t.openOrderEnd()
         self.assertFalse(
-            any("Open orders at startup" in str(c.args[0]) for c in tp2.call_args_list)
+            any("Open orders at startup" in _log_line(c) for c in tp2.call_args_list)
         )
 
 

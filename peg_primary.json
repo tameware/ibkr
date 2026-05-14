@@ -22,5 +22,12 @@
   "offset_pct": 0.5,
   "_comment": "Any offset_pct above 0.5 should have no effect",
   "min_order_size": 10,
-  "resync_debounce_seconds": 0.35
+  "resync_debounce_seconds": 0.35,
+
+  "log_dir": "logs",
+  "log_file": "peg_primary.log",
+  "level": "INFO",
+  "max_bytes": 5000000,
+  "backup_count": 10,
+  "console": true
 }
