@@ -721,6 +721,56 @@ class MarketMaker(EWrapper, EClient):
         n = round(x / t)
         return round(n * t, 10)
 
+    def _nbbo_tick_improve_with_nbbo(
+        self,
+        buy_px: float,
+        sell_px: float,
+        buy_qty: int,
+        sell_qty: int,
+        bid: float,
+        ask: float,
+        bid_size: int,
+        ask_size: int,
+    ) -> Tuple[float, float]:
+        """Like ``_nbbo_tick_improve_quotes`` but uses explicit NBBO depth (thread-safe snapshot)."""
+        tick = self._effective_min_tick()
+        min_width = self.min_quote_spread_cents / 100.0
+
+        bid_depth_ok = bid_size == 0 or bid_size > buy_qty
+        ask_depth_ok = ask_size == 0 or ask_size > sell_qty
+
+        if buy_qty > 0 and bid_depth_ok:
+            cand_buy = self._quantize_to_tick(buy_px + tick)
+            if (
+                cand_buy < ask
+                and cand_buy > bid
+                and sell_px - cand_buy >= min_width
+            ):
+                buy_px = cand_buy
+                self.logger.info(
+                    "NBBO tick improve BUY: bid_sz=%s buy_qty=%s -> buy_px=%.4f",
+                    bid_size,
+                    buy_qty,
+                    buy_px,
+                )
+
+        if sell_qty > 0 and ask_depth_ok:
+            cand_sell = self._quantize_to_tick(sell_px - tick)
+            if (
+                cand_sell > bid
+                and cand_sell < ask
+                and cand_sell - buy_px >= min_width
+            ):
+                sell_px = cand_sell
+                self.logger.info(
+                    "NBBO tick improve SELL: ask_sz=%s sell_qty=%s -> sell_px=%.4f",
+                    ask_size,
+                    sell_qty,
+                    sell_px,
+                )
+
+        return buy_px, sell_px
+
     def _nbbo_tick_improve_quotes(
         self,
         buy_px: float,
@@ -738,44 +788,16 @@ class MarketMaker(EWrapper, EClient):
         ask = self.quote.ask
         if bid is None or ask is None:
             return buy_px, sell_px
-
-        tick = self._effective_min_tick()
-        min_width = self.min_quote_spread_cents / 100.0
-
-        bid_depth_ok = self.quote.bid_size == 0 or self.quote.bid_size > buy_qty
-        ask_depth_ok = self.quote.ask_size == 0 or self.quote.ask_size > sell_qty
-
-        if buy_qty > 0 and bid_depth_ok:
-            cand_buy = self._quantize_to_tick(buy_px + tick)
-            if (
-                cand_buy < ask
-                and cand_buy > bid
-                and sell_px - cand_buy >= min_width
-            ):
-                buy_px = cand_buy
-                self.logger.info(
-                    "NBBO tick improve BUY: bid_sz=%s buy_qty=%s -> buy_px=%.4f",
-                    self.quote.bid_size,
-                    buy_qty,
-                    buy_px,
-                )
-
-        if sell_qty > 0 and ask_depth_ok:
-            cand_sell = self._quantize_to_tick(sell_px - tick)
-            if (
-                cand_sell > bid
-                and cand_sell < ask
-                and cand_sell - buy_px >= min_width
-            ):
-                sell_px = cand_sell
-                self.logger.info(
-                    "NBBO tick improve SELL: ask_sz=%s sell_qty=%s -> sell_px=%.4f",
-                    self.quote.ask_size,
-                    sell_qty,
-                    sell_px,
-                )
-
-        return buy_px, sell_px
+        return self._nbbo_tick_improve_with_nbbo(
+            buy_px,
+            sell_px,
+            buy_qty,
+            sell_qty,
+            bid,
+            ask,
+            self.quote.bid_size,
+            self.quote.ask_size,
+        )
 
     def build_lmt_order(self, action: str, qty: int, px: float) -> Order:
         o = Order()
@@ -812,23 +834,28 @@ class MarketMaker(EWrapper, EClient):
     def max_sellable_qty(self) -> int:
         return max(0, self.position_qty)
 
-    def market_invalid_reason(self) -> Optional[str]:
-        if self.quote.bid is None:
+    def _market_invalid_reason_for_nbbo(
+        self,
+        bid: Optional[float],
+        ask: Optional[float],
+        last_update_ts: float,
+    ) -> Optional[str]:
+        if bid is None:
             return "missing bid"
-        if self.quote.ask is None:
+        if ask is None:
             return "missing ask"
-        if self.quote.bid <= 0:
-            return f"nonpositive bid {self.quote.bid}"
-        if self.quote.ask <= 0:
-            return f"nonpositive ask {self.quote.ask}"
-        if self.quote.bid >= self.quote.ask:
-            return f"crossed_or_locked bid={self.quote.bid:.2f} ask={self.quote.ask:.2f}"
+        if bid <= 0:
+            return f"nonpositive bid {bid}"
+        if ask <= 0:
+            return f"nonpositive ask {ask}"
+        if bid >= ask:
+            return f"crossed_or_locked bid={bid:.2f} ask={ask:.2f}"
 
-        age = time.time() - self.quote.last_update_ts
+        age = time.time() - last_update_ts
         if age > self.max_market_stale_seconds:
             return f"stale quote age={age:.1f}s max={self.max_market_stale_seconds:.1f}s"
 
-        spread = self.quote.ask - self.quote.bid
+        spread = ask - bid
         if spread < self.min_spread:
             return f"spread too small spread={spread:.2f} min={self.min_spread:.2f}"
 
@@ -837,15 +864,21 @@ class MarketMaker(EWrapper, EClient):
 
         return None
 
+    def market_invalid_reason(self) -> Optional[str]:
+        return self._market_invalid_reason_for_nbbo(
+            self.quote.bid,
+            self.quote.ask,
+            self.quote.last_update_ts,
+        )
+
     def _cancel_working_quotes_flat_inventory(self) -> None:
         """Cancel working buy; cancel sell only when flat or short (no inventory to lift)."""
         self.place_or_replace_buy(0, None)
         if self.position_qty <= 0:
             self.place_or_replace_sell(0, None)
 
-    def _abort_quotes_if_market_invalid(self) -> bool:
-        """If the book is not quotable, optionally cancel and log; return True to skip the rest."""
-        reason = self.market_invalid_reason()
+    def _abort_for_market_invalid_reason(self, reason: Optional[str]) -> bool:
+        """If ``reason`` is set, optionally cancel working quotes and log; return True."""
         if reason is None:
             return False
         if self.cancel_on_invalid_market:
@@ -853,6 +886,10 @@ class MarketMaker(EWrapper, EClient):
         if self.log_invalid_market_reasons:
             self.logger.info("Not quoting: %s", reason)
         return True
+
+    def _abort_quotes_if_market_invalid(self) -> bool:
+        """If the book is not quotable, optionally cancel and log; return True to skip the rest."""
+        return self._abort_for_market_invalid_reason(self.market_invalid_reason())
 
     def _abort_quotes_on_invalid_pair(
         self,
@@ -870,22 +907,22 @@ class MarketMaker(EWrapper, EClient):
     def market_is_valid(self) -> bool:
         return self.market_invalid_reason() is None
 
-    def compute_desired_quotes(self):
-        bid = self.quote.bid
-        ask = self.quote.ask
+    def _compute_desired_quotes_for(
+        self, bid: float, ask: float, position_qty: int, avg_cost: float
+    ) -> Tuple[Optional[float], Optional[float]]:
         spread = ask - bid
 
         buy_px = bid + min(self.inside_improve, spread * 0.25)
         sell_px = ask - min(self.inside_improve, spread * 0.25)
 
-        long_hundreds = max(0, self.position_qty) / 100.0
+        long_hundreds = max(0, position_qty) / 100.0
         skew = long_hundreds * self.inventory_penalty_per_100
 
         buy_px -= skew
         sell_px -= min(skew * 2.0, spread * 0.20)
 
-        if self.position_qty > 0 and self.avg_cost > 0:
-            sell_floor = self.avg_cost + self.target_roundtrip_capture
+        if position_qty > 0 and avg_cost > 0:
+            sell_floor = avg_cost + self.target_roundtrip_capture
             sell_px = max(sell_px, sell_floor)
 
         buy_px = min(buy_px, ask - 0.02)
@@ -899,19 +936,50 @@ class MarketMaker(EWrapper, EClient):
 
         return buy_px, sell_px
 
-    def desired_sizes(self):
-        buy_qty = min(self.base_qty, max(0, self.max_position - self.position_qty))
+    def compute_desired_quotes(self):
+        bid = self.quote.bid
+        ask = self.quote.ask
+        if bid is None or ask is None:
+            return None, None
+        return self._compute_desired_quotes_for(bid, ask, self.position_qty, self.avg_cost)
+
+    def _desired_sizes_for(self, position_qty: int, buy_shares_filled: int) -> Tuple[int, int]:
+        buy_qty = min(self.base_qty, max(0, self.max_position - position_qty))
         if self.max_buy_shares_per_run is not None:
-            room = max(0, self.max_buy_shares_per_run - self.buy_shares_filled)
+            room = max(0, self.max_buy_shares_per_run - buy_shares_filled)
             buy_qty = min(buy_qty, room)
-        sell_qty = self.max_sellable_qty()
+        sell_qty = max(0, position_qty)
         return buy_qty, sell_qty
+
+    def desired_sizes(self):
+        return self._desired_sizes_for(self.position_qty, self.buy_shares_filled)
 
     def _sell_working_open_qty(self, live: LiveOrder) -> int:
         """Working size for a sell (prefer IB ``remaining``, else last ``qty``)."""
         if live.remaining > 0:
             return int(live.remaining)
         return int(live.qty)
+
+    def _needs_quote_despite_nbbo_throttle_with(
+        self,
+        position_qty: int,
+        sell_snap: Optional[Tuple[str, int, int]],
+    ) -> bool:
+        if position_qty <= 0:
+            return False
+        if sell_snap is None:
+            return True
+        st, remaining, qty = sell_snap
+        if st in {"Filled", "Cancelled", "ApiCancelled", "Inactive"}:
+            return True
+        if remaining <= 0 and st not in {
+            "PreSubmitted",
+            "PendingSubmit",
+            "Submitted",
+        }:
+            return True
+        open_qty = int(remaining) if remaining > 0 else int(qty)
+        return open_qty < position_qty
 
     def _needs_quote_despite_nbbo_throttle(self) -> bool:
         """If True, run a quote cycle even when bid/ask and NBBO sizes are unchanged.
@@ -920,20 +988,12 @@ class MarketMaker(EWrapper, EClient):
         (e.g. after adding to the position, or stale adoption), so we place or bump size
         without waiting for an NBBO tick.
         """
-        if self.position_qty <= 0:
-            return False
-        if self.sell_order is None:
-            return True
-        st = self.sell_order.status
-        if st in {"Filled", "Cancelled", "ApiCancelled", "Inactive"}:
-            return True
-        if self.sell_order.remaining <= 0 and st not in {
-            "PreSubmitted",
-            "PendingSubmit",
-            "Submitted",
-        }:
-            return True
-        return self._sell_working_open_qty(self.sell_order) < self.position_qty
+        sell_snap = (
+            (self.sell_order.status, self.sell_order.remaining, self.sell_order.qty)
+            if self.sell_order
+            else None
+        )
+        return self._needs_quote_despite_nbbo_throttle_with(self.position_qty, sell_snap)
 
     def _should_keep_sell_adoption(self, incumbent: LiveOrder, candidate: LiveOrder) -> bool:
         """During ``reqOpenOrders`` adoption: prefer the sell that covers more shares."""
@@ -1045,94 +1105,125 @@ class MarketMaker(EWrapper, EClient):
         now = time.time()
 
         with self.lock:
-            self.logger.info(
-                "maybe_manage_quotes force=%s connected=%s shutdown=%s pos=%s gross=%s "
-                "bid=%s ask=%s bid_sz=%s ask_sz=%s",
-                force,
-                self.connected_flag,
-                self.shutdown_flag,
-                self.position_qty,
-                self.gross_shares_traded,
-                self.quote.bid,
-                self.quote.ask,
-                self.quote.bid_size,
-                self.quote.ask_size,
+            connected_flag = self.connected_flag
+            shutdown_flag = self.shutdown_flag
+            open_orders_snapshot_done = self.open_orders_snapshot_done
+            position_qty = self.position_qty
+            gross_shares_traded = self.gross_shares_traded
+            avg_cost = self.avg_cost
+            buy_shares_filled = self.buy_shares_filled
+            last_quote_eval = self.last_quote_eval
+            last_nbbo_snap = self._last_quote_nbbo_snap
+            quote_bid = self.quote.bid
+            quote_ask = self.quote.ask
+            quote_bid_sz = self.quote.bid_size
+            quote_ask_sz = self.quote.ask_size
+            quote_luts = self.quote.last_update_ts
+            buy_work_px = self.buy_order.price if self.buy_order else None
+            sell_work_px = self.sell_order.price if self.sell_order else None
+            sell_snap = (
+                (self.sell_order.status, self.sell_order.remaining, self.sell_order.qty)
+                if self.sell_order
+                else None
             )
 
-            if not self.connected_flag or self.shutdown_flag:
+        self.logger.info(
+            "maybe_manage_quotes force=%s connected=%s shutdown=%s pos=%s gross=%s "
+            "bid=%s ask=%s bid_sz=%s ask_sz=%s",
+            force,
+            connected_flag,
+            shutdown_flag,
+            position_qty,
+            gross_shares_traded,
+            quote_bid,
+            quote_ask,
+            quote_bid_sz,
+            quote_ask_sz,
+        )
+
+        if not connected_flag or shutdown_flag:
+            return
+
+        if not open_orders_snapshot_done:
+            self.logger.info(
+                "Open-order snapshot not complete; skipping quote management this cycle."
+            )
+            return
+
+        inv_reason = self._market_invalid_reason_for_nbbo(
+            quote_bid, quote_ask, quote_luts
+        )
+        if self._abort_for_market_invalid_reason(inv_reason):
+            return
+
+        if not force and (now - last_quote_eval) < self.quote_refresh_seconds:
+            snap = (quote_bid, quote_ask, quote_bid_sz, quote_ask_sz)
+            if snap == last_nbbo_snap and not self._needs_quote_despite_nbbo_throttle_with(
+                position_qty, sell_snap
+            ):
                 return
 
-            if not self.open_orders_snapshot_done:
-                self.logger.info(
-                    "Open-order snapshot not complete; skipping quote management this cycle."
-                )
-                return
-
-            if self._abort_quotes_if_market_invalid():
-                return
-
-            if not force and (now - self.last_quote_eval) < self.quote_refresh_seconds:
-                snap = (
-                    self.quote.bid,
-                    self.quote.ask,
-                    self.quote.bid_size,
-                    self.quote.ask_size,
-                )
-                if snap == self._last_quote_nbbo_snap and not self._needs_quote_despite_nbbo_throttle():
-                    return
+        with self.lock:
             self.last_quote_eval = now
 
-            buy_px, sell_px = self.compute_desired_quotes()
+        buy_px, sell_px = self._compute_desired_quotes_for(
+            float(quote_bid), float(quote_ask), position_qty, avg_cost
+        )
 
-            bid = self.quote.bid
-            ask = self.quote.ask
+        bid = float(quote_bid)
+        ask = float(quote_ask)
 
-            if self._abort_quotes_on_invalid_pair(
-                buy_px,
-                sell_px,
-                "Computed invalid quotes buy=%s sell=%s; cancelling.",
-            ):
-                return
+        if self._abort_quotes_on_invalid_pair(
+            buy_px,
+            sell_px,
+            "Computed invalid quotes buy=%s sell=%s; cancelling.",
+        ):
+            return
 
-            if bid is not None:
-                buy_px = max(buy_px, bid)
-            if ask is not None:
-                sell_px = min(sell_px, ask)
+        buy_px = max(buy_px, bid)
+        sell_px = min(sell_px, ask)
 
-            if self._abort_quotes_on_invalid_pair(
-                buy_px,
-                sell_px,
-                "Quotes invalid after NBBO clamp buy=%s sell=%s; cancelling.",
-            ):
-                return
+        if self._abort_quotes_on_invalid_pair(
+            buy_px,
+            sell_px,
+            "Quotes invalid after NBBO clamp buy=%s sell=%s; cancelling.",
+        ):
+            return
 
-            buy_qty, sell_qty = self.desired_sizes()
+        buy_qty, sell_qty = self._desired_sizes_for(position_qty, buy_shares_filled)
 
-            sell_qty = min(sell_qty, self.position_qty)
-            if self.position_qty <= 0:
-                sell_qty = 0
+        sell_qty = min(sell_qty, position_qty)
+        if position_qty <= 0:
+            sell_qty = 0
 
-            if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
-                sell_qty = 0
+        if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
+            sell_qty = 0
 
-            buy_px, sell_px = self._nbbo_tick_improve_quotes(
-                buy_px, sell_px, buy_qty, sell_qty
+        buy_px, sell_px = self._nbbo_tick_improve_with_nbbo(
+            buy_px,
+            sell_px,
+            buy_qty,
+            sell_qty,
+            bid,
+            ask,
+            quote_bid_sz,
+            quote_ask_sz,
+        )
+
+        if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
+            sell_qty = 0
+
+        if sell_work_px is not None and buy_qty > 0 and buy_px >= sell_work_px:
+            buy_px = self.round_down_cent(sell_work_px - 0.01)
+
+        if buy_work_px is not None and sell_qty > 0 and sell_px <= buy_work_px:
+            sell_px = self.round_up_cent(buy_work_px + 0.01)
+
+        if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
+            self.logger.warning(
+                "Final anti-self-trade guard triggered; suppressing sell quote."
             )
-
-            if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
-                sell_qty = 0
-
-            if self.sell_order and buy_qty > 0 and buy_px >= self.sell_order.price:
-                buy_px = self.round_down_cent(self.sell_order.price - 0.01)
-
-            if self.buy_order and sell_qty > 0 and sell_px <= self.buy_order.price:
-                sell_px = self.round_up_cent(self.buy_order.price + 0.01)
-
-            if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
-                self.logger.warning(
-                    "Final anti-self-trade guard triggered; suppressing sell quote."
-                )
-                sell_qty = 0
+            sell_qty = 0
 
         self.place_or_replace_buy(buy_qty, buy_px if buy_qty > 0 else None)
         self.place_or_replace_sell(sell_qty, sell_px if sell_qty > 0 else None)
