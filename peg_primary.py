@@ -127,6 +127,7 @@ class Trader(EWrapper, EClient):
         self.sync_requested = False
         self.last_resync_request_ts = 0.0
         self.resync_debounce_seconds = float(self.config.get("resync_debounce_seconds", 0.35))
+        self._prev_us_regular_hours: bool | None = None
         _mos = int(self.config.get("min_order_size", 10))
         self.min_order_size = max(1, _mos)
 
@@ -811,7 +812,25 @@ class Trader(EWrapper, EClient):
             if not self.isConnected():
                 self.logger.info("Disconnected from IBKR; exiting run loop")
                 break
-            if self.us_regular_hours():
+            in_hours = self.us_regular_hours()
+            if self._prev_us_regular_hours is True and not in_hours:
+                tz_name = self.config["market_timezone"]
+                ny = pytz.timezone(tz_name)
+                now = datetime.datetime.now(tz=ny)
+                moh = int(self.config["market_open_hour"])
+                mom = int(self.config["market_open_minute"])
+                mch = int(self.config["market_close_hour"])
+                self.logger.info(
+                    "Regular session ended (now %s; configured window %02d:%02d–%02d:00 %s). "
+                    "Quoting paused; DAY orders may be canceled by the broker at the close.",
+                    now.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                    moh,
+                    mom,
+                    mch,
+                    tz_name,
+                )
+            self._prev_us_regular_hours = in_hours
+            if in_hours:
                 self.sync_requested = True
                 self.request_positions_snapshot()
                 self.request_open_orders_snapshot()
