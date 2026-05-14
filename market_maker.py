@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import logging.handlers
 import math
@@ -21,6 +20,15 @@ from ibapi.contract import Contract
 from ibapi.order import Order
 from ibapi.order_cancel import OrderCancel
 from ibapi.wrapper import EWrapper
+
+from ibkr_app_support import (
+    build_logger,
+    cfg_bool as _cfg_bool,
+    cli_to_config,
+    flatten_config_sections,
+    load_config_file,
+    merge_config,
+)
 
 
 @dataclass
@@ -83,82 +91,16 @@ class QuotePipelineInvalidPair:
     sell_px: Optional[float]
 
 
-def _normalize_config_key(name: str) -> str:
-    return name.replace("-", "_")
-
-
-def flatten_config_sections(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Expand one level of section objects into a flat dict (underscore leaf keys, peg_best-style).
-
-    Top-level scalars and lists stay as-is. Nested dict values merge their snake_case keys into
-    the result; top-level keys (except those starting with ``_``) override section values.
-    """
-    section_flat: Dict[str, Any] = {}
-    top_level: Dict[str, Any] = {}
-    for key, value in data.items():
-        sk = _normalize_config_key(str(key))
-        if sk.startswith("_"):
-            continue
-        if isinstance(value, dict):
-            for subkey, subval in value.items():
-                nk = _normalize_config_key(str(subkey))
-                if nk.startswith("_"):
-                    continue
-                if nk in section_flat:
-                    raise ValueError(f"Duplicate config key {nk!r} (from nested sections)")
-                section_flat[nk] = subval
-        else:
-            top_level[sk] = value
-    merged = dict(section_flat)
-    merged.update(top_level)
-    return merged
-
-
-def load_config_file(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        raise ValueError("Config file must contain a JSON object at the top level")
-    return flatten_config_sections(data)
-
-
-def cli_to_config(args: argparse.Namespace) -> Dict[str, Any]:
-    result: Dict[str, Any] = {}
-    for key, value in vars(args).items():
-        if key == "config" or value is None:
-            continue
-        result[key] = value
-    return result
-
-
-def merge_config(file_config: Dict[str, Any], cli_config: Dict[str, Any]) -> Dict[str, Any]:
-    merged = dict(file_config)
-    merged.update(cli_config)
-    return merged
-
-
-def _cfg_bool(config: Dict[str, Any], key: str, default: bool) -> bool:
-    if key not in config:
-        return default
-    v = config[key]
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, (int, float)) and not isinstance(v, bool):
-        return bool(v)
-    s = str(v).strip().lower()
-    if s in ("0", "false", "no", "off", ""):
-        return False
-    if s in ("1", "true", "yes", "on"):
-        return True
-    raise ValueError(f"Invalid boolean for {key!r}: {v!r}")
-
-
 class MarketMaker(EWrapper, EClient):
     def __init__(self, config: Dict[str, Any]):
         EClient.__init__(self, self)
 
         self.config = config
-        self.logger = self._build_logger(config)
+        self.logger = build_logger(
+            config,
+            logger_name="market_maker",
+            default_log_file="market_maker.log",
+        )
 
         self.host = str(config.get("host", "127.0.0.1"))
         self.port = int(config.get("port", 7496))
@@ -269,44 +211,6 @@ class MarketMaker(EWrapper, EClient):
             self.contract.exchange,
             self.contract.primaryExchange,
         )
-
-    @staticmethod
-    def _build_logger(config: Dict[str, Any]):
-        log_dir = Path(str(config.get("log_dir", "logs")))
-        log_file = str(config.get("log_file", "market_maker.log"))
-        level_name = str(config.get("level", "INFO")).upper()
-        max_bytes = int(config.get("max_bytes", 5_000_000))
-        backup_count = int(config.get("backup_count", 10))
-        use_console = _cfg_bool(config, "console", True)
-
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-        logger = logging.getLogger("market_maker")
-        logger.setLevel(getattr(logging, level_name, logging.INFO))
-        logger.handlers.clear()
-        logger.propagate = False
-
-        fmt = logging.Formatter(
-            "%(asctime)s %(levelname)s %(name)s %(threadName)s %(message)s"
-        )
-
-        fh = logging.handlers.RotatingFileHandler(
-            log_dir / log_file,
-            maxBytes=max_bytes,
-            backupCount=backup_count,
-            encoding="utf-8",
-        )
-        fh.setFormatter(fmt)
-        fh.setLevel(getattr(logging, level_name, logging.INFO))
-        logger.addHandler(fh)
-
-        if use_console:
-            ch = logging.StreamHandler(sys.stdout)
-            ch.setFormatter(fmt)
-            ch.setLevel(getattr(logging, level_name, logging.INFO))
-            logger.addHandler(ch)
-
-        return logger
 
     @staticmethod
     def build_contract(config: Dict[str, Any]) -> Contract:

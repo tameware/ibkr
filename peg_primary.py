@@ -37,9 +37,6 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import json
-import logging
-import logging.handlers
 import sys
 import threading
 import time
@@ -48,6 +45,13 @@ from typing import Any, Dict, Tuple
 
 import pytz
 
+from ibkr_app_support import (
+    build_logger,
+    cli_to_config,
+    load_config_file,
+    merge_config,
+    require_fields,
+)
 from ibapi.client import EClient
 from ibapi.common import TickAttrib, TickerId
 from ibapi.contract import Contract
@@ -57,92 +61,6 @@ from ibapi.wrapper import EWrapper
 
 HIST_REQ_ID = 1001
 MKTDATA_REQ_ID = 3001
-
-
-def _cfg_bool(config: Dict[str, Any], key: str, default: bool) -> bool:
-    if key not in config:
-        return default
-    v = config[key]
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, (int, float)) and not isinstance(v, bool):
-        return bool(v)
-    s = str(v).strip().lower()
-    if s in ("0", "false", "no", "off", ""):
-        return False
-    if s in ("1", "true", "yes", "on"):
-        return True
-    raise ValueError(f"Invalid boolean for {key!r}: {v!r}")
-
-
-def _build_logger(config: Dict[str, Any]) -> logging.Logger:
-    """Configure a dedicated logger (file + optional console), same style as ``market_maker``."""
-    log_dir = Path(str(config.get("log_dir", "logs")))
-    log_file = str(config.get("log_file", "peg_primary.log"))
-    level_name = str(config.get("level", "INFO")).upper()
-    max_bytes = int(config.get("max_bytes", 5_000_000))
-    backup_count = int(config.get("backup_count", 10))
-    use_console = _cfg_bool(config, "console", True)
-
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    logger = logging.getLogger("peg_primary")
-    logger.setLevel(getattr(logging, level_name, logging.INFO))
-    for h in list(logger.handlers):
-        logger.removeHandler(h)
-        h.close()
-    logger.propagate = False
-
-    fmt = logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s %(threadName)s %(message)s"
-    )
-
-    fh = logging.handlers.RotatingFileHandler(
-        log_dir / log_file,
-        maxBytes=max_bytes,
-        backupCount=backup_count,
-        encoding="utf-8",
-    )
-    fh.setFormatter(fmt)
-    fh.setLevel(getattr(logging, level_name, logging.INFO))
-    logger.addHandler(fh)
-
-    if use_console:
-        ch = logging.StreamHandler(sys.stdout)
-        ch.setFormatter(fmt)
-        ch.setLevel(getattr(logging, level_name, logging.INFO))
-        logger.addHandler(ch)
-
-    return logger
-
-
-def load_config_file(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        raise ValueError("Config file must contain a JSON object at the top level")
-    return data
-
-
-def cli_to_config(args: argparse.Namespace) -> Dict[str, Any]:
-    result: Dict[str, Any] = {}
-    for key, value in vars(args).items():
-        if key == "config" or value is None:
-            continue
-        result[key] = value
-    return result
-
-
-def merge_config(file_config: Dict[str, Any], cli_config: Dict[str, Any]) -> Dict[str, Any]:
-    merged = dict(file_config)
-    merged.update(cli_config)
-    return merged
-
-
-def require_fields(config: Dict[str, Any], required_fields: list[str]) -> None:
-    missing = [field for field in required_fields if field not in config]
-    if missing:
-        raise ValueError(f"Missing required configuration fields: {', '.join(missing)}")
 
 
 def make_rel_order(
@@ -220,7 +138,11 @@ class Trader(EWrapper, EClient):
         self.order_working_lmt: Dict[int, float] = {}
         self.order_working_aux: Dict[int, float] = {}
 
-        self.logger = _build_logger(config)
+        self.logger = build_logger(
+            config,
+            logger_name="peg_primary",
+            default_log_file="peg_primary.log",
+        )
         self.logger.info(
             "REL quoter initialized symbol=%s exchange=%s",
             self.config["symbol"],

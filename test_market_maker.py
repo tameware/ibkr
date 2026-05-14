@@ -60,15 +60,17 @@ sys.modules["ibapi.contract"] = mock_ibapi.contract
 sys.modules["ibapi.order"] = mock_ibapi.order
 sys.modules["ibapi.order_cancel"] = mock_ibapi.order_cancel
 
+from ibkr_app_support import (
+    cli_to_config,
+    flatten_config_sections,
+    load_config_file,
+    merge_config,
+)
 from market_maker import (  # noqa: E402
     LiveOrder,
     MarketMaker,
     QuoteState,
     build_arg_parser,
-    cli_to_config,
-    flatten_config_sections,
-    load_config_file,
-    merge_config,
 )
 
 
@@ -158,8 +160,8 @@ class TestNbboTickImprove(unittest.TestCase):
     """NBBO one-tick improvement vs size and min quote width."""
 
     def setUp(self):
-        self._log_patcher = patch.object(
-            MarketMaker, "_build_logger", return_value=MagicMock()
+        self._log_patcher = patch(
+            "market_maker.build_logger", return_value=MagicMock()
         )
         self._log_patcher.start()
         self.addCleanup(self._log_patcher.stop)
@@ -283,8 +285,8 @@ class TestMarketMakerCore(unittest.TestCase):
     """MarketMaker instance behavior with mocks."""
 
     def setUp(self):
-        self._log_patcher = patch.object(
-            MarketMaker, "_build_logger", return_value=MagicMock()
+        self._log_patcher = patch(
+            "market_maker.build_logger", return_value=MagicMock()
         )
         self._log_patcher.start()
         self.addCleanup(self._log_patcher.stop)
