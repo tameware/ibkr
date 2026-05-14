@@ -23,7 +23,8 @@ resize or re-peg existing working orders to match current NBBO / safety limits.
 
 The TWS API exposes Pegged-to-Primary as ``orderType = "REL"`` with ``lmtPrice``
 as the protective cap (buy ceiling / sell floor) and ``auxPrice`` as the offset
-from the primary quote — IB adjusts the working price with the NBBO; the client
+from the primary quote (both rounded with ``price_round_digits``). IB adjusts
+the working price with the NBBO; the client
 does not need a tick-improve loop like ``market_maker.py``.
 
 See: https://www.interactivebrokers.com/campus/ibkr-api-page/order-types/
@@ -98,14 +99,14 @@ def make_rel_order(
     exchange: str,
     tif: str,
     price_round_digits: int,
-    aux_round_digits: int,
 ) -> Order:
     o = Order()
     o.action = action
     o.orderType = "REL"
     o.totalQuantity = qty
-    o.lmtPrice = round(limit_price, price_round_digits)
-    o.auxPrice = round(offset, aux_round_digits)
+    d = int(price_round_digits)
+    o.lmtPrice = round(limit_price, d)
+    o.auxPrice = round(offset, d)
     o.exchange = exchange
     o.tif = tif
     # Do not set ``notHeld`` on REL: IB rejects with 10297 "Not Held attribute is
@@ -189,7 +190,6 @@ class Trader(EWrapper, EClient):
             exchange=self.config["exchange"],
             tif=self.config["tif"],
             price_round_digits=int(self.config["price_round_digits"]),
-            aux_round_digits=int(self.config.get("aux_round_digits", self.config["price_round_digits"])),
         )
 
     def _meets_min_order_size(self, qty: int) -> bool:
@@ -632,9 +632,8 @@ class Trader(EWrapper, EClient):
         old_l = float(self.order_working_lmt[oid])
         old_a = float(self.order_working_aux[oid])
         digits = int(self.config["price_round_digits"])
-        aux_digits = int(self.config.get("aux_round_digits", self.config["price_round_digits"]))
-        if round(old_l, digits) == round(new_l, digits) and round(old_a, aux_digits) == round(
-            new_a, aux_digits
+        if round(old_l, digits) == round(new_l, digits) and round(old_a, digits) == round(
+            new_a, digits
         ):
             return False
         tprint(
@@ -882,7 +881,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--last_trade_min_size", type=float)
     parser.add_argument("--tif")
     parser.add_argument("--price_round_digits", type=int)
-    parser.add_argument("--aux_round_digits", type=int)
     parser.add_argument("--resync_debounce_seconds", type=float)
     parser.add_argument(
         "--offset_pct",

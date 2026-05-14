@@ -165,13 +165,12 @@ class TestHelpers(unittest.TestCase):
             exchange="SMART",
             tif="DAY",
             price_round_digits=2,
-            aux_round_digits=3,
         )
         self.assertEqual(o.action, "BUY")
         self.assertEqual(o.orderType, "REL")
         self.assertEqual(o.totalQuantity, 50)
         self.assertEqual(o.lmtPrice, 10.13)
-        self.assertEqual(o.auxPrice, 0.012)
+        self.assertEqual(o.auxPrice, 0.01)
         self.assertEqual(o.exchange, "SMART")
         self.assertEqual(o.tif, "DAY")
         self.assertFalse(getattr(o, "notHeld", False))

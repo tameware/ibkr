@@ -15,7 +15,6 @@
   "market_open_minute": 30,
   "market_close_hour": 16,
   "price_round_digits": 2,
-  "aux_round_digits": 4,
   "last_trade_min_size": 10.0,
   "last_trade_safety_pct": 0.01,
   "tif": "DAY",
