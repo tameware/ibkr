@@ -850,6 +850,21 @@ class MarketMaker(EWrapper, EClient):
             self.logger.info("Not quoting: %s", reason)
         return True
 
+    def _abort_quotes_on_invalid_pair(
+        self,
+        buy_px: Optional[float],
+        sell_px: Optional[float],
+        warning_msg: str,
+    ) -> bool:
+        """If the buy/sell quote pair is unusable, cancel working quotes, log, return True."""
+        if buy_px is not None and sell_px is not None and buy_px < sell_px:
+            return False
+        self.place_or_replace_buy(0, None)
+        if self.position_qty <= 0:
+            self.place_or_replace_sell(0, None)
+        self.logger.warning(warning_msg, buy_px, sell_px)
+        return True
+
     def market_is_valid(self) -> bool:
         return self.market_invalid_reason() is None
 
@@ -1079,15 +1094,11 @@ class MarketMaker(EWrapper, EClient):
             bid = self.quote.bid
             ask = self.quote.ask
 
-            if buy_px is None or sell_px is None or buy_px >= sell_px:
-                self.place_or_replace_buy(0, None)
-                if self.position_qty <= 0:
-                    self.place_or_replace_sell(0, None)
-                self.logger.warning(
-                    "Computed invalid quotes buy=%s sell=%s; cancelling.",
-                    buy_px,
-                    sell_px,
-                )
+            if self._abort_quotes_on_invalid_pair(
+                buy_px,
+                sell_px,
+                "Computed invalid quotes buy=%s sell=%s; cancelling.",
+            ):
                 return
 
             if bid is not None:
@@ -1095,15 +1106,11 @@ class MarketMaker(EWrapper, EClient):
             if ask is not None:
                 sell_px = min(sell_px, ask)
 
-            if buy_px is None or sell_px is None or buy_px >= sell_px:
-                self.place_or_replace_buy(0, None)
-                if self.position_qty <= 0:
-                    self.place_or_replace_sell(0, None)
-                self.logger.warning(
-                    "Quotes invalid after NBBO clamp buy=%s sell=%s; cancelling.",
-                    buy_px,
-                    sell_px,
-                )
+            if self._abort_quotes_on_invalid_pair(
+                buy_px,
+                sell_px,
+                "Quotes invalid after NBBO clamp buy=%s sell=%s; cancelling.",
+            ):
                 return
 
             buy_qty, sell_qty = self.desired_sizes()
