@@ -17,6 +17,10 @@ bot does not place, modify, or cancel orders until both bid and ask are valid
 (positive and ask > bid). Orders are
 not submitted when computed quantity is below ``min_order_size`` (default 10).
 
+On each connection, after the first ``reqOpenOrders`` snapshot completes, all
+open orders for the configured symbol are printed, then ``sync_orders`` may
+resize or re-peg existing working orders to match current NBBO / safety limits.
+
 The TWS API exposes Pegged-to-Primary as ``orderType = "REL"`` with ``lmtPrice``
 as the protective cap (buy ceiling / sell floor) and ``auxPrice`` as the offset
 from the primary quote — IB adjusts the working price with the NBBO; the client
@@ -153,6 +157,11 @@ class Trader(EWrapper, EClient):
         _mos = int(self.config.get("min_order_size", 10))
         self.min_order_size = max(1, _mos)
 
+        self._snapshot_open_order_lines: list[str] = []
+        self._startup_open_orders_logged = False
+        self.order_working_lmt: Dict[int, float] = {}
+        self.order_working_aux: Dict[int, float] = {}
+
     def make_us_stock(
         self, symbol: str, sec_type: str, currency: str, exchange: str, primary_exchange: str
     ) -> Contract:
@@ -252,6 +261,8 @@ class Trader(EWrapper, EClient):
                 self.pending_sell = False
                 self.sell_order_id = None
                 self.sell_order_qty = None
+            self.order_working_lmt.pop(orderId, None)
+            self.order_working_aux.pop(orderId, None)
             self.remaining_by_order.pop(orderId, None)
             self.filled_by_order.pop(orderId, None)
             self.trigger_resync()
@@ -317,6 +328,7 @@ class Trader(EWrapper, EClient):
 
         tprint(f"nextValidId: {orderId}")
         self.nextOrderId = orderId
+        self._startup_open_orders_logged = False
 
         self.request_positions_snapshot()
         self.request_today_open_or_prior_close()
@@ -337,6 +349,22 @@ class Trader(EWrapper, EClient):
                 qty = int(float(order.totalQuantity))
             except (TypeError, ValueError):
                 qty = None
+            try:
+                lmt = float(order.lmtPrice)
+                aux = float(getattr(order, "auxPrice", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                lmt = float("nan")
+                aux = 0.0
+            if lmt == lmt:  # not NaN
+                self.order_working_lmt[orderId] = lmt
+                self.order_working_aux[orderId] = aux
+            st = getattr(orderState, "status", "") or ""
+            line = (
+                f"  id={orderId} {order.action} {order.orderType} "
+                f"totalQty={order.totalQuantity} lmtPrice={order.lmtPrice} "
+                f"auxPrice={getattr(order, 'auxPrice', '')} status={st}"
+            )
+            self._snapshot_open_order_lines.append(line)
             if order.action == "BUY":
                 self.open_symbol_buys += 1
                 self.buy_order_id = orderId
@@ -349,6 +377,18 @@ class Trader(EWrapper, EClient):
     def openOrderEnd(self):
         self.open_orders_snapshot_complete = True
         self.ready_for_trading = self.position_snapshot_complete and self.open_orders_snapshot_complete
+        if not self._startup_open_orders_logged:
+            sym = self.config["symbol"]
+            if self._snapshot_open_order_lines:
+                tprint(
+                    f"Open orders at startup for {sym} ({self.config['sec_type']}): "
+                    f"{len(self._snapshot_open_order_lines)}"
+                )
+                for ln in self._snapshot_open_order_lines:
+                    tprint(ln)
+            else:
+                tprint(f"Open orders at startup for {sym} ({self.config['sec_type']}): none")
+            self._startup_open_orders_logged = True
         self.maybe_sync_orders()
 
     def error(self, reqId, errorTime, errorCode, errorString, advancedOrderRejectJson=""):
@@ -488,6 +528,9 @@ class Trader(EWrapper, EClient):
         self.open_orders_snapshot_complete = False
         self.open_symbol_buys = 0
         self.open_symbol_sells = 0
+        self._snapshot_open_order_lines = []
+        self.order_working_lmt.clear()
+        self.order_working_aux.clear()
         self.reqOpenOrders()
 
     def maybe_sync_orders(self):
@@ -497,15 +540,20 @@ class Trader(EWrapper, EClient):
 
     def _clear_order_state(self, action: str) -> None:
         if action == "BUY":
+            oid = self.buy_order_id
             self.pending_buy = False
             self.buy_order_id = None
             self.buy_order_qty = None
             self.open_symbol_buys = 0
         else:
+            oid = self.sell_order_id
             self.pending_sell = False
             self.sell_order_id = None
             self.sell_order_qty = None
             self.open_symbol_sells = 0
+        if oid is not None:
+            self.order_working_lmt.pop(oid, None)
+            self.order_working_aux.pop(oid, None)
 
     def _maybe_resize_existing(
         self,
@@ -558,10 +606,43 @@ class Trader(EWrapper, EClient):
         )
         order = self.build_rel_order(action, new_total, limit_price)
         self.placeOrder(oid, self.contract, order)
+        self._note_order_cache(oid, order)
         if action == "BUY":
             self.buy_order_qty = new_total
         else:
             self.sell_order_qty = new_total
+        return True
+
+    def _note_order_cache(self, oid: int, order: Order) -> None:
+        try:
+            self.order_working_lmt[oid] = float(order.lmtPrice)
+            self.order_working_aux[oid] = float(getattr(order, "auxPrice", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pass
+
+    def _maybe_update_order_price(
+        self, action: str, oid: int, total_qty: int, limit_price: float
+    ) -> bool:
+        """Amend working ``lmtPrice`` / ``auxPrice`` when NBBO-derived limits move but size is unchanged."""
+        if oid not in self.order_working_lmt or oid not in self.order_working_aux:
+            return False
+        new_order = self.build_rel_order(action, total_qty, limit_price)
+        new_l = float(new_order.lmtPrice)
+        new_a = float(new_order.auxPrice)
+        old_l = float(self.order_working_lmt[oid])
+        old_a = float(self.order_working_aux[oid])
+        digits = int(self.config["price_round_digits"])
+        aux_digits = int(self.config.get("aux_round_digits", self.config["price_round_digits"]))
+        if round(old_l, digits) == round(new_l, digits) and round(old_a, aux_digits) == round(
+            new_a, aux_digits
+        ):
+            return False
+        tprint(
+            f"Updating {action} id={oid} lmtPrice {old_l}->{new_l} "
+            f"auxPrice {old_a}->{new_a} (totalQty={total_qty})"
+        )
+        self.placeOrder(oid, self.contract, new_order)
+        self._note_order_cache(oid, new_order)
         return True
 
     def trigger_resync(self):
@@ -596,11 +677,14 @@ class Trader(EWrapper, EClient):
         if pos <= 0:
             if self.sell_order_id is not None:
                 tprint(f"Cancelling SELL order id={self.sell_order_id} (flat or flat target)")
-                self.safe_cancel_order(self.sell_order_id)
+                sid = self.sell_order_id
+                self.safe_cancel_order(sid)
                 self.pending_sell = False
                 self.sell_order_id = None
                 self.sell_order_qty = None
                 self.open_symbol_sells = 0
+                self.order_working_lmt.pop(sid, None)
+                self.order_working_aux.pop(sid, None)
                 return
 
             if self.open_symbol_sells > 0:
@@ -608,13 +692,17 @@ class Trader(EWrapper, EClient):
 
             buy_qty = max_pos
             if self.buy_order_id is not None and self.buy_order_qty is not None:
-                self._maybe_resize_existing(
+                oid = self.buy_order_id
+                qty = self.buy_order_qty
+                resized = self._maybe_resize_existing(
                     action="BUY",
-                    oid=self.buy_order_id,
-                    current_total_qty=self.buy_order_qty,
+                    oid=oid,
+                    current_total_qty=qty,
                     desired_remaining=buy_qty,
                     limit_price=buy_limit,
                 )
+                if not resized:
+                    self._maybe_update_order_price("BUY", oid, qty, buy_limit)
             elif (
                 self._meets_min_order_size(buy_qty)
                 and self.open_symbol_buys == 0
@@ -632,16 +720,20 @@ class Trader(EWrapper, EClient):
                     f"auxPrice={off} id={oid}"
                 )
                 self.placeOrder(oid, self.contract, order)
+                self._note_order_cache(oid, order)
             return
 
         if pos >= max_pos:
             if self.buy_order_id is not None:
                 tprint(f"Cancelling BUY order id={self.buy_order_id} (at or above max_pos)")
-                self.safe_cancel_order(self.buy_order_id)
+                buy_oid = self.buy_order_id
+                self.safe_cancel_order(buy_oid)
                 self.pending_buy = False
                 self.buy_order_id = None
                 self.buy_order_qty = None
                 self.open_symbol_buys = 0
+                self.order_working_lmt.pop(buy_oid, None)
+                self.order_working_aux.pop(buy_oid, None)
                 return
 
             if self.open_symbol_buys > 0:
@@ -649,13 +741,17 @@ class Trader(EWrapper, EClient):
 
             sell_qty = pos
             if self.sell_order_id is not None and self.sell_order_qty is not None:
-                self._maybe_resize_existing(
+                oid = self.sell_order_id
+                qty = self.sell_order_qty
+                resized = self._maybe_resize_existing(
                     action="SELL",
-                    oid=self.sell_order_id,
-                    current_total_qty=self.sell_order_qty,
+                    oid=oid,
+                    current_total_qty=qty,
                     desired_remaining=sell_qty,
                     limit_price=sell_limit,
                 )
+                if not resized:
+                    self._maybe_update_order_price("SELL", oid, qty, sell_limit)
             elif (
                 self._meets_min_order_size(sell_qty)
                 and self.open_symbol_sells == 0
@@ -673,6 +769,7 @@ class Trader(EWrapper, EClient):
                     f"auxPrice={off} id={oid}"
                 )
                 self.placeOrder(oid, self.contract, order)
+                self._note_order_cache(oid, order)
             return
 
         # 0 < pos < max_pos: quote both add (room to max_pos) and exit (current position).
@@ -680,13 +777,17 @@ class Trader(EWrapper, EClient):
         sell_qty = pos
 
         if self.buy_order_id is not None and self.buy_order_qty is not None:
-            self._maybe_resize_existing(
+            oid = self.buy_order_id
+            qty = self.buy_order_qty
+            resized = self._maybe_resize_existing(
                 action="BUY",
-                oid=self.buy_order_id,
-                current_total_qty=self.buy_order_qty,
+                oid=oid,
+                current_total_qty=qty,
                 desired_remaining=buy_qty,
                 limit_price=buy_limit,
             )
+            if not resized:
+                self._maybe_update_order_price("BUY", oid, qty, buy_limit)
         elif (
             self._meets_min_order_size(buy_qty)
             and self.open_symbol_buys == 0
@@ -704,15 +805,20 @@ class Trader(EWrapper, EClient):
                 f"auxPrice={off} id={oid}"
             )
             self.placeOrder(oid, self.contract, order)
+            self._note_order_cache(oid, order)
 
         if self.sell_order_id is not None and self.sell_order_qty is not None:
-            self._maybe_resize_existing(
+            oid = self.sell_order_id
+            qty = self.sell_order_qty
+            resized = self._maybe_resize_existing(
                 action="SELL",
-                oid=self.sell_order_id,
-                current_total_qty=self.sell_order_qty,
+                oid=oid,
+                current_total_qty=qty,
                 desired_remaining=sell_qty,
                 limit_price=sell_limit,
             )
+            if not resized:
+                self._maybe_update_order_price("SELL", oid, qty, sell_limit)
         elif (
             self._meets_min_order_size(sell_qty)
             and self.open_symbol_sells == 0
@@ -730,6 +836,7 @@ class Trader(EWrapper, EClient):
                 f"auxPrice={off} id={oid}"
             )
             self.placeOrder(oid, self.contract, order)
+            self._note_order_cache(oid, order)
 
     def run_loop(self):
         while True:

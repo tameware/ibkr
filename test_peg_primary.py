@@ -278,6 +278,24 @@ class TestTrader(unittest.TestCase):
         self.t.sync_orders()
         self.t.placeOrder.assert_not_called()
 
+    def test_sync_updates_buy_lmt_when_cached_stale(self):
+        """If working qty matches target but lmtPrice differs from NBBO-derived limit, amend."""
+        self.t.ready_for_trading = True
+        self.t.nextOrderId = 500
+        self.t.position_size = 0
+        self.t.buy_order_id = 77
+        self.t.buy_order_qty = 100
+        self.t.remaining_by_order[77] = 100
+        self.t.order_working_lmt[77] = 48.0
+        self.t.order_working_aux[77] = 0.01
+        self.t.open_symbol_buys = 1
+        self.t.placeOrder = Mock()
+        self.t.sync_orders()
+        self.t.placeOrder.assert_called_once()
+        oid, _, order = self.t.placeOrder.call_args[0]
+        self.assertEqual(oid, 77)
+        self.assertEqual(order.lmtPrice, 49.95)
+
     def test_sync_orders_partial_places_buy_and_sell(self):
         self.cfg["max_pos"] = 100
         self.t.ready_for_trading = True
@@ -807,6 +825,38 @@ class TestBuildArgParser(unittest.TestCase):
         p = build_arg_parser()
         args = p.parse_args([])
         self.assertTrue(str(args.config).endswith("peg_primary.json"))
+
+
+class TestStartupOpenOrders(unittest.TestCase):
+    def test_open_order_end_logs_snapshot_once(self):
+        cfg = _minimal_config()
+        t = Trader(cfg)
+        t._startup_open_orders_logged = False
+        contract = MockContract()
+        contract.symbol = "TEST"
+        contract.secType = "STK"
+        order = MockOrder()
+        order.action = "BUY"
+        order.orderType = "REL"
+        order.totalQuantity = 100
+        order.lmtPrice = 48.0
+        order.auxPrice = 0.01
+        state = MagicMock()
+        state.status = "Submitted"
+        t.reqOpenOrders = Mock()
+        with patch("peg_primary.tprint") as tp:
+            t.request_open_orders_snapshot()
+            t.openOrder(7, contract, order, state)
+            t.openOrderEnd()
+        lines = [str(c.args[0]) for c in tp.call_args_list]
+        self.assertTrue(any("Open orders at startup for TEST" in x for x in lines))
+        self.assertTrue(any("id=7" in x for x in lines))
+
+        with patch("peg_primary.tprint") as tp2:
+            t.openOrderEnd()
+        self.assertFalse(
+            any("Open orders at startup" in str(c.args[0]) for c in tp2.call_args_list)
+        )
 
 
 if __name__ == "__main__":
