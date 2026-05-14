@@ -512,7 +512,7 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.place_or_replace_sell = Mock()
 
         with patch("market_maker.time.time", return_value=ts), patch.object(
-            self.mm, "compute_desired_quotes", return_value=(50.0, 51.0)
+            self.mm, "_compute_desired_quotes_for", return_value=(50.0, 51.0)
         ):
             self.mm.maybe_manage_quotes(force=False)
 
@@ -659,7 +659,7 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.place_or_replace_sell = Mock()
 
         with patch("market_maker.time.time", return_value=ts), patch.object(
-            self.mm, "compute_desired_quotes", return_value=(50.0, 51.0)
+            self.mm, "_compute_desired_quotes_for", return_value=(50.0, 51.0)
         ):
             self.mm.maybe_manage_quotes(force=False)
 

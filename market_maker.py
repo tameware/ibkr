@@ -13,7 +13,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple, Union
 
 from ibapi.client import EClient
 from ibapi.common import OrderId, TickerId
@@ -41,6 +41,46 @@ class LiveOrder:
     status: str = "PendingSubmit"
     filled: int = 0
     remaining: int = 0
+
+
+@dataclass(frozen=True)
+class QuoteMgmtSnapshot:
+    """Point-in-time state for one quote-management cycle (built under ``self.lock``)."""
+
+    connected_flag: bool
+    shutdown_flag: bool
+    open_orders_snapshot_done: bool
+    position_qty: int
+    gross_shares_traded: int
+    avg_cost: float
+    buy_shares_filled: int
+    last_quote_eval: float
+    last_nbbo_snap: Optional[Tuple[Optional[float], Optional[float], int, int]]
+    quote_bid: Optional[float]
+    quote_ask: Optional[float]
+    quote_bid_sz: int
+    quote_ask_sz: int
+    quote_luts: float
+    buy_work_px: Optional[float]
+    sell_work_px: Optional[float]
+    sell_snap: Optional[Tuple[str, int, int]]
+
+
+@dataclass(frozen=True)
+class QuoteDecision:
+    buy_qty: int
+    buy_px: float
+    sell_qty: int
+    sell_px: float
+
+
+@dataclass(frozen=True)
+class QuotePipelineInvalidPair:
+    """Desired bid/ask pair is unusable; ``after_compute`` selects the warning template."""
+
+    after_compute: bool
+    buy_px: Optional[float]
+    sell_px: Optional[float]
 
 
 def _normalize_config_key(name: str) -> str:
@@ -905,6 +945,14 @@ class MarketMaker(EWrapper, EClient):
         """If the book is not quotable, optionally cancel and log; return True to skip the rest."""
         return self._abort_for_market_invalid_reason(self.market_invalid_reason())
 
+    @staticmethod
+    def _quotes_pair_is_valid(buy_px: Optional[float], sell_px: Optional[float]) -> bool:
+        return (
+            buy_px is not None
+            and sell_px is not None
+            and buy_px < sell_px
+        )
+
     def _abort_quotes_on_invalid_pair(
         self,
         buy_px: Optional[float],
@@ -912,7 +960,7 @@ class MarketMaker(EWrapper, EClient):
         warning_msg: str,
     ) -> bool:
         """If the buy/sell quote pair is unusable, cancel working quotes, log, return True."""
-        if buy_px is not None and sell_px is not None and buy_px < sell_px:
+        if self._quotes_pair_is_valid(buy_px, sell_px):
             return False
         self._cancel_working_quotes_flat_inventory()
         self.logger.warning(warning_msg, buy_px, sell_px)
@@ -1115,99 +1163,60 @@ class MarketMaker(EWrapper, EClient):
     def place_or_replace_sell(self, qty: int, px: Optional[float]):
         self._place_or_replace_lmt("SELL", qty, px)
 
-    def maybe_manage_quotes(self, force=False):
-        now = time.time()
-
+    def _capture_quote_mgmt_snapshot(self) -> QuoteMgmtSnapshot:
         with self.lock:
-            connected_flag = self.connected_flag
-            shutdown_flag = self.shutdown_flag
-            open_orders_snapshot_done = self.open_orders_snapshot_done
-            position_qty = self.position_qty
-            gross_shares_traded = self.gross_shares_traded
-            avg_cost = self.avg_cost
-            buy_shares_filled = self.buy_shares_filled
-            last_quote_eval = self.last_quote_eval
-            last_nbbo_snap = self._last_quote_nbbo_snap
-            quote_bid = self.quote.bid
-            quote_ask = self.quote.ask
-            quote_bid_sz = self.quote.bid_size
-            quote_ask_sz = self.quote.ask_size
-            quote_luts = self.quote.last_update_ts
-            buy_work_px = self.buy_order.price if self.buy_order else None
-            sell_work_px = self.sell_order.price if self.sell_order else None
-            sell_snap = (
-                (self.sell_order.status, self.sell_order.remaining, self.sell_order.qty)
-                if self.sell_order
-                else None
+            return QuoteMgmtSnapshot(
+                connected_flag=self.connected_flag,
+                shutdown_flag=self.shutdown_flag,
+                open_orders_snapshot_done=self.open_orders_snapshot_done,
+                position_qty=self.position_qty,
+                gross_shares_traded=self.gross_shares_traded,
+                avg_cost=self.avg_cost,
+                buy_shares_filled=self.buy_shares_filled,
+                last_quote_eval=self.last_quote_eval,
+                last_nbbo_snap=self._last_quote_nbbo_snap,
+                quote_bid=self.quote.bid,
+                quote_ask=self.quote.ask,
+                quote_bid_sz=self.quote.bid_size,
+                quote_ask_sz=self.quote.ask_size,
+                quote_luts=self.quote.last_update_ts,
+                buy_work_px=self.buy_order.price if self.buy_order else None,
+                sell_work_px=self.sell_order.price if self.sell_order else None,
+                sell_snap=(
+                    (self.sell_order.status, self.sell_order.remaining, self.sell_order.qty)
+                    if self.sell_order
+                    else None
+                ),
             )
 
-        self.logger.debug(
-            "maybe_manage_quotes force=%s connected=%s shutdown=%s pos=%s gross=%s "
-            "bid=%s ask=%s bid_sz=%s ask_sz=%s",
-            force,
-            connected_flag,
-            shutdown_flag,
-            position_qty,
-            gross_shares_traded,
-            quote_bid,
-            quote_ask,
-            quote_bid_sz,
-            quote_ask_sz,
-        )
-
-        if not connected_flag or shutdown_flag:
-            return
-
-        if not open_orders_snapshot_done:
-            self.logger.info(
-                "Open-order snapshot not complete; skipping quote management this cycle."
-            )
-            return
-
-        inv_reason = self._market_invalid_reason_for_nbbo(
-            quote_bid, quote_ask, quote_luts
-        )
-        if self._abort_for_market_invalid_reason(inv_reason):
-            return
-
-        if not force and (now - last_quote_eval) < self.quote_refresh_seconds:
-            snap = (quote_bid, quote_ask, quote_bid_sz, quote_ask_sz)
-            if snap == last_nbbo_snap and not self._needs_quote_despite_nbbo_throttle_with(
-                position_qty, sell_snap
-            ):
-                return
-
-        with self.lock:
-            self.last_quote_eval = now
+    def _compute_quote_decision(
+        self, snap: QuoteMgmtSnapshot
+    ) -> Union[QuoteDecision, QuotePipelineInvalidPair]:
+        """Turn a snapshot into final desired sizes/prices (no orders placed, no lock held)."""
+        qb, qa = snap.quote_bid, snap.quote_ask
+        if qb is None or qa is None:
+            return QuotePipelineInvalidPair(True, qb, qa)
 
         buy_px, sell_px = self._compute_desired_quotes_for(
-            float(quote_bid), float(quote_ask), position_qty, avg_cost
+            float(qb), float(qa), snap.position_qty, snap.avg_cost
         )
+        bid = float(qb)
+        ask = float(qa)
 
-        bid = float(quote_bid)
-        ask = float(quote_ask)
+        if not self._quotes_pair_is_valid(buy_px, sell_px):
+            return QuotePipelineInvalidPair(True, buy_px, sell_px)
 
-        if self._abort_quotes_on_invalid_pair(
-            buy_px,
-            sell_px,
-            "Computed invalid quotes buy=%s sell=%s; cancelling.",
-        ):
-            return
-
+        assert buy_px is not None and sell_px is not None
         buy_px = max(buy_px, bid)
         sell_px = min(sell_px, ask)
 
-        if self._abort_quotes_on_invalid_pair(
-            buy_px,
-            sell_px,
-            "Quotes invalid after NBBO clamp buy=%s sell=%s; cancelling.",
-        ):
-            return
+        if not self._quotes_pair_is_valid(buy_px, sell_px):
+            return QuotePipelineInvalidPair(False, buy_px, sell_px)
 
-        buy_qty, sell_qty = self._desired_sizes_for(position_qty, buy_shares_filled)
+        buy_qty, sell_qty = self._desired_sizes_for(snap.position_qty, snap.buy_shares_filled)
 
-        sell_qty = min(sell_qty, position_qty)
-        if position_qty <= 0:
+        sell_qty = min(sell_qty, snap.position_qty)
+        if snap.position_qty <= 0:
             sell_qty = 0
 
         if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
@@ -1220,24 +1229,96 @@ class MarketMaker(EWrapper, EClient):
             sell_qty,
             bid,
             ask,
-            quote_bid_sz,
-            quote_ask_sz,
+            snap.quote_bid_sz,
+            snap.quote_ask_sz,
         )
 
         if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
             sell_qty = 0
 
-        if sell_work_px is not None and buy_qty > 0 and buy_px >= sell_work_px:
-            buy_px = self.round_down_cent(sell_work_px - 0.01)
+        sw = snap.sell_work_px
+        if sw is not None and buy_qty > 0 and buy_px >= sw:
+            buy_px = self.round_down_cent(sw - 0.01)
 
-        if buy_work_px is not None and sell_qty > 0 and sell_px <= buy_work_px:
-            sell_px = self.round_up_cent(buy_work_px + 0.01)
+        bw = snap.buy_work_px
+        if bw is not None and sell_qty > 0 and sell_px <= bw:
+            sell_px = self.round_up_cent(bw + 0.01)
 
         if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
             self.logger.warning(
                 "Final anti-self-trade guard triggered; suppressing sell quote."
             )
             sell_qty = 0
+
+        return QuoteDecision(
+            buy_qty=buy_qty,
+            buy_px=buy_px,
+            sell_qty=sell_qty,
+            sell_px=sell_px,
+        )
+
+    def maybe_manage_quotes(self, force=False):
+        now = time.time()
+        snap = self._capture_quote_mgmt_snapshot()
+
+        self.logger.debug(
+            "maybe_manage_quotes force=%s connected=%s shutdown=%s pos=%s gross=%s "
+            "bid=%s ask=%s bid_sz=%s ask_sz=%s",
+            force,
+            snap.connected_flag,
+            snap.shutdown_flag,
+            snap.position_qty,
+            snap.gross_shares_traded,
+            snap.quote_bid,
+            snap.quote_ask,
+            snap.quote_bid_sz,
+            snap.quote_ask_sz,
+        )
+
+        if not snap.connected_flag or snap.shutdown_flag:
+            return
+
+        if not snap.open_orders_snapshot_done:
+            self.logger.info(
+                "Open-order snapshot not complete; skipping quote management this cycle."
+            )
+            return
+
+        inv_reason = self._market_invalid_reason_for_nbbo(
+            snap.quote_bid, snap.quote_ask, snap.quote_luts
+        )
+        if self._abort_for_market_invalid_reason(inv_reason):
+            return
+
+        if not force and (now - snap.last_quote_eval) < self.quote_refresh_seconds:
+            nbbo_key = (
+                snap.quote_bid,
+                snap.quote_ask,
+                snap.quote_bid_sz,
+                snap.quote_ask_sz,
+            )
+            if nbbo_key == snap.last_nbbo_snap and not self._needs_quote_despite_nbbo_throttle_with(
+                snap.position_qty, snap.sell_snap
+            ):
+                return
+
+        with self.lock:
+            self.last_quote_eval = now
+
+        pipeline = self._compute_quote_decision(snap)
+        if isinstance(pipeline, QuotePipelineInvalidPair):
+            msg = (
+                "Computed invalid quotes buy=%s sell=%s; cancelling."
+                if pipeline.after_compute
+                else "Quotes invalid after NBBO clamp buy=%s sell=%s; cancelling."
+            )
+            self._abort_quotes_on_invalid_pair(pipeline.buy_px, pipeline.sell_px, msg)
+            return
+
+        buy_qty = pipeline.buy_qty
+        buy_px = pipeline.buy_px
+        sell_qty = pipeline.sell_qty
+        sell_px = pipeline.sell_px
 
         self.place_or_replace_buy(buy_qty, buy_px if buy_qty > 0 else None)
         self.place_or_replace_sell(sell_qty, sell_px if sell_qty > 0 else None)
