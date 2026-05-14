@@ -434,6 +434,18 @@ class Trader(EWrapper, EClient):
             or (now.hour == market_open_hour and now.minute >= market_open_minute)
         ) and now.hour < market_close_hour
 
+    def _session_wall_clock(
+        self,
+    ) -> tuple[datetime.datetime, str, int, int, int]:
+        """Current time in ``config['market_timezone']`` plus configured session window."""
+        tz_name = str(self.config["market_timezone"])
+        ny = pytz.timezone(tz_name)
+        now = datetime.datetime.now(tz=ny)
+        moh = int(self.config["market_open_hour"])
+        mom = int(self.config["market_open_minute"])
+        mch = int(self.config["market_close_hour"])
+        return now, tz_name, moh, mom, mch
+
     def _has_valid_nbbo(self) -> bool:
         bid = self._bid
         ask = self._ask
@@ -813,13 +825,19 @@ class Trader(EWrapper, EClient):
                 self.logger.info("Disconnected from IBKR; exiting run loop")
                 break
             in_hours = self.us_regular_hours()
+            if self._prev_us_regular_hours is None and not in_hours:
+                now, tz_name, moh, mom, mch = self._session_wall_clock()
+                self.logger.info(
+                    "Configured regular session is closed at startup (now %s; "
+                    "window %02d:%02d–%02d:00 %s). Quoting paused.",
+                    now.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                    moh,
+                    mom,
+                    mch,
+                    tz_name,
+                )
             if self._prev_us_regular_hours is True and not in_hours:
-                tz_name = self.config["market_timezone"]
-                ny = pytz.timezone(tz_name)
-                now = datetime.datetime.now(tz=ny)
-                moh = int(self.config["market_open_hour"])
-                mom = int(self.config["market_open_minute"])
-                mch = int(self.config["market_close_hour"])
+                now, tz_name, moh, mom, mch = self._session_wall_clock()
                 self.logger.info(
                     "Regular session ended (now %s; configured window %02d:%02d–%02d:00 %s). "
                     "Quoting paused; DAY orders may be canceled by the broker at the close.",
