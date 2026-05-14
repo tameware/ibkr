@@ -89,8 +89,6 @@ def _minimal_config(**overrides):
         "primary_exchange": "NYSE",
         "max_pos": 100,
         "loop_seconds": 1.0,
-        "buy_delta": 0.05,
-        "sell_delta": 0.05,
         "offset_pct": 0.25,
         "rel_offset": 0.01,
         "market_timezone": "America/New_York",
@@ -179,19 +177,9 @@ class TestHelpers(unittest.TestCase):
 
 
 class TestAdjustedRelLimits(unittest.TestCase):
-    def test_fallback_ref_deltas_profit_nudge(self):
-        """Without NBBO, ref+deltas can invert; sell is bumped one tick above buy."""
-        cfg = _minimal_config(buy_delta=-0.10, sell_delta=-0.10)
-        t = Trader(cfg)
-        t.ref_price = 100.0
-        buy_l, sell_l = t.adjusted_rel_limits()
-        self.assertGreater(sell_l, buy_l)
-        self.assertEqual(buy_l, 100.10)
-        self.assertEqual(sell_l, 100.11)
-
     def test_offset_pct_from_nbbo_only(self):
         """With NBBO, limits come only from offset_pct (fraction of spread)."""
-        cfg = _minimal_config(buy_delta=0.0, sell_delta=0.0, offset_pct=0.25)
+        cfg = _minimal_config(offset_pct=0.25)
         t = Trader(cfg)
         t.ref_price = 999.0
         t._bid = 99.9
@@ -203,7 +191,7 @@ class TestAdjustedRelLimits(unittest.TestCase):
 
     def test_offset_pct_ge_half_clamped_for_band(self):
         """offset_pct >= 0.5 is clamped; rounding may tie — profit nudge applies."""
-        cfg = _minimal_config(buy_delta=0.0, sell_delta=0.0, offset_pct=0.99)
+        cfg = _minimal_config(offset_pct=0.99)
         t = Trader(cfg)
         t.ref_price = 100.0
         t._bid = 100.0
@@ -216,6 +204,9 @@ class TestTrader(unittest.TestCase):
     def setUp(self):
         self.cfg = _minimal_config()
         self.t = Trader(self.cfg)
+        # NBBO so sync_orders / adjusted_rel_limits can run (matches offset_pct=0.25 → 49.95 / 50.05)
+        self.t._bid = 49.90
+        self.t._ask = 50.10
 
     def test_build_rel_order_uses_asymmetric_offsets(self):
         self.cfg["rel_offset_buy"] = 0.02
@@ -242,9 +233,24 @@ class TestTrader(unittest.TestCase):
         self.assertEqual(order.action, "BUY")
         self.assertEqual(order.orderType, "REL")
         self.assertEqual(order.totalQuantity, 100)
-        # buy_limit = ref - buy_delta = 50 - 0.05 = 49.95
+        # bid=49.90 ask=50.10 spread 0.20 * offset_pct 0.25 = 0.05 → buy 49.95 / sell 50.05
         self.assertEqual(order.lmtPrice, 49.95)
         self.assertEqual(self.t.nextOrderId, 101)
+
+    def test_sync_orders_skips_when_no_nbbo(self):
+        self.t.ready_for_trading = True
+        self.t.ref_price = 50.0
+        self.t.nextOrderId = 100
+        self.t._bid = None
+        self.t._ask = None
+        self.t.position_size = 0
+        self.t.open_symbol_buys = 0
+        self.t.open_symbol_sells = 0
+        self.t.pending_buy = False
+        self.t.pending_sell = False
+        self.t.placeOrder = Mock()
+        self.t.sync_orders()
+        self.t.placeOrder.assert_not_called()
 
     def test_sync_orders_partial_places_buy_and_sell(self):
         self.cfg["max_pos"] = 100
@@ -589,6 +595,8 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         self.t.ready_for_trading = True
         self.t.ref_price = 50.0
         self.t.nextOrderId = 500
+        self.t._bid = 49.90
+        self.t._ask = 50.10
         self.t.placeOrder = Mock()
         self.t.safe_cancel_order = Mock()
 

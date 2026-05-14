@@ -5,13 +5,13 @@ REL buy for remaining capacity and REL sell for the current position. At or
 above ``max_pos``: sell-only for the full position. Mutually exclusive buy/sell
 when flat or capped; both sides may rest when partially filled.
 
-Protective REL ``lmtPrice`` values use the NBBO when ``bid``/``ask`` are known:
+Protective REL ``lmtPrice`` values use the NBBO only:
 buy ceiling ``bid + (ask - bid) * offset_pct`` and sell floor
 ``ask - (ask - bid) * offset_pct``, with ``offset_pct`` clamped below ``0.5`` so
-the sell floor stays above the buy ceiling before rounding. Without NBBO,
-limits fall back to ``ref_price`` plus ``buy_delta`` / ``sell_delta``. After
-rounding, if ``sell_limit <= buy_limit``, the sell floor is bumped by one price
-step so the quote always has a profitable width. Orders are
+the sell floor stays above the buy ceiling before rounding. If ``sell_limit <=
+buy_limit`` after rounding, the sell floor is bumped by one price step. The
+bot does not place, modify, or cancel orders until both bid and ask are valid
+(positive and ask > bid). Orders are
 not submitted when computed quantity is below ``min_order_size`` (default 10).
 
 The TWS API exposes Pegged-to-Primary as ``orderType = "REL"`` with ``lmtPrice``
@@ -423,6 +423,17 @@ class Trader(EWrapper, EClient):
             or (now.hour == market_open_hour and now.minute >= market_open_minute)
         ) and now.hour < market_close_hour
 
+    def _has_valid_nbbo(self) -> bool:
+        bid = self._bid
+        ask = self._ask
+        return (
+            bid is not None
+            and ask is not None
+            and float(bid) > 0
+            and float(ask) > 0
+            and float(ask) > float(bid)
+        )
+
     def safe_cancel_order(self, order_id: int) -> None:
         try:
             self.cancelOrder(order_id)
@@ -430,39 +441,21 @@ class Trader(EWrapper, EClient):
             self.cancelOrder(order_id, "")
 
     def adjusted_rel_limits(self) -> tuple[float, float]:
-        """REL buy/sell ``lmtPrice`` pair.
+        """REL buy/sell ``lmtPrice`` from NBBO and ``offset_pct`` only.
 
-        With a valid NBBO, limits are set only from ``offset_pct``:
         ``buy_limit = bid + spread * p``, ``sell_limit = ask - spread * p`` with
-        ``p`` in ``[0, 0.5)`` so the unrounded sell floor stays above the buy
-        ceiling.
+        ``p`` in ``[0, 0.5)``. Caller must ensure :meth:`_has_valid_nbbo` is true.
 
-        Without NBBO, ``buy_limit = ref - buy_delta`` and
-        ``sell_limit = ref + sell_delta``.
-
-        After rounding to ``price_round_digits``, if ``sell_limit <= buy_limit``,
-        ``sell_limit`` is raised by one price step (profitable spread, no loops).
+        After rounding, if ``sell_limit <= buy_limit``, ``sell_limit`` is raised
+        by one price step.
         """
+        assert self._has_valid_nbbo()
         digits = int(self.config["price_round_digits"])
         step = 10.0 ** (-digits)
-        bid = self._bid
-        ask = self._ask
-        use_nbbo = (
-            bid is not None
-            and ask is not None
-            and float(bid) > 0
-            and float(ask) > 0
-            and float(ask) > float(bid)
-        )
-        if use_nbbo:
-            spread = float(ask) - float(bid)
-            p = max(0.0, min(float(self.config["offset_pct"]), 0.5 - 1e-9))
-            buy_limit = float(bid) + spread * p
-            sell_limit = float(ask) - spread * p
-        else:
-            ref = float(self.ref_price)
-            buy_limit = ref - float(self.config["buy_delta"])
-            sell_limit = ref + float(self.config["sell_delta"])
+        spread = float(self._ask) - float(self._bid)
+        p = max(0.0, min(float(self.config["offset_pct"]), 0.5 - 1e-9))
+        buy_limit = float(self._bid) + spread * p
+        sell_limit = float(self._ask) - spread * p
 
         buy_limit = round(buy_limit, digits)
         sell_limit = round(sell_limit, digits)
@@ -573,7 +566,10 @@ class Trader(EWrapper, EClient):
         if not self.ready_for_trading:
             return
 
-        if self.ref_price is None or self.nextOrderId is None:
+        if self.nextOrderId is None:
+            return
+
+        if not self._has_valid_nbbo():
             return
 
         pos = self.position_size
@@ -752,8 +748,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--primary_exchange")
     parser.add_argument("--max_pos", type=int)
     parser.add_argument("--loop_seconds", type=float)
-    parser.add_argument("--buy_delta", type=float)
-    parser.add_argument("--sell_delta", type=float)
     parser.add_argument("--min_order_size", type=int)
     parser.add_argument("--rel_offset", type=float)
     parser.add_argument("--rel_offset_buy", type=float)
@@ -794,8 +788,6 @@ def main() -> None:
         "primary_exchange",
         "max_pos",
         "loop_seconds",
-        "buy_delta",
-        "sell_delta",
         "offset_pct",
         "rel_offset",
         "market_timezone",
