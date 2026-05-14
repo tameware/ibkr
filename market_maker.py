@@ -198,6 +198,20 @@ class MarketMaker(EWrapper, EClient):
         self._last_quote_nbbo_snap: Optional[Tuple[Optional[float], Optional[float], int, int]] = (
             None
         )
+        self._last_quote_decision_log_key: Optional[
+            Tuple[
+                Optional[float],
+                Optional[float],
+                int,
+                int,
+                int,
+                float,
+                int,
+                Optional[float],
+                int,
+                Optional[float],
+            ]
+        ] = None
         self._last_tick_size_log_key: Optional[
             Tuple[int, int, Optional[float], Optional[float], int, int]
         ] = None
@@ -1127,7 +1141,7 @@ class MarketMaker(EWrapper, EClient):
                 else None
             )
 
-        self.logger.info(
+        self.logger.debug(
             "maybe_manage_quotes force=%s connected=%s shutdown=%s pos=%s gross=%s "
             "bid=%s ask=%s bid_sz=%s ask_sz=%s",
             force,
@@ -1236,19 +1250,45 @@ class MarketMaker(EWrapper, EClient):
                 self.quote.ask_size,
             )
 
-        self.logger.info(
-            "Quote decision nbbo=%.2f x %.2f (bid_sz=%s ask_sz=%s) pos=%s avg_cost=%.4f desired_buy=%s@%s desired_sell=%s@%s",
-            self.quote.bid,
-            self.quote.ask,
-            self.quote.bid_size,
-            self.quote.ask_size,
-            self.position_qty,
-            self.avg_cost,
+        log_bid = self.quote.bid
+        log_ask = self.quote.ask
+        log_bid_sz = self.quote.bid_size
+        log_ask_sz = self.quote.ask_size
+        log_pos = self.position_qty
+        log_avg = self.avg_cost
+        decision_key = (
+            None if log_bid is None else round(float(log_bid), 2),
+            None if log_ask is None else round(float(log_ask), 2),
+            int(log_bid_sz),
+            int(log_ask_sz),
+            int(log_pos),
+            round(float(log_avg), 4),
+            int(buy_qty),
+            None if buy_qty <= 0 else round(float(buy_px), 2),
+            int(sell_qty),
+            None if sell_qty <= 0 else round(float(sell_px), 2),
+        )
+        msg = (
+            "Quote decision nbbo=%.2f x %.2f (bid_sz=%s ask_sz=%s) pos=%s avg_cost=%.4f "
+            "desired_buy=%s@%s desired_sell=%s@%s"
+        )
+        log_args = (
+            log_bid,
+            log_ask,
+            log_bid_sz,
+            log_ask_sz,
+            log_pos,
+            log_avg,
             buy_qty,
             buy_px,
             sell_qty,
             sell_px,
         )
+        if decision_key != self._last_quote_decision_log_key:
+            self._last_quote_decision_log_key = decision_key
+            self.logger.info(msg, *log_args)
+        else:
+            self.logger.debug(msg, *log_args)
 
     def watchdog_loop(self):
         while not self.shutdown_flag:
