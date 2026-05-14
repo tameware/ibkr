@@ -91,7 +91,7 @@ def _minimal_config(**overrides):
         "loop_seconds": 1.0,
         "buy_delta": 0.05,
         "sell_delta": 0.05,
-        "min_spread": 0.05,
+        "offset_pct": 0.25,
         "rel_offset": 0.01,
         "market_timezone": "America/New_York",
         "market_open_hour": 9,
@@ -179,20 +179,37 @@ class TestHelpers(unittest.TestCase):
 
 
 class TestAdjustedRelLimits(unittest.TestCase):
-    def test_negative_deltas_meet_min_spread(self):
-        """peg_mid.json-style negative deltas invert raw gap; still enforce width."""
-        cfg = _minimal_config(buy_delta=-0.10, sell_delta=-0.10, min_spread=0.05)
+    def test_fallback_ref_deltas_profit_nudge(self):
+        """Without NBBO, ref+deltas can invert; sell is bumped one tick above buy."""
+        cfg = _minimal_config(buy_delta=-0.10, sell_delta=-0.10)
         t = Trader(cfg)
         t.ref_price = 100.0
         buy_l, sell_l = t.adjusted_rel_limits()
-        self.assertGreaterEqual(sell_l - buy_l, 0.05 - 1e-9)
+        self.assertGreater(sell_l, buy_l)
+        self.assertEqual(buy_l, 100.10)
+        self.assertEqual(sell_l, 100.11)
 
-    def test_widens_when_raw_gap_below_min(self):
-        cfg = _minimal_config(buy_delta=0.02, sell_delta=0.02, min_spread=0.15)
+    def test_offset_pct_from_nbbo_only(self):
+        """With NBBO, limits come only from offset_pct (fraction of spread)."""
+        cfg = _minimal_config(buy_delta=0.0, sell_delta=0.0, offset_pct=0.25)
         t = Trader(cfg)
-        t.ref_price = 10.0
+        t.ref_price = 999.0
+        t._bid = 99.9
+        t._ask = 100.1
         buy_l, sell_l = t.adjusted_rel_limits()
-        self.assertGreaterEqual(sell_l - buy_l, 0.15 - 1e-9)
+        self.assertEqual(buy_l, 99.95)
+        self.assertEqual(sell_l, 100.05)
+        self.assertGreater(sell_l, buy_l)
+
+    def test_offset_pct_ge_half_clamped_for_band(self):
+        """offset_pct >= 0.5 is clamped; rounding may tie — profit nudge applies."""
+        cfg = _minimal_config(buy_delta=0.0, sell_delta=0.0, offset_pct=0.99)
+        t = Trader(cfg)
+        t.ref_price = 100.0
+        t._bid = 100.0
+        t._ask = 101.0
+        buy_l, sell_l = t.adjusted_rel_limits()
+        self.assertGreater(sell_l, buy_l)
 
 
 class TestTrader(unittest.TestCase):

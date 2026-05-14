@@ -5,9 +5,13 @@ REL buy for remaining capacity and REL sell for the current position. At or
 above ``max_pos``: sell-only for the full position. Mutually exclusive buy/sell
 when flat or capped; both sides may rest when partially filled.
 
-Protective REL ``lmtPrice`` values are derived from ``ref_price`` and deltas,
-then adjusted so ``sell_limit - buy_limit >= min_spread`` (same idea as
-``min_quote_spread_cents`` / working width in ``market_maker.py``). Orders are
+Protective REL ``lmtPrice`` values use the NBBO when ``bid``/``ask`` are known:
+buy ceiling ``bid + (ask - bid) * offset_pct`` and sell floor
+``ask - (ask - bid) * offset_pct``, with ``offset_pct`` clamped below ``0.5`` so
+the sell floor stays above the buy ceiling before rounding. Without NBBO,
+limits fall back to ``ref_price`` plus ``buy_delta`` / ``sell_delta``. After
+rounding, if ``sell_limit <= buy_limit``, the sell floor is bumped by one price
+step so the quote always has a profitable width. Orders are
 not submitted when computed quantity is below ``min_order_size`` (default 10).
 
 The TWS API exposes Pegged-to-Primary as ``orderType = "REL"`` with ``lmtPrice``
@@ -426,32 +430,44 @@ class Trader(EWrapper, EClient):
             self.cancelOrder(order_id, "")
 
     def adjusted_rel_limits(self) -> tuple[float, float]:
-        """REL buy/sell ``lmtPrice`` pair from ``ref_price`` and deltas.
+        """REL buy/sell ``lmtPrice`` pair.
 
-        ``buy_limit`` / ``sell_limit`` follow ``peg_mid`` style:
-        ``buy_limit = ref - buy_delta``, ``sell_limit = ref + sell_delta``.
-        Then widen symmetrically so ``sell_limit - buy_limit`` is at least
-        ``min_spread`` (and non-negative when ``min_spread`` is 0), then round.
-        If rounding tightens the gap, nudge ``sell_limit`` up by one price step.
+        With a valid NBBO, limits are set only from ``offset_pct``:
+        ``buy_limit = bid + spread * p``, ``sell_limit = ask - spread * p`` with
+        ``p`` in ``[0, 0.5)`` so the unrounded sell floor stays above the buy
+        ceiling.
+
+        Without NBBO, ``buy_limit = ref - buy_delta`` and
+        ``sell_limit = ref + sell_delta``.
+
+        After rounding to ``price_round_digits``, if ``sell_limit <= buy_limit``,
+        ``sell_limit`` is raised by one price step (profitable spread, no loops).
         """
-        ref = float(self.ref_price)
         digits = int(self.config["price_round_digits"])
         step = 10.0 ** (-digits)
-        buy_limit = ref - float(self.config["buy_delta"])
-        sell_limit = ref + float(self.config["sell_delta"])
-        target_gap = max(0.0, float(self.config["min_spread"]))
-        gap = sell_limit - buy_limit
-        if gap < target_gap:
-            deficit = target_gap - gap
-            buy_limit -= deficit / 2.0
-            sell_limit += deficit / 2.0
+        bid = self._bid
+        ask = self._ask
+        use_nbbo = (
+            bid is not None
+            and ask is not None
+            and float(bid) > 0
+            and float(ask) > 0
+            and float(ask) > float(bid)
+        )
+        if use_nbbo:
+            spread = float(ask) - float(bid)
+            p = max(0.0, min(float(self.config["offset_pct"]), 0.5 - 1e-9))
+            buy_limit = float(bid) + spread * p
+            sell_limit = float(ask) - spread * p
+        else:
+            ref = float(self.ref_price)
+            buy_limit = ref - float(self.config["buy_delta"])
+            sell_limit = ref + float(self.config["sell_delta"])
 
         buy_limit = round(buy_limit, digits)
         sell_limit = round(sell_limit, digits)
-        for _ in range(10_000):
-            if sell_limit - buy_limit + 1e-12 >= target_gap:
-                break
-            sell_limit = round(sell_limit + step, digits)
+        if sell_limit <= buy_limit:
+            sell_limit = round(buy_limit + step, digits)
         return buy_limit, sell_limit
 
     def request_positions_snapshot(self):
@@ -738,7 +754,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--loop_seconds", type=float)
     parser.add_argument("--buy_delta", type=float)
     parser.add_argument("--sell_delta", type=float)
-    parser.add_argument("--min_spread", type=float)
     parser.add_argument("--min_order_size", type=int)
     parser.add_argument("--rel_offset", type=float)
     parser.add_argument("--rel_offset_buy", type=float)
@@ -752,6 +767,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--price_round_digits", type=int)
     parser.add_argument("--aux_round_digits", type=int)
     parser.add_argument("--resync_debounce_seconds", type=float)
+    parser.add_argument(
+        "--offset_pct",
+        type=float,
+        help="Fraction of NBBO spread for lmtPrice caps (effective max < 0.5 so sell > buy inside the band)",
+    )
     return parser
 
 
@@ -776,7 +796,7 @@ def main() -> None:
         "loop_seconds",
         "buy_delta",
         "sell_delta",
-        "min_spread",
+        "offset_pct",
         "rel_offset",
         "market_timezone",
         "market_open_hour",
