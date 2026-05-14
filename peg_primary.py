@@ -157,6 +157,9 @@ class Trader(EWrapper, EClient):
         _mos = int(self.config.get("min_order_size", 10))
         self.min_order_size = max(1, _mos)
 
+        self._digits = int(self.config["price_round_digits"])
+        self._tick = 10.0 ** (-self._digits)
+
         self._snapshot_open_order_lines: list[str] = []
         self._startup_open_orders_logged = False
         self.order_working_lmt: Dict[int, float] = {}
@@ -192,7 +195,7 @@ class Trader(EWrapper, EClient):
             offset=aux_off,
             exchange=self.config["exchange"],
             tif=self.config["tif"],
-            price_round_digits=int(self.config["price_round_digits"]),
+            price_round_digits=self._digits,
         )
 
     def _meets_min_order_size(self, qty: int) -> bool:
@@ -296,8 +299,7 @@ class Trader(EWrapper, EClient):
             self._ask = price
 
         if self._bid is not None and self._ask is not None and self._bid > 0 and self._ask > 0:
-            digits = int(self.config["price_round_digits"])
-            mid = round((self._bid + self._ask) / 2.0, digits)
+            mid = self._nbbo_mid_rounded()
             if mid != self.ref_price:
                 tprint(f"ref_price updated: bid={self._bid} ask={self._ask} mid={mid}")
                 self.ref_price = mid
@@ -450,6 +452,10 @@ class Trader(EWrapper, EClient):
             and float(ask) > float(bid)
         )
 
+    def _nbbo_mid_rounded(self) -> float:
+        """NBBO mid rounded to :attr:`_digits`. Caller must ensure :meth:`_has_valid_nbbo`."""
+        return round((float(self._bid) + float(self._ask)) / 2.0, self._digits)
+
     def safe_cancel_order(self, order_id: int) -> None:
         try:
             self.cancelOrder(order_id)
@@ -460,17 +466,15 @@ class Trader(EWrapper, EClient):
         """REL buy/sell ``lmtPrice`` from NBBO mid and ``mid_delta``.
 
         ``buy_limit = round(mid - d, digits)``, ``sell_limit = round(mid + d, digits)``
-        with ``mid = round((bid+ask)/2, digits)`` and ``d = max(mid_delta, tick)``
+        with ``mid`` from :meth:`_nbbo_mid_rounded` and ``d = max(mid_delta, _tick)``
         so the buy cap stays strictly below ``mid`` and the sell floor strictly
         above ``mid``. Caller must ensure :meth:`_has_valid_nbbo` is true.
         """
         assert self._has_valid_nbbo()
-        digits = int(self.config["price_round_digits"])
-        step = 10.0 ** (-digits)
-        mid_delta = max(float(self.config.get("mid_delta", 0.02)), step)
-        mid = round((float(self._bid) + float(self._ask)) / 2.0, digits)
-        buy_limit = round(mid - mid_delta, digits)
-        sell_limit = round(mid + mid_delta, digits)
+        mid_delta = max(float(self.config.get("mid_delta", 0.02)), self._tick)
+        mid = self._nbbo_mid_rounded()
+        buy_limit = round(mid - mid_delta, self._digits)
+        sell_limit = round(mid + mid_delta, self._digits)
         return buy_limit, sell_limit
 
     def request_positions_snapshot(self):
@@ -585,12 +589,11 @@ class Trader(EWrapper, EClient):
         new_a = float(new_order.auxPrice)
         old_l = float(self.order_working_lmt[oid])
         old_a = float(self.order_working_aux[oid])
-        digits = int(self.config["price_round_digits"])
-        if round(old_l, digits) == round(new_l, digits) and round(old_a, digits) == round(
-            new_a, digits
-        ):
+        if round(old_l, self._digits) == round(new_l, self._digits) and round(
+            old_a, self._digits
+        ) == round(new_a, self._digits):
             return False
-        mid = round((float(self._bid) + float(self._ask)) / 2.0, digits)
+        mid = self._nbbo_mid_rounded()
         tprint(
             f"Updating {action} id={oid} lmtPrice {old_l}->{new_l} "
             f"auxPrice {old_a}->{new_a} (totalQty={total_qty} "
