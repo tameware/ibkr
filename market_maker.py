@@ -24,6 +24,7 @@ from ibkr_app_support import (
     add_logging_arguments,
     build_logger,
     cfg_bool as _cfg_bool,
+    disconnect_cleanly,
     flatten_config_sections,
     idle_until_shutdown,
     load_merged_config,
@@ -1316,12 +1317,6 @@ class MarketMaker(EWrapper, EClient):
 
         self.logger.info("Shutdown requested.")
 
-        try:
-            if self.isConnected() and self.serverVersion() is not None:
-                self.cancelMktData(self.market_data_req_id)
-        except Exception as e:
-            self.logger.warning("cancelMktData failed: %s", e)
-
         if self.cancel_open_orders_on_shutdown:
             try:
                 if self.buy_order:
@@ -1335,14 +1330,11 @@ class MarketMaker(EWrapper, EClient):
                 "Leaving open orders at IBKR (cancel_open_orders_on_shutdown=false)"
             )
 
-        time.sleep(1)
-
-        try:
-            self.disconnect()
-        except Exception as e:
-            self.logger.warning("Disconnect failed: %s", e)
-
-        self.logger.info("Disconnected cleanly.")
+        disconnect_cleanly(
+            self,
+            logger=self.logger,
+            market_data_req_ids=[self.market_data_req_id],
+        )
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

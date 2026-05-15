@@ -18,6 +18,7 @@ from ibkr_app_support import (
     add_session_hours_arguments,
     cli_to_config,
     default_config_path,
+    disconnect_cleanly,
     ib_error_is_status_info,
     idle_until_shutdown,
     load_config_file,
@@ -294,6 +295,38 @@ class TestIbErrorFiltering(unittest.TestCase):
     def test_ib_error_is_status_info(self):
         self.assertTrue(ib_error_is_status_info(2104))
         self.assertFalse(ib_error_is_status_info(500))
+
+
+class TestDisconnectCleanly(unittest.TestCase):
+    def test_cancels_mkt_data_sleeps_and_disconnects(self):
+        client = MagicMock()
+        client.isConnected.return_value = True
+        client.serverVersion.return_value = 157
+        logger = MagicMock()
+
+        with patch("ibkr_app_support.time.sleep") as sleep:
+            disconnect_cleanly(
+                client,
+                logger=logger,
+                market_data_req_ids=[1001, 1002],
+                settle_seconds=0.5,
+            )
+
+        client.cancelMktData.assert_any_call(1001)
+        client.cancelMktData.assert_any_call(1002)
+        sleep.assert_called_once_with(0.5)
+        client.disconnect.assert_called_once()
+        logger.info.assert_called_once_with("Disconnected cleanly.")
+
+    def test_skips_mkt_data_when_not_connected(self):
+        client = MagicMock()
+        client.isConnected.return_value = False
+
+        with patch("ibkr_app_support.time.sleep"):
+            disconnect_cleanly(client, market_data_req_ids=[1])
+
+        client.cancelMktData.assert_not_called()
+        client.disconnect.assert_called_once()
 
 
 class TestSafeCancelOrder(unittest.TestCase):

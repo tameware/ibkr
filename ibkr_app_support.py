@@ -470,6 +470,36 @@ def safe_cancel_order(client: Any, order_id: int) -> None:
         client.cancelOrder(order_id, "")
 
 
+def disconnect_cleanly(
+    client: Any,
+    *,
+    logger: Optional[logging.Logger] = None,
+    market_data_req_ids: Optional[Sequence[int]] = None,
+    settle_seconds: float = 1.0,
+    done_message: str = "Disconnected cleanly.",
+) -> None:
+    """Cancel market data (if connected), pause briefly, then disconnect."""
+    if market_data_req_ids and client.isConnected() and client.serverVersion() is not None:
+        for req_id in market_data_req_ids:
+            try:
+                client.cancelMktData(req_id)
+            except Exception as e:
+                if logger is not None:
+                    logger.warning("cancelMktData(%s) failed: %s", req_id, e)
+
+    if settle_seconds > 0:
+        time.sleep(settle_seconds)
+
+    try:
+        client.disconnect()
+    except Exception as e:
+        if logger is not None:
+            logger.warning("Disconnect failed: %s", e)
+
+    if logger is not None:
+        logger.info(done_message)
+
+
 def wait_for_ib_ready(
     is_ready: Callable[[], bool],
     *,

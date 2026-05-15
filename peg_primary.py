@@ -58,6 +58,7 @@ from ibkr_app_support import (
     log_ib_error,
     log_session_transition,
     regular_session_open,
+    disconnect_cleanly,
     run_bot,
     safe_cancel_order,
 )
@@ -848,20 +849,11 @@ class Trader(EWrapper, EClient):
         self.pending_buy = False
         self.pending_sell = False
 
-        try:
-            if self.isConnected() and self.serverVersion() is not None:
-                self.cancelMktData(MKTDATA_REQ_ID)
-        except Exception as e:
-            self.logger.warning("cancelMktData failed: %s", e)
-
-        time.sleep(1.0)
-
-        try:
-            self.disconnect()
-        except Exception as e:
-            self.logger.warning("Disconnect failed: %s", e)
-
-        self.logger.info("Disconnected cleanly.")
+        disconnect_cleanly(
+            self,
+            logger=self.logger,
+            market_data_req_ids=[MKTDATA_REQ_ID],
+        )
 
     def run_until_shutdown(self) -> None:
         """Main thread: session logging, periodic snapshot refresh, disconnect detection."""
