@@ -64,6 +64,7 @@ from ibkr_app_support import (
     cli_to_config,
     flatten_config_sections,
     load_config_file,
+    make_stock_contract,
     merge_config,
 )
 from market_maker import (  # noqa: E402
@@ -265,7 +266,7 @@ class TestMarketMakerStatics(unittest.TestCase):
         self.assertEqual(MarketMaker.round_down_cent(10.999), 10.99)
         self.assertEqual(MarketMaker.round_up_cent(10.001), 10.01)
 
-    def test_build_contract(self):
+    def test_make_stock_contract(self):
         cfg = {
             "symbol": "IBM",
             "sec_type": "STK",
@@ -273,7 +274,7 @@ class TestMarketMakerStatics(unittest.TestCase):
             "currency": "USD",
             "primary_exchange": "NYSE",
         }
-        c = MarketMaker.build_contract(cfg)
+        c = make_stock_contract(cfg)
         self.assertEqual(c.symbol, "IBM")
         self.assertEqual(c.secType, "STK")
         self.assertEqual(c.exchange, "SMART")
@@ -694,6 +695,26 @@ class TestMarketMakerCore(unittest.TestCase):
             self.mm.maybe_manage_quotes(force=True)
             pb.assert_called_once()
             ps.assert_called_once()
+
+    def test_stop_cancels_open_orders_when_flag_true(self):
+        self.mm.cancel_open_orders_on_shutdown = True
+        self.mm.buy_order = LiveOrder(order_id=1, side="BUY", price=10.0, qty=100)
+        self.mm.sell_order = LiveOrder(order_id=2, side="SELL", price=11.0, qty=50)
+        self.mm.isConnected = Mock(return_value=True)
+        self.mm.serverVersion = Mock(return_value=157)
+        with patch.object(self.mm, "cancel_live_order") as cancel:
+            self.mm.stop()
+            self.assertEqual(cancel.call_count, 2)
+
+    def test_stop_skips_cancel_when_flag_false(self):
+        self.mm.cancel_open_orders_on_shutdown = False
+        self.mm.buy_order = LiveOrder(order_id=1, side="BUY", price=10.0, qty=100)
+        self.mm.sell_order = LiveOrder(order_id=2, side="SELL", price=11.0, qty=50)
+        self.mm.isConnected = Mock(return_value=True)
+        self.mm.serverVersion = Mock(return_value=157)
+        with patch.object(self.mm, "cancel_live_order") as cancel:
+            self.mm.stop()
+            cancel.assert_not_called()
 
 
 class TestArgParser(unittest.TestCase):

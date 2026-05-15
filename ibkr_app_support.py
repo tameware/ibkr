@@ -151,6 +151,31 @@ def load_merged_config(
     return config
 
 
+def make_stock_contract(
+    config: Dict[str, Any],
+    *,
+    symbol: Optional[str] = None,
+    sec_type: Optional[str] = None,
+    currency: Optional[str] = None,
+    exchange: Optional[str] = None,
+    primary_exchange: Optional[str] = None,
+) -> Any:
+    """Build an IB ``Contract`` for a US-style stock from config (and optional overrides)."""
+    from ibapi.contract import Contract
+
+    c = Contract()
+    c.symbol = str(symbol if symbol is not None else config["symbol"])
+    c.secType = str(sec_type if sec_type is not None else config.get("sec_type", "STK"))
+    c.currency = str(currency if currency is not None else config.get("currency", "USD"))
+    c.exchange = str(exchange if exchange is not None else config.get("exchange", "SMART"))
+    c.primaryExchange = str(
+        primary_exchange
+        if primary_exchange is not None
+        else config.get("primary_exchange", "NYSE")
+    )
+    return c
+
+
 def cfg_bool(config: Dict[str, Any], key: str, default: bool) -> bool:
     if key not in config:
         return default

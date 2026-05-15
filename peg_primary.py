@@ -51,7 +51,9 @@ from ibkr_app_support import (
     add_logging_arguments,
     add_session_hours_arguments,
     build_logger,
+    cfg_bool,
     load_merged_config,
+    make_stock_contract,
     log_ib_error,
     log_session_transition,
     regular_session_open,
@@ -102,13 +104,7 @@ class Trader(EWrapper, EClient):
         self.api_ready = False
         self.nextOrderId: int | None = None
 
-        self.contract = self.make_us_stock(
-            self.config["symbol"],
-            self.config["sec_type"],
-            self.config["currency"],
-            self.config["exchange"],
-            self.config["primary_exchange"],
-        )
+        self.contract = make_stock_contract(self.config)
 
         self.position_size = 0
         self.open_price = None
@@ -137,6 +133,9 @@ class Trader(EWrapper, EClient):
         self._last_nbbo_key: tuple[float, float] | None = None
         self.resync_debounce_seconds = float(self.config.get("resync_debounce_seconds", 0.35))
         self.nbbo_sync_interval_seconds = float(self.config["loop_seconds"])
+        self.cancel_open_orders_on_shutdown = cfg_bool(
+            config, "cancel_open_orders_on_shutdown", False
+        )
         self._prev_us_regular_hours: bool | None = None
         self.shutdown_flag = False
         self._stop_called = False
@@ -161,17 +160,6 @@ class Trader(EWrapper, EClient):
             self.config["symbol"],
             self.config["exchange"],
         )
-
-    def make_us_stock(
-        self, symbol: str, sec_type: str, currency: str, exchange: str, primary_exchange: str
-    ) -> Contract:
-        c = Contract()
-        c.symbol = symbol
-        c.secType = sec_type
-        c.currency = currency
-        c.exchange = exchange
-        c.primaryExch = primary_exchange
-        return c
 
     def _offset_pct_fraction(self) -> float:
         """``offset_pct`` clamped to ``[0, 0.5)`` for REL ``auxPrice``."""
@@ -842,14 +830,19 @@ class Trader(EWrapper, EClient):
         self.shutdown_flag = True
         self.logger.info("Shutdown requested.")
 
-        for label, oid in (("BUY", self.buy_order_id), ("SELL", self.sell_order_id)):
-            if oid is None:
-                continue
-            try:
-                safe_cancel_order(self, oid)
-                self.logger.info("Cancel %s order id=%s on shutdown", label, oid)
-            except Exception as e:
-                self.logger.warning("Cancel %s order id=%s failed: %s", label, oid, e)
+        if self.cancel_open_orders_on_shutdown:
+            for label, oid in (("BUY", self.buy_order_id), ("SELL", self.sell_order_id)):
+                if oid is None:
+                    continue
+                try:
+                    safe_cancel_order(self, oid)
+                    self.logger.info("Cancel %s order id=%s on shutdown", label, oid)
+                except Exception as e:
+                    self.logger.warning("Cancel %s order id=%s failed: %s", label, oid, e)
+        else:
+            self.logger.info(
+                "Leaving open orders at IBKR (cancel_open_orders_on_shutdown=false)"
+            )
 
         self.buy_order_id = None
         self.sell_order_id = None
@@ -932,6 +925,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--offset_pct",
         type=float,
         help="Fraction of NBBO spread for REL auxPrice only (effective max < 0.5)",
+    )
+    parser.add_argument(
+        "--cancel_open_orders_on_shutdown",
+        action=argparse.BooleanOptionalAction,
+        help="Cancel tracked BUY/SELL quotes before disconnect (default: false)",
     )
 
     add_logging_arguments(parser)

@@ -519,6 +519,32 @@ class TestTrader(unittest.TestCase):
             self.t.error(1, "t", 1999, "oops", "")
         w.assert_called_once()
 
+    def test_stop_cancels_open_orders_when_flag_true(self):
+        self.t.cancel_open_orders_on_shutdown = True
+        self.t.buy_order_id = 10
+        self.t.sell_order_id = 11
+        self.t.isConnected = Mock(return_value=True)
+        self.t.serverVersion = Mock(return_value=157)
+        self.t.disconnect = Mock()
+        with patch("peg_primary.safe_cancel_order") as cancel:
+            self.t.stop()
+            self.assertEqual(cancel.call_count, 2)
+            cancel.assert_any_call(self.t, 10)
+            cancel.assert_any_call(self.t, 11)
+
+    def test_stop_skips_cancel_when_flag_false(self):
+        self.t.cancel_open_orders_on_shutdown = False
+        self.t.buy_order_id = 10
+        self.t.sell_order_id = 11
+        self.t.isConnected = Mock(return_value=True)
+        self.t.serverVersion = Mock(return_value=157)
+        self.t.disconnect = Mock()
+        with patch("peg_primary.safe_cancel_order") as cancel:
+            self.t.stop()
+            cancel.assert_not_called()
+        self.assertIsNone(self.t.buy_order_id)
+        self.assertIsNone(self.t.sell_order_id)
+
 
 class TestExecutionLogging(unittest.TestCase):
     def setUp(self):

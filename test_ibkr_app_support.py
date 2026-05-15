@@ -23,6 +23,7 @@ from ibkr_app_support import (
     load_config_file,
     load_merged_config,
     log_ib_error,
+    make_stock_contract,
     log_session_transition,
     merge_config,
     regular_session_open,
@@ -101,6 +102,31 @@ class TestRegularSession(unittest.TestCase):
             in_hours=True,
         )
         logger.info.assert_not_called()
+
+
+class TestMakeStockContract(unittest.TestCase):
+    def test_builds_from_config(self):
+        cfg = {
+            "symbol": "IBM",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD",
+            "primary_exchange": "NYSE",
+        }
+        c = make_stock_contract(cfg)
+        self.assertEqual(c.symbol, "IBM")
+        self.assertEqual(c.secType, "STK")
+        self.assertEqual(c.exchange, "SMART")
+        self.assertEqual(c.currency, "USD")
+        self.assertEqual(c.primaryExchange, "NYSE")
+
+    def test_overrides_and_defaults(self):
+        c = make_stock_contract({"symbol": "OZ"}, primary_exchange="NASDAQ")
+        self.assertEqual(c.symbol, "OZ")
+        self.assertEqual(c.secType, "STK")
+        self.assertEqual(c.currency, "USD")
+        self.assertEqual(c.exchange, "SMART")
+        self.assertEqual(c.primaryExchange, "NASDAQ")
 
 
 class TestLoadMergedConfig(unittest.TestCase):

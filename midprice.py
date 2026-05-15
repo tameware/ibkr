@@ -20,6 +20,7 @@ from ibkr_app_support import (
     add_session_hours_arguments,
     format_ib_error_message,
     load_merged_config,
+    make_stock_contract,
     regular_session_open,
     safe_cancel_order,
     should_suppress_ib_error,
@@ -43,13 +44,7 @@ class Trader(EWrapper, EClient):
         self.ready_for_trading = False
         self.nextOrderId = None
 
-        self.contract = self.make_us_stock(
-            self.config["symbol"],
-            self.config["sec_type"],
-            self.config["currency"],
-            self.config["exchange"],
-            self.config["primary_exchange"],
-        )
+        self.contract = make_stock_contract(self.config)
 
         self.position_size = 0
         self.open_price = None
@@ -148,15 +143,6 @@ class Trader(EWrapper, EClient):
             if mid != self.ref_price:
                 tprint(f"ref_price updated: bid={self._bid} ask={self._ask} mid={mid}")
                 self.ref_price = mid
-
-    def make_us_stock(self, symbol: str, sec_type: str, currency: str, exchange: str, primary_exchange: str) -> Contract:
-        c = Contract()
-        c.symbol = symbol
-        c.secType = sec_type
-        c.currency = currency
-        c.exchange = exchange
-        c.primaryExch = primary_exchange
-        return c
 
     def nextValidId(self, orderId):
         GENERIC_TICKS = ""

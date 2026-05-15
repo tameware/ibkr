@@ -74,6 +74,7 @@ sys.modules['pytz'] = mock_pytz
 from ibkr_app_support import (
     cli_to_config,
     load_config_file,
+    make_stock_contract,
     merge_config,
     require_fields,
 )
@@ -207,17 +208,23 @@ class TestTrader(unittest.TestCase):
         self.assertEqual(self.trader.open_symbol_buys, 0)
         self.assertEqual(self.trader.open_symbol_sells, 0)
     
-    def test_make_us_stock(self):
+    def test_make_stock_contract(self):
         """Test contract creation"""
-        contract = self.trader.make_us_stock(
-            "AAPL", "STK", "USD", "SMART", "NASDAQ"
+        contract = make_stock_contract(
+            {
+                "symbol": "AAPL",
+                "sec_type": "STK",
+                "currency": "USD",
+                "exchange": "SMART",
+                "primary_exchange": "NASDAQ",
+            }
         )
-        
+
         self.assertEqual(contract.symbol, "AAPL")
         self.assertEqual(contract.secType, "STK")
         self.assertEqual(contract.currency, "USD")
         self.assertEqual(contract.exchange, "SMART")
-        self.assertEqual(contract.primaryExch, "NASDAQ")
+        self.assertEqual(contract.primaryExchange, "NASDAQ")
     
     def test_make_pegbest_order_buy(self):
         """Test PEG BEST order creation for BUY"""

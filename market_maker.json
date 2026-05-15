@@ -32,6 +32,7 @@
 
   "risk": {
     "cancel_on_invalid_market": true,
+    "cancel_open_orders_on_shutdown": false,
     "require_live_data": false
   },
 

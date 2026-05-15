@@ -23,6 +23,7 @@
   "_comment": "Any offset_pct above 0.5 should have no effect",
   "min_order_size": 10,
   "resync_debounce_seconds": 0.35,
+  "cancel_open_orders_on_shutdown": false,
 
   "log_dir": "logs",
   "log_file": "peg_primary.log",

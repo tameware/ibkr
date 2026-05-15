@@ -28,6 +28,7 @@ from ibkr_app_support import (
     idle_until_shutdown,
     load_merged_config,
     log_ib_error,
+    make_stock_contract,
     run_bot,
     safe_cancel_order,
 )
@@ -110,7 +111,7 @@ class MarketMaker(EWrapper, EClient):
         raw_acct = config.get("account", "") or ""
         self.account_filter = str(raw_acct).strip() or None
 
-        self.contract = self.build_contract(config)
+        self.contract = make_stock_contract(config)
 
         self.base_qty = int(config.get("base_qty", 100))
         self.max_position = int(config.get("max_position", 1000))
@@ -137,6 +138,9 @@ class MarketMaker(EWrapper, EClient):
 
         self.cancel_on_invalid_market = _cfg_bool(
             config, "cancel_on_invalid_market", True
+        )
+        self.cancel_open_orders_on_shutdown = _cfg_bool(
+            config, "cancel_open_orders_on_shutdown", False
         )
         self.require_live_data = _cfg_bool(config, "require_live_data", False)
 
@@ -213,16 +217,6 @@ class MarketMaker(EWrapper, EClient):
             self.contract.exchange,
             self.contract.primaryExchange,
         )
-
-    @staticmethod
-    def build_contract(config: Dict[str, Any]) -> Contract:
-        c = Contract()
-        c.symbol = str(config.get("symbol", "FDX"))
-        c.secType = str(config.get("sec_type", "STK"))
-        c.exchange = str(config.get("exchange", "SMART"))
-        c.currency = str(config.get("currency", "USD"))
-        c.primaryExchange = str(config.get("primary_exchange", "NYSE"))
-        return c
 
     def error(
         self,
@@ -1328,13 +1322,18 @@ class MarketMaker(EWrapper, EClient):
         except Exception as e:
             self.logger.warning("cancelMktData failed: %s", e)
 
-        try:
-            if self.buy_order:
-                self.cancel_live_order(self.buy_order)
-            if self.sell_order:
-                self.cancel_live_order(self.sell_order)
-        except Exception as e:
-            self.logger.warning("Order cancel during shutdown failed: %s", e)
+        if self.cancel_open_orders_on_shutdown:
+            try:
+                if self.buy_order:
+                    self.cancel_live_order(self.buy_order)
+                if self.sell_order:
+                    self.cancel_live_order(self.sell_order)
+            except Exception as e:
+                self.logger.warning("Order cancel during shutdown failed: %s", e)
+        else:
+            self.logger.info(
+                "Leaving open orders at IBKR (cancel_open_orders_on_shutdown=false)"
+            )
 
         time.sleep(1)
 
@@ -1372,6 +1371,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--require_live_data",
         action=argparse.BooleanOptionalAction,
+    )
+    parser.add_argument(
+        "--cancel_open_orders_on_shutdown",
+        action=argparse.BooleanOptionalAction,
+        help="Cancel tracked BUY/SELL quotes before disconnect (default: false)",
     )
 
     parser.add_argument(
