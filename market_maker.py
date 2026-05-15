@@ -29,6 +29,7 @@ from ibkr_app_support import (
     load_merged_config,
     log_ib_error,
     make_stock_contract,
+    NbboThrottle,
     run_bot,
     safe_cancel_order,
 )
@@ -128,6 +129,10 @@ class MarketMaker(EWrapper, EClient):
             config.get("target_roundtrip_capture", 0.30)
         )
         self.quote_refresh_seconds = float(config.get("quote_refresh_seconds", 3.0))
+        self._nbbo_throttle = NbboThrottle(
+            self.quote_refresh_seconds,
+            clock=time.time,
+        )
         self.max_market_stale_seconds = float(
             config.get("max_market_stale_seconds", 15.0)
         )
@@ -183,9 +188,6 @@ class MarketMaker(EWrapper, EClient):
         self.buy_shares_filled = 0
 
         self.last_quote_eval = 0.0
-        self._last_quote_nbbo_snap: Optional[Tuple[Optional[float], Optional[float], int, int]] = (
-            None
-        )
         self._last_quote_decision_log_key: Optional[
             Tuple[
                 Optional[float],
@@ -1061,7 +1063,7 @@ class MarketMaker(EWrapper, EClient):
                 avg_cost=self.avg_cost,
                 buy_shares_filled=self.buy_shares_filled,
                 last_quote_eval=self.last_quote_eval,
-                last_nbbo_snap=self._last_quote_nbbo_snap,
+                last_nbbo_snap=self._nbbo_throttle.last_key,
                 quote_bid=self.quote.bid,
                 quote_ask=self.quote.ask,
                 quote_bid_sz=self.quote.bid_size,
@@ -1177,17 +1179,20 @@ class MarketMaker(EWrapper, EClient):
         if self._abort_for_market_invalid_reason(inv_reason):
             return
 
-        if not force and (now - snap.last_quote_eval) < self.quote_refresh_seconds:
-            nbbo_key = (
-                snap.quote_bid,
-                snap.quote_ask,
-                snap.quote_bid_sz,
-                snap.quote_ask_sz,
-            )
-            if nbbo_key == snap.last_nbbo_snap and not self._needs_quote_despite_nbbo_throttle_with(
+        nbbo_key = (
+            snap.quote_bid,
+            snap.quote_ask,
+            snap.quote_bid_sz,
+            snap.quote_ask_sz,
+        )
+        if not self._nbbo_throttle.should_run(
+            nbbo_key,
+            force=force,
+            bypass_if=lambda: self._needs_quote_despite_nbbo_throttle_with(
                 snap.position_qty, snap.sell_snap
-            ):
-                return
+            ),
+        ):
+            return
 
         with self.lock:
             self.last_quote_eval = now
@@ -1211,12 +1216,7 @@ class MarketMaker(EWrapper, EClient):
         self.place_or_replace_sell(sell_qty, sell_px if sell_qty > 0 else None)
 
         with self.lock:
-            self._last_quote_nbbo_snap = (
-                self.quote.bid,
-                self.quote.ask,
-                self.quote.bid_size,
-                self.quote.ask_size,
-            )
+            self._nbbo_throttle.mark_ran(nbbo_key)
 
         log_bid = self.quote.bid
         log_ask = self.quote.ask

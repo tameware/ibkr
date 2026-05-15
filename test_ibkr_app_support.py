@@ -2,7 +2,7 @@
 
 import datetime
 import unittest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, Mock, call, patch
 from zoneinfo import ZoneInfo
 
 import argparse
@@ -23,6 +23,7 @@ from ibkr_app_support import (
     load_config_file,
     load_merged_config,
     log_ib_error,
+    NbboThrottle,
     make_stock_contract,
     log_session_transition,
     merge_config,
@@ -102,6 +103,29 @@ class TestRegularSession(unittest.TestCase):
             in_hours=True,
         )
         logger.info.assert_not_called()
+
+
+class TestNbboThrottle(unittest.TestCase):
+    def test_skips_when_interval_not_elapsed_and_key_unchanged(self):
+        clock = Mock(side_effect=[10.0, 10.0, 10.5, 10.5])
+        throttle = NbboThrottle(3.0, clock=clock)
+        key = (50.0, 50.1)
+        self.assertTrue(throttle.should_run(key))
+        throttle.mark_ran(key)
+        self.assertFalse(throttle.should_run(key))
+
+    def test_runs_when_key_changes_inside_interval(self):
+        clock = Mock(side_effect=[10.0, 10.0, 10.5])
+        throttle = NbboThrottle(3.0, clock=clock)
+        throttle.mark_ran((50.0, 50.1))
+        self.assertTrue(throttle.should_run((50.0, 50.2)))
+
+    def test_force_and_bypass(self):
+        throttle = NbboThrottle(60.0, clock=lambda: 100.0)
+        throttle.mark_ran((1.0, 2.0))
+        self.assertTrue(throttle.should_run((1.0, 2.0), force=True))
+        self.assertTrue(throttle.should_run((1.0, 2.0), bypass_if=lambda: True))
+        self.assertFalse(throttle.should_run((1.0, 2.0)))
 
 
 class TestMakeStockContract(unittest.TestCase):

@@ -471,11 +471,13 @@ class TestTrader(unittest.TestCase):
         self.t._ask = 50.10
         self.t.nbbo_sync_interval_seconds = 10.0
         self.t.sync_orders = Mock()
+        from ibkr_app_support import NbboThrottle
+
+        mono = Mock(side_effect=[100.0, 100.0, 100.5, 100.5])
         with patch("peg_primary.regular_session_open", return_value=True):
-            with patch("peg_primary.time.monotonic", side_effect=[100.0, 100.5]):
-                self.t.last_nbbo_sync_ts = 0.0
-                self.t.maybe_sync_orders_from_nbbo()
-                self.t.maybe_sync_orders_from_nbbo()
+            self.t._nbbo_throttle = NbboThrottle(10.0, clock=mono)
+            self.t.maybe_sync_orders_from_nbbo()
+            self.t.maybe_sync_orders_from_nbbo()
         self.t.sync_orders.assert_called_once()
 
     def test_maybe_sync_orders_from_nbbo_skips_outside_session(self):

@@ -54,6 +54,7 @@ from ibkr_app_support import (
     cfg_bool,
     load_merged_config,
     make_stock_contract,
+    NbboThrottle,
     log_ib_error,
     log_session_transition,
     regular_session_open,
@@ -129,10 +130,12 @@ class Trader(EWrapper, EClient):
         self.open_orders_snapshot_complete = False
         self.sync_requested = False
         self.last_resync_request_ts = 0.0
-        self.last_nbbo_sync_ts = 0.0
-        self._last_nbbo_key: tuple[float, float] | None = None
         self.resync_debounce_seconds = float(self.config.get("resync_debounce_seconds", 0.35))
         self.nbbo_sync_interval_seconds = float(self.config["loop_seconds"])
+        self._nbbo_throttle = NbboThrottle(
+            self.nbbo_sync_interval_seconds,
+            clock=time.monotonic,
+        )
         self.cancel_open_orders_on_shutdown = cfg_bool(
             config, "cancel_open_orders_on_shutdown", False
         )
@@ -484,14 +487,10 @@ class Trader(EWrapper, EClient):
             return
 
         nbbo_key = (float(self._bid), float(self._ask))
-        now = time.monotonic()
-        if not force:
-            if now - self.last_nbbo_sync_ts < self.nbbo_sync_interval_seconds:
-                if nbbo_key == self._last_nbbo_key:
-                    return
+        if not self._nbbo_throttle.should_run(nbbo_key, force=force):
+            return
 
-        self.last_nbbo_sync_ts = now
-        self._last_nbbo_key = nbbo_key
+        self._nbbo_throttle.mark_ran(nbbo_key)
 
         mid = self._nbbo_mid_rounded()
         if mid != self.ref_price:

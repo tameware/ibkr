@@ -176,6 +176,57 @@ def make_stock_contract(
     return c
 
 
+class NbboThrottle:
+    """Rate-limit NBBO-driven work: skip when interval has not elapsed and the key is unchanged."""
+
+    def __init__(
+        self,
+        interval_seconds: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.interval_seconds = float(interval_seconds)
+        self._clock = clock
+        self._last_run_ts = 0.0
+        self._last_key: Any = None
+
+    @property
+    def last_key(self) -> Any:
+        return self._last_key
+
+    @property
+    def last_run_ts(self) -> float:
+        return self._last_run_ts
+
+    def should_run(
+        self,
+        nbbo_key: Any,
+        *,
+        force: bool = False,
+        bypass_if: Optional[Callable[[], bool]] = None,
+    ) -> bool:
+        if force:
+            return True
+        if bypass_if is not None and bypass_if():
+            return True
+        now = self._clock()
+        if (
+            self.interval_seconds > 0
+            and (now - self._last_run_ts) < self.interval_seconds
+            and nbbo_key == self._last_key
+        ):
+            return False
+        return True
+
+    def mark_ran(self, nbbo_key: Any) -> None:
+        self._last_run_ts = self._clock()
+        self._last_key = nbbo_key
+
+    def reset(self) -> None:
+        self._last_run_ts = 0.0
+        self._last_key = None
+
+
 def cfg_bool(config: Dict[str, Any], key: str, default: bool) -> bool:
     if key not in config:
         return default

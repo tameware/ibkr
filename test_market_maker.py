@@ -61,6 +61,7 @@ sys.modules["ibapi.order"] = mock_ibapi.order
 sys.modules["ibapi.order_cancel"] = mock_ibapi.order_cancel
 
 from ibkr_app_support import (
+    NbboThrottle,
     cli_to_config,
     flatten_config_sections,
     load_config_file,
@@ -507,8 +508,9 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.quote.ask_size = 100
         self.mm.quote.last_update_ts = ts
         self.mm.quote_refresh_seconds = 3.0
-        self.mm.last_quote_eval = ts - 0.5
-        self.mm._last_quote_nbbo_snap = (50.0, 51.0, 100, 100)
+        self.mm._nbbo_throttle = NbboThrottle(3.0, clock=lambda: ts)
+        self.mm._nbbo_throttle.mark_ran((50.0, 51.0, 100, 100))
+        self.mm._nbbo_throttle._last_run_ts = ts - 0.5
         self.mm.next_order_id = 7001
 
         self.mm.place_or_replace_buy = Mock()
@@ -660,8 +662,9 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.quote.ask_size = 300
         self.mm.quote.last_update_ts = ts
         self.mm.quote_refresh_seconds = 3.0
-        self.mm.last_quote_eval = ts - 0.5
-        self.mm._last_quote_nbbo_snap = (50.0, 50.77, 100, 100)
+        self.mm._nbbo_throttle = NbboThrottle(3.0, clock=lambda: ts)
+        self.mm._nbbo_throttle.mark_ran((50.0, 50.77, 100, 100))
+        self.mm._nbbo_throttle._last_run_ts = ts - 0.5
         self.mm.next_order_id = 9001
 
         self.mm.place_or_replace_buy = Mock()
