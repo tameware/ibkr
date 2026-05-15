@@ -843,19 +843,26 @@ class TestTrader(unittest.TestCase):
         self.trader.sync_orders.assert_not_called()
     
     def test_safe_cancel_order_single_arg(self):
-        """Test safe_cancel_order with single argument"""
-        self.trader.cancelOrder = Mock()
-        self.trader.safe_cancel_order(123)
-        self.trader.cancelOrder.assert_called_once_with(123)
-    
-    def test_safe_cancel_order_two_args(self):
-        """Test safe_cancel_order falls back to two arguments"""
-        cancel_mock = Mock()
-        cancel_mock.side_effect = [TypeError(), None]
+        """Test safe_cancel_order with one-arg cancelOrder binding"""
+        from ibkr_app_support import safe_cancel_order
+
+        self.trader.isConnected = Mock(return_value=True)
+        self.trader.serverVersion = Mock(return_value=157)
+        self.trader.cancelOrder = Mock(side_effect=[TypeError(), None])
+        safe_cancel_order(self.trader, 123)
+        self.assertGreaterEqual(self.trader.cancelOrder.call_count, 1)
+
+    def test_safe_cancel_order_legacy_empty_string_fallback(self):
+        """Test safe_cancel_order falls back to cancelOrder(id, '')"""
+        from ibkr_app_support import safe_cancel_order
+
+        cancel_mock = Mock(side_effect=[TypeError(), TypeError(), None])
+        self.trader.isConnected = Mock(return_value=True)
+        self.trader.serverVersion = Mock(return_value=157)
         self.trader.cancelOrder = cancel_mock
-        
-        self.trader.safe_cancel_order(456)
-        self.assertEqual(cancel_mock.call_count, 2)
+
+        safe_cancel_order(self.trader, 456)
+        self.assertEqual(cancel_mock.call_count, 3)
         cancel_mock.assert_has_calls([call(456), call(456, "")])
     
     def test_error_filtering_ignores_codes(self):

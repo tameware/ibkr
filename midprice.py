@@ -22,6 +22,7 @@ from ibkr_app_support import (
     merge_config,
     regular_session_open,
     require_fields,
+    safe_cancel_order,
     should_suppress_ib_error,
 )
 
@@ -273,14 +274,6 @@ class Trader(EWrapper, EClient):
         o.tif = self.config["tif"]
         return o
 
-    # Makes the script more robust across IB API versions that differ on
-    # cancelOrder’s Python binding
-    def safe_cancel_order(self, order_id: int) -> None:
-        try:
-            self.cancelOrder(order_id)
-        except TypeError:
-            self.cancelOrder(order_id, "")
-            
     def request_positions_snapshot(self):
         self.position_snapshot_complete = False
         self.position_size = 0
@@ -337,7 +330,7 @@ class Trader(EWrapper, EClient):
         else:
             if self.buy_order_id is not None:
                 tprint(f"Cancelling BUY order id={self.buy_order_id} because position is at max_pos")
-                self.safe_cancel_order(self.buy_order_id)
+                safe_cancel_order(self,self.buy_order_id)
                 self.pending_buy = False
 
         sell_qty = pos
@@ -353,7 +346,7 @@ class Trader(EWrapper, EClient):
         else:
             if self.sell_order_id is not None:
                 tprint(f"Cancelling SELL order id={self.sell_order_id} because position is zero")
-                self.safe_cancel_order(self.sell_order_id)
+                safe_cancel_order(self,self.sell_order_id)
                 self.pending_sell = False
 
     def run_loop(self):

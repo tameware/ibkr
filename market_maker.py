@@ -18,7 +18,6 @@ from ibapi.client import EClient
 from ibapi.common import OrderId, TickerId
 from ibapi.contract import Contract
 from ibapi.order import Order
-from ibapi.order_cancel import OrderCancel
 from ibapi.wrapper import EWrapper
 
 from ibkr_app_support import (
@@ -29,6 +28,7 @@ from ibkr_app_support import (
     load_config_file,
     log_ib_error,
     merge_config,
+    safe_cancel_order,
 )
 
 
@@ -347,7 +347,7 @@ class MarketMaker(EWrapper, EClient):
 
     def _cancel_adopted_extra(self, live: LiveOrder):
         try:
-            self._ib_cancel_order(live.order_id)
+            safe_cancel_order(self, live.order_id)
             self.logger.warning(
                 "Cancelling extra adopted order id=%s side=%s px=%.2f qty=%s status=%s",
                 live.order_id,
@@ -766,17 +766,6 @@ class MarketMaker(EWrapper, EClient):
         o.outsideRth = False
         return o
 
-    def _ib_cancel_order(self, order_id: int):
-        # ibapi cancelOrder/cancelMktData hit useProtoBuf() first; if serverVersion() is
-        # None (e.g. mid-disconnect), that raises TypeError — do not fall back to legacy
-        # one-arg cancelOrder (new ibapi requires OrderCancel).
-        if not self.isConnected() or self.serverVersion() is None:
-            return
-        try:
-            self.cancelOrder(order_id, OrderCancel())
-        except TypeError:
-            self.cancelOrder(order_id)
-
     def can_open_new_long(self) -> bool:
         with self.lock:
             if self.position_qty >= self.max_position:
@@ -1001,7 +990,7 @@ class MarketMaker(EWrapper, EClient):
         qty = live.qty
 
         try:
-            self._ib_cancel_order(oid)
+            safe_cancel_order(self, oid)
 
             with self.lock:
                 if side == "BUY" and self.buy_order and self.buy_order.order_id == oid:

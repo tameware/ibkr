@@ -22,6 +22,7 @@ from ibkr_app_support import (
     merge_config,
     regular_session_open,
     require_fields,
+    safe_cancel_order,
     should_suppress_ib_error,
 )
 
@@ -294,7 +295,7 @@ class Trader(EWrapper, EClient):
         if desired_side == "BUY":
             if self.sell_order_id is not None:
                 tprint(f"Cancelling opposite SELL order id={self.sell_order_id}")
-                self.cancelOrder(self.sell_order_id, "")
+                safe_cancel_order(self, self.sell_order_id)
                 self.pending_sell = False
                 self.sell_order_id = None
                 self.open_symbol_sells = 0
@@ -315,7 +316,7 @@ class Trader(EWrapper, EClient):
         else:
             if self.buy_order_id is not None:
                 tprint(f"Cancelling opposite BUY order id={self.buy_order_id}")
-                self.cancelOrder(self.buy_order_id, "")
+                safe_cancel_order(self, self.buy_order_id)
                 self.pending_buy = False
                 self.buy_order_id = None
                 self.open_symbol_buys = 0

@@ -52,6 +52,7 @@ from ibkr_app_support import (
     merge_config,
     regular_session_open,
     require_fields,
+    safe_cancel_order,
     wait_for_ib_ready,
 )
 from ibapi.client import EClient
@@ -443,12 +444,6 @@ class Trader(EWrapper, EClient):
         """NBBO mid rounded to :attr:`_digits`. Caller must ensure :meth:`_has_valid_nbbo`."""
         return round((float(self._bid) + float(self._ask)) / 2.0, self._digits)
 
-    def safe_cancel_order(self, order_id: int) -> None:
-        try:
-            self.cancelOrder(order_id)
-        except TypeError:
-            self.cancelOrder(order_id, "")
-
     def adjusted_rel_limits(self) -> tuple[float, float]:
         """REL buy/sell ``lmtPrice`` from NBBO mid and ``mid_delta``.
 
@@ -539,7 +534,7 @@ class Trader(EWrapper, EClient):
                 f"{desired_remaining} < min_order_size {self.min_order_size}; "
                 f"filled={filled_now})"
             )
-            self.safe_cancel_order(oid)
+            safe_cancel_order(self, oid)
             self._clear_order_state(action)
             return True
 
@@ -626,7 +621,7 @@ class Trader(EWrapper, EClient):
                     self.sell_order_id,
                 )
                 sid = self.sell_order_id
-                self.safe_cancel_order(sid)
+                safe_cancel_order(self,sid)
                 self.pending_sell = False
                 self.sell_order_id = None
                 self.sell_order_qty = None
@@ -681,7 +676,7 @@ class Trader(EWrapper, EClient):
                     self.buy_order_id,
                 )
                 buy_oid = self.buy_order_id
-                self.safe_cancel_order(buy_oid)
+                safe_cancel_order(self,buy_oid)
                 self.pending_buy = False
                 self.buy_order_id = None
                 self.buy_order_qty = None

@@ -560,9 +560,9 @@ class TestTrader(unittest.TestCase):
         self.trader.position_size = 50
         self.trader.buy_order_id = 999  # Has open BUY order but wants to SELL
         
-        self.trader.sync_orders()
-        
-        self.trader.cancelOrder.assert_called_once_with(999, "")
+        with patch("peg_best.safe_cancel_order") as cancel:
+            self.trader.sync_orders()
+            cancel.assert_called_once_with(self.trader, 999)
         self.assertEqual(self.trader.open_symbol_buys, 0)
         self.assertIsNone(self.trader.buy_order_id)
     
@@ -572,9 +572,9 @@ class TestTrader(unittest.TestCase):
         self.trader.position_size = 0
         self.trader.sell_order_id = 999  # Has open SELL order but wants to BUY
         
-        self.trader.sync_orders()
-        
-        self.trader.cancelOrder.assert_called_once_with(999, "")
+        with patch("peg_best.safe_cancel_order") as cancel:
+            self.trader.sync_orders()
+            cancel.assert_called_once_with(self.trader, 999)
         self.assertEqual(self.trader.open_symbol_sells, 0)
         self.assertIsNone(self.trader.sell_order_id)
     

@@ -291,6 +291,35 @@ def log_ib_error(
     return True
 
 
+def safe_cancel_order(client: Any, order_id: int) -> None:
+    """Cancel an order via the IB API.
+
+    No-op when disconnected or ``serverVersion()`` is unset (avoids ibapi
+    ``useProtoBuf()`` failures mid-teardown). Tries ``OrderCancel`` (new ibapi),
+    then one-arg ``cancelOrder``, then legacy two-arg ``cancelOrder(id, "")``.
+    """
+    if not client.isConnected() or client.serverVersion() is None:
+        return
+
+    try:
+        from ibapi.order_cancel import OrderCancel
+    except ImportError:
+        OrderCancel = None  # type: ignore[misc, assignment]
+
+    if OrderCancel is not None:
+        try:
+            client.cancelOrder(order_id, OrderCancel())
+            return
+        except TypeError:
+            pass
+
+    try:
+        client.cancelOrder(order_id)
+        return
+    except TypeError:
+        client.cancelOrder(order_id, "")
+
+
 def wait_for_ib_ready(
     is_ready: Callable[[], bool],
     *,

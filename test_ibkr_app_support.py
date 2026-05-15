@@ -2,7 +2,7 @@
 
 import datetime
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 from zoneinfo import ZoneInfo
 
 from ibkr_app_support import (
@@ -10,6 +10,7 @@ from ibkr_app_support import (
     log_ib_error,
     log_session_transition,
     regular_session_open,
+    safe_cancel_order,
     session_wall_clock,
     should_suppress_ib_error,
     wait_for_ib_ready,
@@ -143,6 +144,29 @@ class TestIbErrorFiltering(unittest.TestCase):
     def test_ib_error_is_status_info(self):
         self.assertTrue(ib_error_is_status_info(2104))
         self.assertFalse(ib_error_is_status_info(500))
+
+
+class TestSafeCancelOrder(unittest.TestCase):
+    def test_skips_when_disconnected(self):
+        client = MagicMock()
+        client.isConnected.return_value = False
+        safe_cancel_order(client, 1)
+        client.cancelOrder.assert_not_called()
+
+    def test_skips_when_server_version_unset(self):
+        client = MagicMock()
+        client.isConnected.return_value = True
+        client.serverVersion.return_value = None
+        safe_cancel_order(client, 1)
+        client.cancelOrder.assert_not_called()
+
+    def test_legacy_empty_string_fallback(self):
+        client = MagicMock()
+        client.isConnected.return_value = True
+        client.serverVersion.return_value = 157
+        client.cancelOrder = MagicMock(side_effect=[TypeError(), TypeError(), None])
+        safe_cancel_order(client, 99)
+        client.cancelOrder.assert_has_calls([call(99), call(99, "")])
 
 
 class TestWaitForIbReady(unittest.TestCase):

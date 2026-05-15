@@ -427,10 +427,10 @@ class TestTrader(unittest.TestCase):
         self.t.nextOrderId = 400
         self.t.position_size = 100
         self.t.buy_order_id = 88
-        self.t.safe_cancel_order = Mock()
         self.t.placeOrder = Mock()
-        self.t.sync_orders()
-        self.t.safe_cancel_order.assert_called_once_with(88)
+        with patch("peg_primary.safe_cancel_order") as cancel:
+            self.t.sync_orders()
+            cancel.assert_called_once_with(self.t, 88)
         self.t.placeOrder.assert_not_called()
 
     def test_sync_orders_cancels_opposite_before_buy(self):
@@ -439,10 +439,10 @@ class TestTrader(unittest.TestCase):
         self.t.nextOrderId = 1
         self.t.position_size = 0
         self.t.sell_order_id = 55
-        self.t.safe_cancel_order = Mock()
         self.t.placeOrder = Mock()
-        self.t.sync_orders()
-        self.t.safe_cancel_order.assert_called_once_with(55)
+        with patch("peg_primary.safe_cancel_order") as cancel:
+            self.t.sync_orders()
+            cancel.assert_called_once_with(self.t, 55)
         self.t.placeOrder.assert_not_called()
 
     def test_trigger_resync_debounce(self):
@@ -666,7 +666,6 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         self.t._bid = 49.90
         self.t._ask = 50.10
         self.t.placeOrder = Mock()
-        self.t.safe_cancel_order = Mock()
 
     def test_partial_buy_fill_grows_existing_sell(self):
         """Position was 20 with SELL sized 20. BUY partially filled to 50.
@@ -732,10 +731,10 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         self.t.open_symbol_buys = 1
         self.t.open_symbol_sells = 1
 
-        self.t.sync_orders()
-
+        with patch("peg_primary.safe_cancel_order") as cancel:
+            self.t.sync_orders()
+            cancel.assert_not_called()
         self.t.placeOrder.assert_not_called()
-        self.t.safe_cancel_order.assert_not_called()
 
     def test_resize_below_min_order_size_cancels(self):
         """Shrink to below min_order_size cancels the order."""
@@ -752,9 +751,9 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         self.t.open_symbol_buys = 1
         self.t.open_symbol_sells = 1
 
-        self.t.sync_orders()
-
-        self.t.safe_cancel_order.assert_called_once_with(40)
+        with patch("peg_primary.safe_cancel_order") as cancel:
+            self.t.sync_orders()
+            cancel.assert_called_once_with(self.t, 40)
         self.t.placeOrder.assert_not_called()
         self.assertIsNone(self.t.buy_order_id)
         self.assertIsNone(self.t.buy_order_qty)

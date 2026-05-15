@@ -525,24 +525,30 @@ class TestMarketMakerCore(unittest.TestCase):
         buy_qty, _ = self.mm.place_or_replace_buy.call_args[0]
         self.assertGreater(buy_qty, 0)
 
-    def test_ib_cancel_order_two_arg_fallback(self):
+    def test_safe_cancel_order_fallback_after_order_cancel_typeerror(self):
+        from ibkr_app_support import safe_cancel_order
+
         self.mm.isConnected = Mock(return_value=True)
         self.mm.serverVersion = Mock(return_value=157)
         self.mm.cancelOrder = Mock(side_effect=[TypeError(), None])
-        self.mm._ib_cancel_order(42)
+        safe_cancel_order(self.mm, 42)
         self.assertEqual(self.mm.cancelOrder.call_count, 2)
 
-    def test_ib_cancel_order_skips_when_not_connected(self):
+    def test_safe_cancel_order_skips_when_not_connected(self):
+        from ibkr_app_support import safe_cancel_order
+
         self.mm.isConnected = Mock(return_value=False)
         self.mm.cancelOrder = Mock()
-        self.mm._ib_cancel_order(99)
+        safe_cancel_order(self.mm, 99)
         self.mm.cancelOrder.assert_not_called()
 
-    def test_ib_cancel_order_skips_when_server_version_none(self):
+    def test_safe_cancel_order_skips_when_server_version_none(self):
+        from ibkr_app_support import safe_cancel_order
+
         self.mm.isConnected = Mock(return_value=True)
         self.mm.serverVersion = Mock(return_value=None)
         self.mm.cancelOrder = Mock()
-        self.mm._ib_cancel_order(99)
+        safe_cancel_order(self.mm, 99)
         self.mm.cancelOrder.assert_not_called()
 
     def test_place_or_replace_sell_reuses_order_id_when_price_changes(self):
