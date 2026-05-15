@@ -23,6 +23,9 @@
   "_comment": "Any offset_pct above 0.5 should have no effect",
   "min_order_size": 10,
   "resync_debounce_seconds": 0.35,
+  "nbbo_coalesce_seconds": 4.0,
+  "nbbo_coalesce_max_seconds": 10.0,
+  "_comment_nbbo_coalesce": "Commit pending NBBO after 4s quiet ticks, or at least every 10s if ticks never pause",
   "cancel_open_orders_on_shutdown": false,
 
   "log_dir": "logs",

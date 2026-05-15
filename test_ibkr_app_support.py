@@ -24,6 +24,7 @@ from ibkr_app_support import (
     load_config_file,
     load_merged_config,
     log_ib_error,
+    NbboCoalescer,
     NbboThrottle,
     make_stock_contract,
     log_session_transition,
@@ -127,6 +128,91 @@ class TestNbboThrottle(unittest.TestCase):
         self.assertTrue(throttle.should_run((1.0, 2.0), force=True))
         self.assertTrue(throttle.should_run((1.0, 2.0), bypass_if=lambda: True))
         self.assertFalse(throttle.should_run((1.0, 2.0)))
+
+
+class TestNbboCoalescer(unittest.TestCase):
+    def test_zero_interval_flushes_immediately(self):
+        seen: list[str] = []
+        NbboCoalescer(0, lambda: seen.append("flush")).schedule()
+        self.assertEqual(seen, ["flush"])
+
+    def test_defers_flush_until_timer_fires(self):
+        seen: list[str] = []
+        coalesce = NbboCoalescer(0.05, lambda: seen.append("flush"))
+        with patch("ibkr_app_support.threading.Timer") as timer_cls:
+            timer = MagicMock()
+            timer_cls.return_value = timer
+            coalesce.schedule()
+            coalesce.schedule()
+            self.assertEqual(timer_cls.call_count, 2)
+            self.assertEqual(timer.cancel.call_count, 1)
+            self.assertEqual(seen, [])
+            timer_cls.call_args[0][1]()
+            self.assertEqual(seen, ["flush"])
+
+    def test_max_interval_flushes_during_continuous_ticks(self):
+        seen: list[str] = []
+        now = [0.0]
+
+        def clock() -> float:
+            return now[0]
+
+        coalesce = NbboCoalescer(
+            10.0,
+            lambda: seen.append("flush"),
+            max_interval_seconds=1.0,
+            clock=clock,
+        )
+        with patch("ibkr_app_support.threading.Timer"):
+            coalesce.schedule()
+            now[0] = 0.4
+            coalesce.schedule()
+            self.assertEqual(seen, [])
+            now[0] = 1.0
+            coalesce.schedule()
+        self.assertEqual(seen, ["flush"])
+
+    def test_quiet_flush_defers_until_max_interval_elapsed(self):
+        seen: list[str] = []
+        now = [0.0]
+
+        def clock() -> float:
+            return now[0]
+
+        coalesce = NbboCoalescer(
+            0.05,
+            lambda: seen.append("flush"),
+            max_interval_seconds=1.0,
+            clock=clock,
+        )
+        with patch("ibkr_app_support.threading.Timer") as timer_cls:
+            timer = MagicMock()
+            timer_cls.return_value = timer
+            coalesce._do_flush()
+            now[0] = 0.5
+            coalesce.schedule()
+            timer_cls.call_args[0][1]()
+        self.assertEqual(seen, ["flush"])
+
+    def test_continuous_stream_flushes_at_max_interval(self):
+        seen: list[float] = []
+        now = [0.0]
+
+        def clock() -> float:
+            return now[0]
+
+        coalesce = NbboCoalescer(
+            2.0,
+            lambda: seen.append(clock()),
+            max_interval_seconds=10.0,
+            clock=clock,
+        )
+        with patch("ibkr_app_support.threading.Timer"):
+            for step in range(150):
+                now[0] = step * 0.1
+                coalesce.schedule()
+        self.assertEqual(len(seen), 1)
+        self.assertAlmostEqual(seen[0], 10.0)
 
 
 class TestMakeStockContract(unittest.TestCase):

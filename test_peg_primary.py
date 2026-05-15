@@ -67,6 +67,7 @@ sys.modules["ibapi.ticktype"] = MagicMock()
 sys.modules["pytz"] = mock_pytz
 
 from ibkr_app_support import (
+    NbboCoalescer,
     cli_to_config,
     load_config_file,
     merge_config,
@@ -497,6 +498,24 @@ class TestTrader(unittest.TestCase):
         self.t.maybe_sync_orders_from_nbbo.assert_not_called()
         self.t.tickPrice(MKTDATA_REQ_ID, 2, 50.10, Mock())
         self.t.maybe_sync_orders_from_nbbo.assert_called_once()
+
+    def test_tick_price_coalesces_before_flush(self):
+        self.t.nbbo_coalesce_seconds = 1.0
+        self.t._nbbo_coalesce = NbboCoalescer(
+            1.0,
+            self.t._flush_pending_nbbo,
+            max_interval_seconds=0.0,
+        )
+        self.t._bid = None
+        self.t._ask = None
+        self.t.maybe_sync_orders_from_nbbo = Mock()
+        self.t.tickPrice(MKTDATA_REQ_ID, 1, 50.0, Mock())
+        self.t.tickPrice(MKTDATA_REQ_ID, 2, 50.20, Mock())
+        self.t.maybe_sync_orders_from_nbbo.assert_not_called()
+        self.t._flush_pending_nbbo()
+        self.t.maybe_sync_orders_from_nbbo.assert_called_once()
+        self.assertEqual(self.t._bid, 50.0)
+        self.assertEqual(self.t._ask, 50.20)
 
     def test_us_regular_hours(self):
         from ibkr_app_support import regular_session_open

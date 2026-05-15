@@ -227,6 +227,103 @@ class NbboThrottle:
         self._last_key = None
 
 
+class NbboCoalescer:
+    """Debounce bid/ask tick bursts and cap how often flushes may run.
+
+  * ``interval_seconds`` — trailing quiet period; each tick resets the timer.
+  * ``max_interval_seconds`` — minimum time between flushes (wall clock since the
+    last flush). During a continuous tick stream, a flush is forced at least this
+    often even if the quiet period never elapses. After a quiet-period flush, a
+    new flush waits until ``max_interval_seconds`` has passed since the last one.
+    """
+
+    def __init__(
+        self,
+        interval_seconds: float,
+        on_flush: Callable[[], None],
+        *,
+        max_interval_seconds: float = 0.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.interval_seconds = max(0.0, float(interval_seconds))
+        self.max_interval_seconds = max(0.0, float(max_interval_seconds))
+        self._on_flush = on_flush
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._timer: Optional[threading.Timer] = None
+        self._last_flush_ts: Optional[float] = None
+        self._anchor_ts: Optional[float] = None
+
+    def _max_deadline_elapsed(self, now: float) -> bool:
+        if self.max_interval_seconds <= 0 or self._anchor_ts is None:
+            return False
+        return (now - self._anchor_ts) >= self.max_interval_seconds
+
+    def _arm_quiet_timer_locked(self, delay: float) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+        self._timer = threading.Timer(delay, self._fire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _do_flush(self) -> None:
+        now = self._clock()
+        self._last_flush_ts = now
+        self._anchor_ts = now
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+        self._on_flush()
+
+    def schedule(self) -> None:
+        """Note a new tick; flush after quiet period and/or max-interval deadline."""
+        if self.interval_seconds <= 0 and self.max_interval_seconds <= 0:
+            self._do_flush()
+            return
+
+        now = self._clock()
+        flush_now = False
+        with self._lock:
+            if self._anchor_ts is None:
+                self._anchor_ts = now
+            if self._max_deadline_elapsed(now):
+                flush_now = True
+                if self._timer is not None:
+                    self._timer.cancel()
+                    self._timer = None
+            elif self.interval_seconds > 0:
+                self._arm_quiet_timer_locked(self.interval_seconds)
+
+        if flush_now:
+            self._do_flush()
+
+    def _fire(self) -> None:
+        """Quiet-period timer: flush unless capped by ``max_interval_seconds``."""
+        now = self._clock()
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+            if (
+                self.max_interval_seconds > 0
+                and self._last_flush_ts is not None
+                and (now - self._last_flush_ts) < self.max_interval_seconds
+            ):
+                delay = self.max_interval_seconds - (now - self._last_flush_ts)
+                self._arm_quiet_timer_locked(delay)
+                return
+        self._do_flush()
+
+    def cancel(self) -> None:
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+            self._last_flush_ts = None
+            self._anchor_ts = None
+
+
 def cfg_bool(config: Dict[str, Any], key: str, default: bool) -> bool:
     if key not in config:
         return default

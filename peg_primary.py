@@ -19,8 +19,11 @@ The bot does not place, modify, or cancel orders until both bid and ask are vali
 (positive and ask > bid). Orders are
 not submitted when computed quantity is below ``min_order_size`` (default 10).
 
-Quoting is **callback-driven**: ``tickPrice`` and fill/position callbacks call
-``sync_orders`` (with throttling). The main thread only handles session
+Quoting is **callback-driven**: ``tickPrice`` updates pending bid/ask and commits
+the latest pair after ``nbbo_coalesce_seconds`` of quiet ticks, or at least every
+``nbbo_coalesce_max_seconds`` during a continuous stream, then calls
+``sync_orders`` (with throttling). Fill/position callbacks also resync. The
+main thread only handles session
 transitions, periodic snapshot refresh (``loop_seconds``), and shutdown.
 
 On each connection, after the first ``reqOpenOrders`` snapshot completes, all
@@ -51,6 +54,7 @@ from ibkr_app_support import (
     add_logging_arguments,
     add_session_hours_arguments,
     load_merged_config,
+    NbboCoalescer,
     NbboThrottle,
     log_session_transition,
     regular_session_open,
@@ -113,6 +117,17 @@ class Trader(IbkrBotApp):
         self.ref_price = None
         self._bid = None
         self._ask = None
+        self._pending_bid: float | None = None
+        self._pending_ask: float | None = None
+        self.nbbo_coalesce_seconds = float(
+            self.config.get(
+                "nbbo_coalesce_seconds",
+                self.config.get("resync_debounce_seconds", 0.35),
+            )
+        )
+        self.nbbo_coalesce_max_seconds = float(
+            self.config.get("nbbo_coalesce_max_seconds", 1.0)
+        )
 
         self.remaining_by_order: Dict[int, Any] = {}
         self.filled_by_order: Dict[int, float] = {}
@@ -130,6 +145,12 @@ class Trader(IbkrBotApp):
             self.nbbo_sync_interval_seconds,
             clock=time.monotonic,
         )
+        self._nbbo_coalesce = NbboCoalescer(
+            self.nbbo_coalesce_seconds,
+            self._flush_pending_nbbo,
+            max_interval_seconds=self.nbbo_coalesce_max_seconds,
+            clock=time.monotonic,
+        )
         self._prev_us_regular_hours: bool | None = None
         _mos = int(self.config.get("min_order_size", 10))
         self.min_order_size = max(1, _mos)
@@ -143,9 +164,12 @@ class Trader(IbkrBotApp):
         self.order_working_aux: Dict[int, float] = {}
 
         self.logger.info(
-            "REL quoter initialized symbol=%s exchange=%s",
+            "REL quoter initialized symbol=%s exchange=%s "
+            "(NBBO coalesce quiet=%.2fs min_interval=%.2fs)",
             self.config["symbol"],
             self.config["exchange"],
+            self.nbbo_coalesce_seconds,
+            self.nbbo_coalesce_max_seconds,
         )
 
     def market_data_req_ids(self):
@@ -155,6 +179,7 @@ class Trader(IbkrBotApp):
         self.nextOrderId = order_id
 
     def shutdown_quotes(self) -> None:
+        self._nbbo_coalesce.cancel()
         if self.cancel_open_orders_on_shutdown:
             for label, oid in (("BUY", self.buy_order_id), ("SELL", self.sell_order_id)):
                 if oid is None:
@@ -289,16 +314,31 @@ class Trader(IbkrBotApp):
             return
 
         if tickType == 1:
-            self._bid = price
+            self._pending_bid = float(price)
         elif tickType == 2:
-            self._ask = price
+            self._pending_ask = float(price)
+        else:
+            return
 
+        self._nbbo_coalesce.schedule()
+
+    def _flush_pending_nbbo(self) -> None:
+        """Apply the latest pending bid/ask from the tick stream, then re-peg if valid."""
+        if self._pending_bid is not None:
+            self._bid = self._pending_bid
+        if self._pending_ask is not None:
+            self._ask = self._pending_ask
         if self._has_valid_nbbo():
             self.maybe_sync_orders_from_nbbo()
 
     def startup(self) -> None:
         """Subscribe to market data and request startup snapshots (from ``nextValidId``)."""
         self._startup_open_orders_logged = False
+        self._pending_bid = None
+        self._pending_ask = None
+        self._bid = None
+        self._ask = None
+        self._nbbo_coalesce.cancel()
         self.request_positions_snapshot()
         self.request_today_open_or_prior_close()
         self.reqMktData(MKTDATA_REQ_ID, self.contract, "", False, False, [])
@@ -856,6 +896,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tif")
     parser.add_argument("--price_round_digits", type=int)
     parser.add_argument("--resync_debounce_seconds", type=float)
+    parser.add_argument(
+        "--nbbo_coalesce_seconds",
+        type=float,
+        help="Debounce bid/ask ticks: commit latest NBBO after this quiet period (default: resync_debounce_seconds)",
+    )
+    parser.add_argument(
+        "--nbbo_coalesce_max_seconds",
+        type=float,
+        help="Force NBBO commit at least this often during continuous ticks (default: 1.0)",
+    )
     parser.add_argument(
         "--mid_delta",
         type=float,
