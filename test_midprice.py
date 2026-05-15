@@ -162,6 +162,7 @@ class TestTrader(unittest.TestCase):
         
         # Mock necessary methods that would normally come from IB API
         self.trader.isConnected = Mock(return_value=True)
+        self.trader.serverVersion = Mock(return_value=157)
         self.trader.reqOpenOrders = Mock()
         self.trader.reqPositions = Mock()
         self.trader.placeOrder = Mock()

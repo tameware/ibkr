@@ -45,21 +45,18 @@ import signal
 import sys
 import threading
 import time
-from pathlib import Path
 from typing import Any, Dict
 
 from ibkr_app_support import (
     add_config_argument,
+    add_ib_connection_arguments,
     add_logging_arguments,
     add_session_hours_arguments,
     build_logger,
-    cli_to_config,
-    load_config_file,
+    load_merged_config,
     log_ib_error,
     log_session_transition,
-    merge_config,
     regular_session_open,
-    require_fields,
     safe_cancel_order,
     wait_for_ib_ready,
 )
@@ -919,14 +916,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="IBKR Pegged-to-Primary (REL) quoter — NBBO pegging is exchange-side"
     )
     add_config_argument(parser, __file__)
+    add_ib_connection_arguments(parser)
 
-    parser.add_argument("--host")
-    parser.add_argument("--port", type=int)
-    parser.add_argument("--symbol")
-    parser.add_argument("--sec_type")
-    parser.add_argument("--currency")
-    parser.add_argument("--exchange")
-    parser.add_argument("--primary_exchange")
     parser.add_argument("--max_pos", type=int)
     parser.add_argument("--loop_seconds", type=float)
     parser.add_argument("--min_order_size", type=int)
@@ -953,33 +944,30 @@ def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    config_path = Path(args.config)
-    file_config = load_config_file(str(config_path))
-    cli_config = cli_to_config(args)
-    config = merge_config(file_config, cli_config)
-
-    required_fields = [
-        "host",
-        "port",
-        "symbol",
-        "sec_type",
-        "currency",
-        "exchange",
-        "primary_exchange",
-        "max_pos",
-        "loop_seconds",
-        "offset_pct",
-        "market_timezone",
-        "market_open_hour",
-        "market_open_minute",
-        "market_close_hour",
-        "mid_delta",
-        "tif",
-        "price_round_digits",
-        "ignored_error_codes",
-        "ignore_error_substrings",
-    ]
-    require_fields(config, required_fields)
+    config = load_merged_config(
+        args,
+        required=[
+            "host",
+            "port",
+            "symbol",
+            "sec_type",
+            "currency",
+            "exchange",
+            "primary_exchange",
+            "max_pos",
+            "loop_seconds",
+            "offset_pct",
+            "market_timezone",
+            "market_open_hour",
+            "market_open_minute",
+            "market_close_hour",
+            "mid_delta",
+            "tif",
+            "price_round_digits",
+            "ignored_error_codes",
+            "ignore_error_substrings",
+        ],
+    )
 
     app = Trader(config)
     client_id = int(config.get("client_id", 1))

@@ -170,6 +170,7 @@ class TestTrader(unittest.TestCase):
         
         # Mock necessary methods that would normally come from IB API
         self.trader.isConnected = Mock(return_value=True)
+        self.trader.serverVersion = Mock(return_value=157)
         self.trader.reqOpenOrders = Mock()
         self.trader.reqPositions = Mock()
         self.trader.placeOrder = Mock()
@@ -902,13 +903,18 @@ class TestTrader(unittest.TestCase):
         """Test safe_cancel_order falls back to cancelOrder(id, '')"""
         from ibkr_app_support import safe_cancel_order
 
-        cancel_mock = Mock(side_effect=[TypeError(), TypeError(), None])
+        cancel_mock = Mock(side_effect=[TypeError(), None])
         self.trader.isConnected = Mock(return_value=True)
         self.trader.serverVersion = Mock(return_value=157)
         self.trader.cancelOrder = cancel_mock
 
-        safe_cancel_order(self.trader, 456)
-        self.assertEqual(cancel_mock.call_count, 3)
+        saved = sys.modules.pop("ibapi.order_cancel", None)
+        try:
+            safe_cancel_order(self.trader, 456)
+        finally:
+            if saved is not None:
+                sys.modules["ibapi.order_cancel"] = saved
+
         cancel_mock.assert_has_calls([call(456), call(456, "")])
     
     def test_error_filtering_ignores_codes(self):

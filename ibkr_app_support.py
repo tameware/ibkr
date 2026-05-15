@@ -112,6 +112,41 @@ def add_session_hours_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--market_close_hour", type=int)
 
 
+def add_ib_connection_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    include_client_id: bool = True,
+    include_account: bool = False,
+) -> None:
+    """Common IBKR socket and contract identity CLI overrides."""
+    parser.add_argument("--host")
+    parser.add_argument("--port", type=int)
+    if include_client_id:
+        parser.add_argument("--client_id", type=int)
+    if include_account:
+        parser.add_argument("--account")
+    parser.add_argument("--symbol")
+    parser.add_argument("--sec_type")
+    parser.add_argument("--currency")
+    parser.add_argument("--exchange")
+    parser.add_argument("--primary_exchange")
+
+
+def load_merged_config(
+    args: argparse.Namespace,
+    *,
+    required: Optional[list[str]] = None,
+    config_path_key: str = "config",
+) -> Dict[str, Any]:
+    """Load JSON config from ``args``, apply CLI overrides, optionally validate keys."""
+    path = str(getattr(args, config_path_key))
+    file_config = load_config_file(path)
+    config = merge_config(file_config, cli_to_config(args))
+    if required is not None:
+        require_fields(config, required)
+    return config
+
+
 def cfg_bool(config: Dict[str, Any], key: str, default: bool) -> bool:
     if key not in config:
         return default

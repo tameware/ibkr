@@ -6,17 +6,23 @@ from unittest.mock import MagicMock, call
 from zoneinfo import ZoneInfo
 
 import argparse
+import json
 import tempfile
 from pathlib import Path
 
 from ibkr_app_support import (
     add_config_argument,
+    add_ib_connection_arguments,
     add_logging_arguments,
     add_session_hours_arguments,
+    cli_to_config,
     default_config_path,
     ib_error_is_status_info,
+    load_config_file,
+    load_merged_config,
     log_ib_error,
     log_session_transition,
+    merge_config,
     regular_session_open,
     safe_cancel_order,
     session_wall_clock,
@@ -94,6 +100,32 @@ class TestRegularSession(unittest.TestCase):
         logger.info.assert_not_called()
 
 
+class TestLoadMergedConfig(unittest.TestCase):
+    def test_load_merged_config_merges_cli_and_validates(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"host": "127.0.0.1", "port": 7496, "symbol": "FDX"}, f)
+            path = f.name
+        try:
+            args = argparse.Namespace(config=path, port=7497, symbol=None)
+            config = load_merged_config(args, required=["host", "port", "symbol"])
+            self.assertEqual(config["host"], "127.0.0.1")
+            self.assertEqual(config["port"], 7497)
+            self.assertEqual(config["symbol"], "FDX")
+        finally:
+            Path(path).unlink()
+
+    def test_load_merged_config_raises_on_missing_required(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"host": "127.0.0.1"}, f)
+            path = f.name
+        try:
+            args = argparse.Namespace(config=path)
+            with self.assertRaises(ValueError):
+                load_merged_config(args, required=["host", "port"])
+        finally:
+            Path(path).unlink()
+
+
 class TestArgparseHelpers(unittest.TestCase):
     def test_default_config_path(self):
         p = Path(tempfile.gettempdir()) / "bot_script.py"
@@ -104,6 +136,27 @@ class TestArgparseHelpers(unittest.TestCase):
         add_config_argument(parser, "/foo/peg_primary.py")
         args = parser.parse_args([])
         self.assertEqual(args.config, "/foo/peg_primary.json")
+
+    def test_add_ib_connection_arguments(self):
+        parser = argparse.ArgumentParser()
+        add_ib_connection_arguments(parser, include_client_id=True, include_account=True)
+        args = parser.parse_args(
+            [
+                "--host",
+                "localhost",
+                "--port",
+                "7497",
+                "--client_id",
+                "2",
+                "--account",
+                "DU123",
+                "--symbol",
+                "OZ",
+            ]
+        )
+        self.assertEqual(args.host, "localhost")
+        self.assertEqual(args.client_id, 2)
+        self.assertEqual(args.account, "DU123")
 
     def test_add_logging_and_session_hours(self):
         parser = argparse.ArgumentParser()

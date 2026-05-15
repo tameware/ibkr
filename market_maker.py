@@ -11,7 +11,6 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Tuple, Union
 
 from ibapi.client import EClient
@@ -22,14 +21,13 @@ from ibapi.wrapper import EWrapper
 
 from ibkr_app_support import (
     add_config_argument,
+    add_ib_connection_arguments,
     add_logging_arguments,
     build_logger,
     cfg_bool as _cfg_bool,
-    cli_to_config,
     flatten_config_sections,
-    load_config_file,
+    load_merged_config,
     log_ib_error,
-    merge_config,
     safe_cancel_order,
 )
 
@@ -1352,17 +1350,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="IBKR market-making bot (JSON config with CLI overrides)"
     )
     add_config_argument(parser, __file__)
-
-    parser.add_argument("--host")
-    parser.add_argument("--port", type=int)
-    parser.add_argument("--client_id", type=int)
-    parser.add_argument("--account")
-
-    parser.add_argument("--symbol")
-    parser.add_argument("--sec_type")
-    parser.add_argument("--exchange")
-    parser.add_argument("--currency")
-    parser.add_argument("--primary_exchange")
+    add_ib_connection_arguments(parser, include_account=True)
 
     parser.add_argument("--base_qty", type=int)
     parser.add_argument("--max_position", type=int)
@@ -1406,10 +1394,7 @@ def main():
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    config_path = Path(args.config)
-    file_config = load_config_file(str(config_path))
-    cli_config = cli_to_config(args)
-    config = merge_config(file_config, cli_config)
+    config = load_merged_config(args)
     app = MarketMaker(config)
 
     def handle_sig(*_):

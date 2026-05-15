@@ -66,15 +66,17 @@ sys.modules["ibapi.order"] = mock_ibapi.order
 sys.modules["ibapi.ticktype"] = MagicMock()
 sys.modules["pytz"] = mock_pytz
 
+from ibkr_app_support import (
+    cli_to_config,
+    load_config_file,
+    merge_config,
+    require_fields,
+)
 from peg_primary import (
     MKTDATA_REQ_ID,
     Trader,
     build_arg_parser,
-    cli_to_config,
-    load_config_file,
     make_rel_order,
-    merge_config,
-    require_fields,
 )
 
 
