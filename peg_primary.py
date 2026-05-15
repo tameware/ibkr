@@ -41,9 +41,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import signal
 import sys
-import threading
 import time
 from typing import Any, Dict
 
@@ -57,8 +55,8 @@ from ibkr_app_support import (
     log_ib_error,
     log_session_transition,
     regular_session_open,
+    run_bot,
     safe_cancel_order,
-    wait_for_ib_ready,
 )
 from ibapi.client import EClient
 from ibapi.common import TickAttrib, TickerId
@@ -970,48 +968,15 @@ def main() -> None:
     )
 
     app = Trader(config)
-    client_id = int(config.get("client_id", 1))
-    connect_timeout = float(config.get("connect_timeout_seconds", 30.0))
-    app.logger.info(
-        "Connecting to IBKR host=%s port=%s client_id=%s",
-        config["host"],
-        config["port"],
-        client_id,
+    exit_code = run_bot(
+        app,
+        config,
+        is_ready=lambda: app.api_ready,
+        main_loop=app.run_until_shutdown,
+        ready_label="nextValidId",
     )
-    app.connect(config["host"], config["port"], client_id)
-
-    thread = threading.Thread(target=app.run, daemon=True)
-    thread.start()
-
-    if not wait_for_ib_ready(
-        lambda: app.api_ready,
-        is_connected=app.isConnected,
-        timeout_seconds=connect_timeout,
-    ):
-        app.logger.error(
-            "Timed out after %.0fs waiting for nextValidId (connected=%s). "
-            "See messages above; common causes: TWS not running, wrong port, "
-            "API not enabled, or duplicate client_id.",
-            connect_timeout,
-            app.isConnected(),
-        )
-        app.disconnect()
-        return
-
-    def handle_sig(*_):
-        app.logger.info("Stopping...")
-        app.stop()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, handle_sig)
-    signal.signal(signal.SIGTERM, handle_sig)
-
-    try:
-        app.run_until_shutdown()
-    except KeyboardInterrupt:
-        handle_sig()
-    finally:
-        app.stop()
+    if exit_code != 0:
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

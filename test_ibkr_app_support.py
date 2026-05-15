@@ -2,12 +2,13 @@
 
 import datetime
 import unittest
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, call, patch
 from zoneinfo import ZoneInfo
 
 import argparse
 import json
 import tempfile
+import threading
 from pathlib import Path
 
 from ibkr_app_support import (
@@ -18,12 +19,14 @@ from ibkr_app_support import (
     cli_to_config,
     default_config_path,
     ib_error_is_status_info,
+    idle_until_shutdown,
     load_config_file,
     load_merged_config,
     log_ib_error,
     log_session_transition,
     merge_config,
     regular_session_open,
+    run_bot,
     safe_cancel_order,
     session_wall_clock,
     should_suppress_ib_error,
@@ -264,6 +267,90 @@ class TestSafeCancelOrder(unittest.TestCase):
         client.cancelOrder = MagicMock(side_effect=[TypeError(), TypeError(), None])
         safe_cancel_order(client, 99)
         client.cancelOrder.assert_has_calls([call(99), call(99, "")])
+
+
+class TestRunBot(unittest.TestCase):
+    def test_run_bot_success_runs_main_loop_and_stops(self):
+        app = MagicMock()
+        app.logger = MagicMock()
+        app.isConnected.return_value = True
+        app.api_ready = True
+        ran = {"main": False}
+
+        def main_loop():
+            ran["main"] = True
+            app.shutdown_flag = True
+
+        config = {"host": "127.0.0.1", "port": 7497, "client_id": 1}
+        code = run_bot(
+            app,
+            config,
+            is_ready=lambda: True,
+            main_loop=main_loop,
+            connect_timeout_seconds=1.0,
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(ran["main"])
+        app.connect.assert_called_once_with("127.0.0.1", 7497, 1)
+        app.stop.assert_called()
+
+    def test_run_bot_returns_one_on_ready_timeout(self):
+        app = MagicMock()
+        app.logger = MagicMock()
+        app.isConnected.return_value = False
+        config = {"host": "127.0.0.1", "port": 7497, "client_id": 2}
+
+        code = run_bot(
+            app,
+            config,
+            is_ready=lambda: False,
+            main_loop=lambda: None,
+            connect_timeout_seconds=0.15,
+        )
+        self.assertEqual(code, 1)
+        app.disconnect.assert_called_once()
+        app.stop.assert_not_called()
+
+    def test_run_bot_starts_extra_daemon_threads(self):
+        app = MagicMock()
+        app.logger = MagicMock()
+        app.isConnected.return_value = True
+        started = threading.Event()
+
+        def extra():
+            started.set()
+
+        config = {"host": "127.0.0.1", "port": 7497}
+        with patch("ibkr_app_support.threading.Thread") as thread_cls:
+            thread_cls.return_value.start = MagicMock()
+            run_bot(
+                app,
+                config,
+                is_ready=lambda: True,
+                main_loop=lambda: setattr(app, "shutdown_flag", True),
+                extra_daemon_threads=[("Watchdog", extra)],
+                connect_timeout_seconds=1.0,
+            )
+            self.assertGreaterEqual(thread_cls.call_count, 2)
+
+    def test_idle_until_shutdown_exits_on_flag(self):
+        app = MagicMock()
+        app.shutdown_flag = False
+        app.isConnected.return_value = True
+
+        def set_flag():
+            app.shutdown_flag = True
+
+        timer = threading.Timer(0.05, set_flag)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        idle_until_shutdown(app, poll_seconds=0.02)
+
+    def test_idle_until_shutdown_exits_on_disconnect(self):
+        app = MagicMock()
+        app.shutdown_flag = False
+        app.isConnected.return_value = False
+        idle_until_shutdown(app, poll_seconds=0.02)
 
 
 class TestWaitForIbReady(unittest.TestCase):

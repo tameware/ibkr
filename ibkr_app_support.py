@@ -7,11 +7,15 @@ import datetime
 import json
 import logging
 import logging.handlers
+import signal
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 from zoneinfo import ZoneInfo
+
+DaemonThreadSpec = Union[Callable[[], None], Tuple[str, Callable[[], None]]]
 
 _IB_STATUS_INFO_CODES_DEFAULT = frozenset({2104, 2106, 2158})
 
@@ -410,3 +414,94 @@ def wait_for_ib_ready(
                 return False
         time.sleep(poll_seconds)
     return False
+
+
+def idle_until_shutdown(app: Any, *, poll_seconds: float = 1.0) -> None:
+    """Block until ``app.shutdown_flag`` is set or the socket disconnects."""
+    while not getattr(app, "shutdown_flag", False):
+        if hasattr(app, "isConnected") and not app.isConnected():
+            break
+        time.sleep(poll_seconds)
+
+
+def run_bot(
+    app: Any,
+    config: Dict[str, Any],
+    *,
+    is_ready: Callable[[], bool],
+    main_loop: Callable[[], None],
+    extra_daemon_threads: Optional[Sequence[DaemonThreadSpec]] = None,
+    connect_timeout_seconds: Optional[float] = None,
+    ready_label: str = "IBKR API ready",
+) -> int:
+    """Connect, start the API thread, wait for readiness, run ``main_loop``, then stop.
+
+    Returns 0 on normal completion, 1 if the ready wait times out.
+    """
+    host = str(config["host"])
+    port = int(config["port"])
+    client_id = int(config.get("client_id", getattr(app, "client_id", 1)))
+    timeout = float(
+        connect_timeout_seconds
+        if connect_timeout_seconds is not None
+        else config.get("connect_timeout_seconds", 30.0)
+    )
+    logger = getattr(app, "logger", None)
+
+    if logger is not None:
+        logger.info(
+            "Connecting to IBKR host=%s port=%s client_id=%s",
+            host,
+            port,
+            client_id,
+        )
+
+    app.connect(host, port, client_id)
+
+    threading.Thread(target=app.run, name="IBAPI", daemon=True).start()
+
+    if extra_daemon_threads:
+        for spec in extra_daemon_threads:
+            if isinstance(spec, tuple):
+                name, target = spec
+            else:
+                name, target = "IBBotExtra", spec
+            threading.Thread(target=target, name=name, daemon=True).start()
+
+    if not wait_for_ib_ready(
+        is_ready,
+        is_connected=app.isConnected,
+        timeout_seconds=timeout,
+    ):
+        if logger is not None:
+            logger.error(
+                "Timed out after %.0fs waiting for %s (connected=%s). "
+                "Check TWS/IB Gateway, API settings, host/port, and client_id=%s.",
+                timeout,
+                ready_label,
+                app.isConnected(),
+                client_id,
+            )
+        try:
+            app.disconnect()
+        except Exception:
+            pass
+        return 1
+
+    def handle_sig(*_args: object) -> None:
+        if logger is not None:
+            logger.info("Stopping...")
+        app.stop()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, handle_sig)
+    signal.signal(signal.SIGTERM, handle_sig)
+
+    try:
+        main_loop()
+    except KeyboardInterrupt:
+        handle_sig()
+    finally:
+        app.stop()
+
+    return 0

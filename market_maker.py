@@ -6,7 +6,6 @@ import argparse
 import logging
 import logging.handlers
 import math
-import signal
 import sys
 import threading
 import time
@@ -26,8 +25,10 @@ from ibkr_app_support import (
     build_logger,
     cfg_bool as _cfg_bool,
     flatten_config_sections,
+    idle_until_shutdown,
     load_merged_config,
     log_ib_error,
+    run_bot,
     safe_cancel_order,
 )
 
@@ -1397,32 +1398,16 @@ def main():
     config = load_merged_config(args)
     app = MarketMaker(config)
 
-    def handle_sig(*_):
-        app.stop()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, handle_sig)
-    signal.signal(signal.SIGTERM, handle_sig)
-
-    app.logger.info(
-        "Connecting to IBKR host=%s port=%s client_id=%s",
-        app.host,
-        app.port,
-        app.client_id,
+    sys.exit(
+        run_bot(
+            app,
+            config,
+            is_ready=lambda: app.started,
+            main_loop=lambda: idle_until_shutdown(app),
+            extra_daemon_threads=[("Watchdog", app.watchdog_loop)],
+            ready_label="nextValidId",
+        )
     )
-    app.connect(app.host, app.port, app.client_id)
-
-    api_thread = threading.Thread(target=app.run, name="IBAPI", daemon=True)
-    api_thread.start()
-
-    watchdog_thread = threading.Thread(target=app.watchdog_loop, name="Watchdog", daemon=True)
-    watchdog_thread.start()
-
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        handle_sig()
 
 
 if __name__ == "__main__":
