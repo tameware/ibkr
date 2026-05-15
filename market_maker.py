@@ -12,28 +12,23 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Literal, Optional, Tuple, Union
 
-from ibapi.client import EClient
 from ibapi.common import OrderId, TickerId
 from ibapi.contract import Contract
 from ibapi.order import Order
-from ibapi.wrapper import EWrapper
 
 from ibkr_app_support import (
     add_config_argument,
     add_ib_connection_arguments,
     add_logging_arguments,
-    build_logger,
     cfg_bool as _cfg_bool,
-    disconnect_cleanly,
     flatten_config_sections,
     idle_until_shutdown,
     load_merged_config,
-    log_ib_error,
-    make_stock_contract,
     NbboThrottle,
     run_bot,
     safe_cancel_order,
 )
+from ibkr_bot_base import IbkrBotApp
 
 
 @dataclass
@@ -96,12 +91,9 @@ class QuotePipelineInvalidPair:
     sell_px: Optional[float]
 
 
-class MarketMaker(EWrapper, EClient):
+class MarketMaker(IbkrBotApp):
     def __init__(self, config: Dict[str, Any]):
-        EClient.__init__(self, self)
-
-        self.config = config
-        self.logger = build_logger(
+        super().__init__(
             config,
             logger_name="market_maker",
             default_log_file="market_maker.log",
@@ -112,8 +104,6 @@ class MarketMaker(EWrapper, EClient):
         self.client_id = int(config.get("client_id", 901))
         raw_acct = config.get("account", "") or ""
         self.account_filter = str(raw_acct).strip() or None
-
-        self.contract = make_stock_contract(config)
 
         self.base_qty = int(config.get("base_qty", 100))
         self.max_position = int(config.get("max_position", 1000))
@@ -145,9 +135,6 @@ class MarketMaker(EWrapper, EClient):
         self.cancel_on_invalid_market = _cfg_bool(
             config, "cancel_on_invalid_market", True
         )
-        self.cancel_open_orders_on_shutdown = _cfg_bool(
-            config, "cancel_open_orders_on_shutdown", False
-        )
         self.require_live_data = _cfg_bool(config, "require_live_data", False)
 
         self.log_bid_ask_ticks = _cfg_bool(config, "log_bid_ask_ticks", True)
@@ -167,7 +154,6 @@ class MarketMaker(EWrapper, EClient):
 
         self.lock = threading.RLock()
         self.connected_flag = False
-        self.shutdown_flag = False
         self.started = False
 
         self.next_order_id: Optional[int] = None
@@ -221,33 +207,39 @@ class MarketMaker(EWrapper, EClient):
             self.contract.primaryExchange,
         )
 
-    def error(
-        self,
-        reqId,
-        errorTime,
-        errorCode,
-        errorString,
-        advancedOrderReject: str = "",
-    ):
-        """IB API passes (reqId, errorTime, errorCode, errorString, advancedOrderReject)."""
-        log_ib_error(
-            self.logger,
-            self.config,
-            req_id=reqId,
-            error_time=errorTime,
-            error_code=errorCode,
-            error_string=errorString,
-            advanced_order_reject=advancedOrderReject,
-        )
+    def market_data_req_ids(self):
+        return (self.market_data_req_id,)
 
-    def nextValidId(self, orderId: OrderId):
+    def assign_next_order_id(self, order_id: int) -> None:
         with self.lock:
-            self.next_order_id = orderId
+            self.next_order_id = order_id
+
+    def on_api_ready(self, order_id: int) -> None:
+        with self.lock:
             self.connected_flag = True
-            self.logger.info("Connected to IBKR. nextValidId=%s", orderId)
-            if not self.started:
-                self.started = True
-                self.startup()
+        self.logger.info("Connected to IBKR. nextValidId=%s", order_id)
+        if not self.started:
+            self.started = True
+            self.startup()
+
+    def on_connection_closed(self) -> None:
+        with self.lock:
+            self.connected_flag = False
+
+    def _mark_shutdown(self) -> None:
+        with self.lock:
+            self.shutdown_flag = True
+
+    def shutdown_quotes(self) -> None:
+        if self.cancel_open_orders_on_shutdown:
+            if self.buy_order:
+                self.cancel_live_order(self.buy_order)
+            if self.sell_order:
+                self.cancel_live_order(self.sell_order)
+        else:
+            self.logger.info(
+                "Leaving open orders at IBKR (cancel_open_orders_on_shutdown=false)"
+            )
 
     def marketDataType(self, reqId, marketDataType):
         self.market_data_type = marketDataType
@@ -1310,32 +1302,6 @@ class MarketMaker(EWrapper, EClient):
                             market_data_type,
                         )
                         self.last_watchdog_log_ts = now
-
-    def stop(self):
-        with self.lock:
-            self.shutdown_flag = True
-
-        self.logger.info("Shutdown requested.")
-
-        if self.cancel_open_orders_on_shutdown:
-            try:
-                if self.buy_order:
-                    self.cancel_live_order(self.buy_order)
-                if self.sell_order:
-                    self.cancel_live_order(self.sell_order)
-            except Exception as e:
-                self.logger.warning("Order cancel during shutdown failed: %s", e)
-        else:
-            self.logger.info(
-                "Leaving open orders at IBKR (cancel_open_orders_on_shutdown=false)"
-            )
-
-        disconnect_cleanly(
-            self,
-            logger=self.logger,
-            market_data_req_ids=[self.market_data_req_id],
-        )
-
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(

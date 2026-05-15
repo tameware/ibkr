@@ -50,24 +50,17 @@ from ibkr_app_support import (
     add_ib_connection_arguments,
     add_logging_arguments,
     add_session_hours_arguments,
-    build_logger,
-    cfg_bool,
     load_merged_config,
-    make_stock_contract,
     NbboThrottle,
-    log_ib_error,
     log_session_transition,
     regular_session_open,
-    disconnect_cleanly,
     run_bot,
     safe_cancel_order,
 )
-from ibapi.client import EClient
+from ibkr_bot_base import IbkrBotApp
 from ibapi.common import TickAttrib, TickerId
-from ibapi.contract import Contract
 from ibapi.order import Order
 from ibapi.ticktype import TickType
-from ibapi.wrapper import EWrapper
 
 HIST_REQ_ID = 1001
 MKTDATA_REQ_ID = 3001
@@ -97,16 +90,16 @@ def make_rel_order(
     return o
 
 
-class Trader(EWrapper, EClient):
+class Trader(IbkrBotApp):
     def __init__(self, config: Dict[str, Any]):
-        EClient.__init__(self, self)
-        self.config = config
+        super().__init__(
+            config,
+            logger_name="peg_primary",
+            default_log_file="peg_primary.log",
+        )
 
         self.ready_for_trading = False
-        self.api_ready = False
         self.nextOrderId: int | None = None
-
-        self.contract = make_stock_contract(self.config)
 
         self.position_size = 0
         self.open_price = None
@@ -137,12 +130,7 @@ class Trader(EWrapper, EClient):
             self.nbbo_sync_interval_seconds,
             clock=time.monotonic,
         )
-        self.cancel_open_orders_on_shutdown = cfg_bool(
-            config, "cancel_open_orders_on_shutdown", False
-        )
         self._prev_us_regular_hours: bool | None = None
-        self.shutdown_flag = False
-        self._stop_called = False
         _mos = int(self.config.get("min_order_size", 10))
         self.min_order_size = max(1, _mos)
 
@@ -154,16 +142,34 @@ class Trader(EWrapper, EClient):
         self.order_working_lmt: Dict[int, float] = {}
         self.order_working_aux: Dict[int, float] = {}
 
-        self.logger = build_logger(
-            config,
-            logger_name="peg_primary",
-            default_log_file="peg_primary.log",
-        )
         self.logger.info(
             "REL quoter initialized symbol=%s exchange=%s",
             self.config["symbol"],
             self.config["exchange"],
         )
+
+    def market_data_req_ids(self):
+        return (MKTDATA_REQ_ID,)
+
+    def assign_next_order_id(self, order_id: int) -> None:
+        self.nextOrderId = order_id
+
+    def shutdown_quotes(self) -> None:
+        if self.cancel_open_orders_on_shutdown:
+            for label, oid in (("BUY", self.buy_order_id), ("SELL", self.sell_order_id)):
+                if oid is None:
+                    continue
+                safe_cancel_order(self, oid)
+                self.logger.info("Cancel %s order id=%s on shutdown", label, oid)
+        else:
+            self.logger.info(
+                "Leaving open orders at IBKR (cancel_open_orders_on_shutdown=false)"
+            )
+
+        self.buy_order_id = None
+        self.sell_order_id = None
+        self.pending_buy = False
+        self.pending_sell = False
 
     def _offset_pct_fraction(self) -> float:
         """``offset_pct`` clamped to ``[0, 0.5)`` for REL ``auxPrice``."""
@@ -290,14 +296,6 @@ class Trader(EWrapper, EClient):
         if self._has_valid_nbbo():
             self.maybe_sync_orders_from_nbbo()
 
-    def connectAck(self):
-        self.logger.info("IBKR connectAck received")
-
-    def connectionClosed(self):
-        self.api_ready = False
-        self.shutdown_flag = True
-        self.logger.warning("IBKR connection closed (connectionClosed callback)")
-
     def startup(self) -> None:
         """Subscribe to market data and request startup snapshots (from ``nextValidId``)."""
         self._startup_open_orders_logged = False
@@ -308,12 +306,6 @@ class Trader(EWrapper, EClient):
         self.logger.info(
             "Startup: requested positions, daily bars, market data, and open orders."
         )
-
-    def nextValidId(self, orderId: int):
-        self.logger.info("nextValidId: %s", orderId)
-        self.nextOrderId = orderId
-        self.api_ready = True
-        self.startup()
 
     def openOrder(self, orderId, contract, order, orderState):
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
@@ -364,17 +356,6 @@ class Trader(EWrapper, EClient):
                 )
             self._startup_open_orders_logged = True
         self.maybe_sync_orders()
-
-    def error(self, reqId, errorTime, errorCode, errorString, advancedOrderRejectJson=""):
-        log_ib_error(
-            self.logger,
-            self.config,
-            req_id=reqId,
-            error_time=errorTime,
-            error_code=errorCode,
-            error_string=errorString,
-            advanced_order_reject=advancedOrderRejectJson,
-        )
 
     def position(self, account, contract, pos, avgCost):
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
@@ -822,38 +803,6 @@ class Trader(EWrapper, EClient):
             )
             self.placeOrder(oid, self.contract, order)
             self._note_order_cache(oid, order)
-
-    def stop(self) -> None:
-        if self._stop_called:
-            return
-        self._stop_called = True
-        self.shutdown_flag = True
-        self.logger.info("Shutdown requested.")
-
-        if self.cancel_open_orders_on_shutdown:
-            for label, oid in (("BUY", self.buy_order_id), ("SELL", self.sell_order_id)):
-                if oid is None:
-                    continue
-                try:
-                    safe_cancel_order(self, oid)
-                    self.logger.info("Cancel %s order id=%s on shutdown", label, oid)
-                except Exception as e:
-                    self.logger.warning("Cancel %s order id=%s failed: %s", label, oid, e)
-        else:
-            self.logger.info(
-                "Leaving open orders at IBKR (cancel_open_orders_on_shutdown=false)"
-            )
-
-        self.buy_order_id = None
-        self.sell_order_id = None
-        self.pending_buy = False
-        self.pending_sell = False
-
-        disconnect_cleanly(
-            self,
-            logger=self.logger,
-            market_data_req_ids=[MKTDATA_REQ_ID],
-        )
 
     def run_until_shutdown(self) -> None:
         """Main thread: session logging, periodic snapshot refresh, disconnect detection."""

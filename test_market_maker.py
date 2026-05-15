@@ -163,7 +163,7 @@ class TestNbboTickImprove(unittest.TestCase):
 
     def setUp(self):
         self._log_patcher = patch(
-            "market_maker.build_logger", return_value=MagicMock()
+            "ibkr_bot_base.build_logger", return_value=MagicMock()
         )
         self._log_patcher.start()
         self.addCleanup(self._log_patcher.stop)
@@ -288,7 +288,7 @@ class TestMarketMakerCore(unittest.TestCase):
 
     def setUp(self):
         self._log_patcher = patch(
-            "market_maker.build_logger", return_value=MagicMock()
+            "ibkr_bot_base.build_logger", return_value=MagicMock()
         )
         self._log_patcher.start()
         self.addCleanup(self._log_patcher.stop)
