@@ -11,6 +11,7 @@ from decimal import Decimal
 import datetime
 import pytz
 from argparse import Namespace
+from zoneinfo import ZoneInfo
 import sys
 import time
 
@@ -544,30 +545,45 @@ class TestTrader(unittest.TestCase):
     
     def test_us_regular_hours_market_hours(self):
         """Test market hours detection"""
-        mock_now = datetime.datetime(2024, 1, 15, 10, 30, 0)
-        mock_tz = pytz.timezone("America/New_York")
-        
-        with patch('datetime.datetime') as mock_datetime:
-            mock_datetime.now.return_value = mock_tz.localize(mock_now)
-            self.assertTrue(self.trader.us_regular_hours())
-    
+        from ibkr_app_support import regular_session_open
+
+        ny = ZoneInfo("America/New_York")
+        now = datetime.datetime(2024, 1, 15, 10, 30, 0, tzinfo=ny)
+        cfg = {
+            "market_timezone": "America/New_York",
+            "market_open_hour": 9,
+            "market_open_minute": 30,
+            "market_close_hour": 16,
+        }
+        self.assertTrue(regular_session_open(cfg, now=now))
+
     def test_us_regular_hours_before_open(self):
         """Test detection of pre-market hours"""
-        mock_now = datetime.datetime(2024, 1, 15, 8, 30, 0)
-        mock_tz = pytz.timezone("America/New_York")
-        
-        with patch('datetime.datetime') as mock_datetime:
-            mock_datetime.now.return_value = mock_tz.localize(mock_now)
-            self.assertFalse(self.trader.us_regular_hours())
-    
+        from ibkr_app_support import regular_session_open
+
+        ny = ZoneInfo("America/New_York")
+        now = datetime.datetime(2024, 1, 15, 8, 30, 0, tzinfo=ny)
+        cfg = {
+            "market_timezone": "America/New_York",
+            "market_open_hour": 9,
+            "market_open_minute": 30,
+            "market_close_hour": 16,
+        }
+        self.assertFalse(regular_session_open(cfg, now=now))
+
     def test_us_regular_hours_after_close(self):
         """Test detection of after-hours"""
-        mock_now = datetime.datetime(2024, 1, 15, 17, 30, 0)
-        mock_tz = pytz.timezone("America/New_York")
-        
-        with patch('datetime.datetime') as mock_datetime:
-            mock_datetime.now.return_value = mock_tz.localize(mock_now)
-            self.assertFalse(self.trader.us_regular_hours())
+        from ibkr_app_support import regular_session_open
+
+        ny = ZoneInfo("America/New_York")
+        now = datetime.datetime(2024, 1, 15, 17, 30, 0, tzinfo=ny)
+        cfg = {
+            "market_timezone": "America/New_York",
+            "market_open_hour": 9,
+            "market_open_minute": 30,
+            "market_close_hour": 16,
+        }
+        self.assertFalse(regular_session_open(cfg, now=now))
     
     def test_sync_orders_places_both_orders_with_correct_offsets(self):
         """Test sync_orders places both PEG MID orders with correct offsets"""

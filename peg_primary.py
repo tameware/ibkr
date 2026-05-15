@@ -43,14 +43,15 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-import pytz
-
 from ibkr_app_support import (
     build_logger,
     cli_to_config,
     load_config_file,
+    log_session_transition,
     merge_config,
+    regular_session_open,
     require_fields,
+    wait_for_ib_ready,
 )
 from ibapi.client import EClient
 from ibapi.common import TickAttrib, TickerId
@@ -93,6 +94,7 @@ class Trader(EWrapper, EClient):
         self.config = config
 
         self.ready_for_trading = False
+        self.api_ready = False
         self.nextOrderId: int | None = None
 
         self.contract = self.make_us_stock(
@@ -291,11 +293,19 @@ class Trader(EWrapper, EClient):
                 )
                 self.ref_price = mid
 
+    def connectAck(self):
+        self.logger.info("IBKR connectAck received")
+
+    def connectionClosed(self):
+        self.api_ready = False
+        self.logger.warning("IBKR connection closed (connectionClosed callback)")
+
     def nextValidId(self, orderId: int):
         GENERIC_TICKS = ""
 
         self.logger.info("nextValidId: %s", orderId)
         self.nextOrderId = orderId
+        self.api_ready = True
         self._startup_open_orders_logged = False
 
         self.request_positions_snapshot()
@@ -423,28 +433,7 @@ class Trader(EWrapper, EClient):
             self.ref_price = self.open_price
 
     def us_regular_hours(self) -> bool:
-        ny = pytz.timezone(self.config["market_timezone"])
-        now = datetime.datetime.now(tz=ny)
-        market_open_hour = self.config["market_open_hour"]
-        market_open_minute = self.config["market_open_minute"]
-        market_close_hour = self.config["market_close_hour"]
-
-        return (
-            now.hour > market_open_hour
-            or (now.hour == market_open_hour and now.minute >= market_open_minute)
-        ) and now.hour < market_close_hour
-
-    def _session_wall_clock(
-        self,
-    ) -> tuple[datetime.datetime, str, int, int, int]:
-        """Current time in ``config['market_timezone']`` plus configured session window."""
-        tz_name = str(self.config["market_timezone"])
-        ny = pytz.timezone(tz_name)
-        now = datetime.datetime.now(tz=ny)
-        moh = int(self.config["market_open_hour"])
-        mom = int(self.config["market_open_minute"])
-        mch = int(self.config["market_close_hour"])
-        return now, tz_name, moh, mom, mch
+        return regular_session_open(self.config)
 
     def _has_valid_nbbo(self) -> bool:
         bid = self._bid
@@ -822,31 +811,27 @@ class Trader(EWrapper, EClient):
     def run_loop(self):
         while True:
             if not self.isConnected():
-                self.logger.info("Disconnected from IBKR; exiting run loop")
+                if self.api_ready:
+                    self.logger.warning(
+                        "Lost connection to IBKR; exiting run loop "
+                        "(check TWS/Gateway and API client settings)"
+                    )
+                else:
+                    self.logger.error(
+                        "Never received nextValidId from IBKR; exiting run loop. "
+                        "Check that TWS/IB Gateway is running, API is enabled "
+                        "(Configure → API → Settings), host/port match config "
+                        "(paper often 7497), and client_id=%s is not already in use.",
+                        self.config.get("client_id", 1),
+                    )
                 break
             in_hours = self.us_regular_hours()
-            if self._prev_us_regular_hours is None and not in_hours:
-                now, tz_name, moh, mom, mch = self._session_wall_clock()
-                self.logger.info(
-                    "Configured regular session is closed at startup (now %s; "
-                    "window %02d:%02d–%02d:00 %s). Quoting paused.",
-                    now.strftime("%Y-%m-%d %H:%M:%S %Z"),
-                    moh,
-                    mom,
-                    mch,
-                    tz_name,
-                )
-            if self._prev_us_regular_hours is True and not in_hours:
-                now, tz_name, moh, mom, mch = self._session_wall_clock()
-                self.logger.info(
-                    "Regular session ended (now %s; configured window %02d:%02d–%02d:00 %s). "
-                    "Quoting paused; DAY orders may be canceled by the broker at the close.",
-                    now.strftime("%Y-%m-%d %H:%M:%S %Z"),
-                    moh,
-                    mom,
-                    mch,
-                    tz_name,
-                )
+            log_session_transition(
+                self.logger,
+                self.config,
+                prev_in_hours=self._prev_us_regular_hours,
+                in_hours=in_hours,
+            )
             self._prev_us_regular_hours = in_hours
             if in_hours:
                 self.sync_requested = True
@@ -942,10 +927,32 @@ def main() -> None:
 
     app = Trader(config)
     client_id = int(config.get("client_id", 1))
+    connect_timeout = float(config.get("connect_timeout_seconds", 30.0))
+    app.logger.info(
+        "Connecting to IBKR host=%s port=%s client_id=%s",
+        config["host"],
+        config["port"],
+        client_id,
+    )
     app.connect(config["host"], config["port"], client_id)
 
     thread = threading.Thread(target=app.run, daemon=True)
     thread.start()
+
+    if not wait_for_ib_ready(
+        lambda: app.api_ready,
+        is_connected=app.isConnected,
+        timeout_seconds=connect_timeout,
+    ):
+        app.logger.error(
+            "Timed out after %.0fs waiting for nextValidId (connected=%s). "
+            "See messages above; common causes: TWS not running, wrong port, "
+            "API not enabled, or duplicate client_id.",
+            connect_timeout,
+            app.isConnected(),
+        )
+        app.disconnect()
+        return
 
     try:
         app.run_loop()

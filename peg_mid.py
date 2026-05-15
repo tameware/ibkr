@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import pytz
 import threading
 import time
 from decimal import Decimal
@@ -20,6 +19,7 @@ from ibkr_app_support import (
     cli_to_config,
     load_config_file,
     merge_config,
+    regular_session_open,
     require_fields,
 )
 
@@ -256,16 +256,7 @@ class Trader(EWrapper, EClient):
             self.ref_price = self.open_price
 
     def us_regular_hours(self):
-        ny = pytz.timezone(self.config["market_timezone"])
-        now = datetime.datetime.now(tz=ny)
-        market_open_hour = self.config["market_open_hour"]
-        market_open_minute = self.config["market_open_minute"]
-        market_close_hour = self.config["market_close_hour"]
-
-        return (
-            (now.hour > market_open_hour or (now.hour == market_open_hour and now.minute >= market_open_minute))
-            and now.hour < market_close_hour
-        )
+        return regular_session_open(self.config)
 
     def midpoint_is_half_penny(self) -> bool:
         if self._bid is None or self._ask is None:

@@ -10,6 +10,7 @@ from pathlib import Path
 from decimal import Decimal
 import datetime
 from argparse import Namespace
+from zoneinfo import ZoneInfo
 import sys
 
 # Create mock classes for IB API before importing peg_best
@@ -467,31 +468,45 @@ class TestTrader(unittest.TestCase):
     
     def test_us_regular_hours_market_hours(self):
         """Test market hours detection"""
-        # Mock the current time to 10:30 AM NY time
-        mock_now = datetime.datetime(2024, 1, 15, 10, 30, 0)
-        mock_tz = mock_pytz.timezone("America/New_York")
-        
-        with patch('datetime.datetime') as mock_datetime:
-            mock_datetime.now.return_value = mock_tz.localize(mock_now)
-            self.assertTrue(self.trader.us_regular_hours())
-    
+        from ibkr_app_support import regular_session_open
+
+        ny = ZoneInfo("America/New_York")
+        now = datetime.datetime(2024, 1, 15, 10, 30, 0, tzinfo=ny)
+        cfg = {
+            "market_timezone": "America/New_York",
+            "market_open_hour": 9,
+            "market_open_minute": 30,
+            "market_close_hour": 16,
+        }
+        self.assertTrue(regular_session_open(cfg, now=now))
+
     def test_us_regular_hours_before_open(self):
         """Test detection of pre-market hours"""
-        mock_now = datetime.datetime(2024, 1, 15, 8, 30, 0)
-        mock_tz = mock_pytz.timezone("America/New_York")
-        
-        with patch('datetime.datetime') as mock_datetime:
-            mock_datetime.now.return_value = mock_tz.localize(mock_now)
-            self.assertFalse(self.trader.us_regular_hours())
-    
+        from ibkr_app_support import regular_session_open
+
+        ny = ZoneInfo("America/New_York")
+        now = datetime.datetime(2024, 1, 15, 8, 30, 0, tzinfo=ny)
+        cfg = {
+            "market_timezone": "America/New_York",
+            "market_open_hour": 9,
+            "market_open_minute": 30,
+            "market_close_hour": 16,
+        }
+        self.assertFalse(regular_session_open(cfg, now=now))
+
     def test_us_regular_hours_after_close(self):
         """Test detection of after-hours"""
-        mock_now = datetime.datetime(2024, 1, 15, 17, 30, 0)
-        mock_tz = mock_pytz.timezone("America/New_York")
-        
-        with patch('datetime.datetime') as mock_datetime:
-            mock_datetime.now.return_value = mock_tz.localize(mock_now)
-            self.assertFalse(self.trader.us_regular_hours())
+        from ibkr_app_support import regular_session_open
+
+        ny = ZoneInfo("America/New_York")
+        now = datetime.datetime(2024, 1, 15, 17, 30, 0, tzinfo=ny)
+        cfg = {
+            "market_timezone": "America/New_York",
+            "market_open_hour": 9,
+            "market_open_minute": 30,
+            "market_close_hour": 16,
+        }
+        self.assertFalse(regular_session_open(cfg, now=now))
     
     def test_sync_orders_buy_when_no_position(self):
         """Test sync_orders when no position - should place BUY order"""

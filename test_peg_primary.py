@@ -463,16 +463,16 @@ class TestTrader(unittest.TestCase):
             self.assertEqual(self.t.request_positions_snapshot.call_count, c1 + 1)
 
     def test_us_regular_hours(self):
+        from ibkr_app_support import regular_session_open
+
         ny = ZoneInfo("America/New_York")
         during = datetime.datetime(2026, 5, 11, 10, 30, 0, tzinfo=ny)
         pre = datetime.datetime(2026, 5, 11, 9, 29, 0, tzinfo=ny)
-        with patch("peg_primary.pytz.timezone", ZoneInfo):
-            with patch("datetime.datetime") as mock_datetime_class:
-                mock_datetime_class.now.return_value = during
-                self.assertTrue(self.t.us_regular_hours())
-            with patch("datetime.datetime") as mock_datetime_class:
-                mock_datetime_class.now.return_value = pre
-                self.assertFalse(self.t.us_regular_hours())
+        self.assertTrue(regular_session_open(self.cfg, now=during))
+        self.assertFalse(regular_session_open(self.cfg, now=pre))
+        with patch("peg_primary.regular_session_open", return_value=True) as m:
+            self.assertTrue(self.t.us_regular_hours())
+            m.assert_called_once_with(self.cfg)
 
     def test_error_filters_ignored_code(self):
         self.cfg["ignored_error_codes"] = [2104]

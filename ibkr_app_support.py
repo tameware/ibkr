@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import logging
 import logging.handlers
 import sys
+import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 
 def normalize_config_key(name: str) -> str:
@@ -132,3 +135,88 @@ def build_logger(
         logger.addHandler(ch)
 
     return logger
+
+
+def session_wall_clock(
+    config: Dict[str, Any],
+    now: Optional[datetime.datetime] = None,
+) -> Tuple[datetime.datetime, str, int, int, int]:
+    """Current time in ``market_timezone`` and configured regular-session window."""
+    tz_name = str(config["market_timezone"])
+    tz = ZoneInfo(tz_name)
+    if now is None:
+        now = datetime.datetime.now(tz=tz)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=tz)
+    else:
+        now = now.astimezone(tz)
+    moh = int(config["market_open_hour"])
+    mom = int(config["market_open_minute"])
+    mch = int(config["market_close_hour"])
+    return now, tz_name, moh, mom, mch
+
+
+def regular_session_open(
+    config: Dict[str, Any],
+    now: Optional[datetime.datetime] = None,
+) -> bool:
+    """True when ``now`` is inside ``[market_open, market_close)`` in ``market_timezone``."""
+    now, _, moh, mom, mch = session_wall_clock(config, now=now)
+    return (
+        (now.hour > moh or (now.hour == moh and now.minute >= mom))
+        and now.hour < mch
+    )
+
+
+def log_session_transition(
+    logger: logging.Logger,
+    config: Dict[str, Any],
+    *,
+    prev_in_hours: Optional[bool],
+    in_hours: bool,
+) -> None:
+    """Log once at startup outside the window or on the first transition to closed."""
+    if prev_in_hours is None and not in_hours:
+        now, tz_name, moh, mom, mch = session_wall_clock(config)
+        logger.info(
+            "Configured regular session is closed at startup (now %s; "
+            "window %02d:%02d–%02d:00 %s). Quoting paused.",
+            now.strftime("%Y-%m-%d %H:%M:%S %Z"),
+            moh,
+            mom,
+            mch,
+            tz_name,
+        )
+    elif prev_in_hours is True and not in_hours:
+        now, tz_name, moh, mom, mch = session_wall_clock(config)
+        logger.info(
+            "Regular session ended (now %s; configured window %02d:%02d–%02d:00 %s). "
+            "Quoting paused; DAY orders may be canceled by the broker at the close.",
+            now.strftime("%Y-%m-%d %H:%M:%S %Z"),
+            moh,
+            mom,
+            mch,
+            tz_name,
+        )
+
+
+def wait_for_ib_ready(
+    is_ready: Callable[[], bool],
+    *,
+    is_connected: Optional[Callable[[], bool]] = None,
+    timeout_seconds: float = 30.0,
+    poll_seconds: float = 0.1,
+) -> bool:
+    """Poll until ``is_ready()`` is true or ``timeout_seconds`` elapse."""
+    deadline = time.monotonic() + timeout_seconds
+    saw_connected = False
+    while time.monotonic() < deadline:
+        if is_ready():
+            return True
+        if is_connected is not None:
+            if is_connected():
+                saw_connected = True
+            elif saw_connected:
+                return False
+        time.sleep(poll_seconds)
+    return False
