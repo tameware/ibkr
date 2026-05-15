@@ -5,7 +5,15 @@ import unittest
 from unittest.mock import MagicMock, call
 from zoneinfo import ZoneInfo
 
+import argparse
+import tempfile
+from pathlib import Path
+
 from ibkr_app_support import (
+    add_config_argument,
+    add_logging_arguments,
+    add_session_hours_arguments,
+    default_config_path,
     ib_error_is_status_info,
     log_ib_error,
     log_session_transition,
@@ -84,6 +92,42 @@ class TestRegularSession(unittest.TestCase):
             in_hours=True,
         )
         logger.info.assert_not_called()
+
+
+class TestArgparseHelpers(unittest.TestCase):
+    def test_default_config_path(self):
+        p = Path(tempfile.gettempdir()) / "bot_script.py"
+        self.assertTrue(default_config_path(p).endswith("bot_script.json"))
+
+    def test_add_config_argument_default(self):
+        parser = argparse.ArgumentParser()
+        add_config_argument(parser, "/foo/peg_primary.py")
+        args = parser.parse_args([])
+        self.assertEqual(args.config, "/foo/peg_primary.json")
+
+    def test_add_logging_and_session_hours(self):
+        parser = argparse.ArgumentParser()
+        add_logging_arguments(parser)
+        add_session_hours_arguments(parser)
+        args = parser.parse_args(
+            [
+                "--log_dir",
+                "logs",
+                "--console",
+                "--market_timezone",
+                "America/New_York",
+                "--market_open_hour",
+                "9",
+                "--market_open_minute",
+                "30",
+                "--market_close_hour",
+                "16",
+            ]
+        )
+        self.assertEqual(args.log_dir, "logs")
+        self.assertTrue(args.console)
+        self.assertEqual(args.market_timezone, "America/New_York")
+        self.assertEqual(args.market_close_hour, 16)
 
 
 class TestIbErrorFiltering(unittest.TestCase):

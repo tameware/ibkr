@@ -21,6 +21,8 @@ from ibapi.order import Order
 from ibapi.wrapper import EWrapper
 
 from ibkr_app_support import (
+    add_config_argument,
+    add_logging_arguments,
     build_logger,
     cfg_bool as _cfg_bool,
     cli_to_config,
@@ -1349,12 +1351,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="IBKR market-making bot (JSON config with CLI overrides)"
     )
-    default_config_path = str(Path(__file__).with_suffix(".json"))
-    parser.add_argument(
-        "--config",
-        default=default_config_path,
-        help="Path to JSON config file (default: script name with .json suffix)",
-    )
+    add_config_argument(parser, __file__)
 
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
@@ -1401,15 +1398,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min_quote_spread_cents", type=float)
     parser.add_argument("--min_tick", type=float)
 
-    parser.add_argument("--log_dir")
-    parser.add_argument("--log_file")
-    parser.add_argument("--level")
-    parser.add_argument("--max_bytes", type=int)
-    parser.add_argument("--backup_count", type=int)
-    parser.add_argument(
-        "--console",
-        action=argparse.BooleanOptionalAction,
-    )
+    add_logging_arguments(parser)
     return parser
 
 

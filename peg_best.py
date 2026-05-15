@@ -16,6 +16,8 @@ from ibapi.ticktype import TickType
 from ibapi.wrapper import EWrapper
 
 from ibkr_app_support import (
+    add_config_argument,
+    add_session_hours_arguments,
     cli_to_config,
     format_ib_error_message,
     load_config_file,
@@ -348,8 +350,7 @@ class Trader(EWrapper, EClient):
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Parameterized IBKR PEG BEST single-side trader")
-    default_config_path = str(Path(__file__).with_suffix(".json"))
-    parser.add_argument("--config", default=default_config_path, help="Path to JSON config file (default: script name with .json suffix)")
+    add_config_argument(parser, __file__)
 
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
@@ -366,10 +367,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mid_offset_whole", type=float)
     parser.add_argument("--mid_offset_half", type=float)
     parser.add_argument("--post_to_ats_seconds", type=int)
-    parser.add_argument("--market_timezone")
-    parser.add_argument("--market_open_hour", type=int)
-    parser.add_argument("--market_open_minute", type=int)
-    parser.add_argument("--market_close_hour", type=int)
+    add_session_hours_arguments(parser)
     parser.add_argument("--last_trade_min_size", type=float)
     parser.add_argument("--tif")
     parser.add_argument("--price_round_digits", type=int)

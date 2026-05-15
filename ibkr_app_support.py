@@ -77,6 +77,41 @@ def require_fields(config: Dict[str, Any], required_fields: list[str]) -> None:
         raise ValueError(f"Missing required configuration fields: {', '.join(missing)}")
 
 
+def default_config_path(script_file: str | Path) -> str:
+    """Default JSON config path beside a bot script (``script.py`` → ``script.json``)."""
+    return str(Path(script_file).with_suffix(".json"))
+
+
+def add_config_argument(
+    parser: argparse.ArgumentParser,
+    script_file: str | Path,
+) -> None:
+    parser.add_argument(
+        "--config",
+        default=default_config_path(script_file),
+        help="Path to JSON config file (default: script name with .json suffix)",
+    )
+
+
+def add_logging_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--log_dir")
+    parser.add_argument("--log_file")
+    parser.add_argument("--level")
+    parser.add_argument("--max_bytes", type=int)
+    parser.add_argument("--backup_count", type=int)
+    parser.add_argument(
+        "--console",
+        action=argparse.BooleanOptionalAction,
+    )
+
+
+def add_session_hours_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--market_timezone")
+    parser.add_argument("--market_open_hour", type=int)
+    parser.add_argument("--market_open_minute", type=int)
+    parser.add_argument("--market_close_hour", type=int)
+
+
 def cfg_bool(config: Dict[str, Any], key: str, default: bool) -> bool:
     if key not in config:
         return default

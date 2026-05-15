@@ -41,9 +41,12 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
 from ibkr_app_support import (
+    add_config_argument,
+    add_logging_arguments,
+    add_session_hours_arguments,
     build_logger,
     cli_to_config,
     load_config_file,
@@ -833,12 +836,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="IBKR Pegged-to-Primary (REL) quoter — NBBO pegging is exchange-side"
     )
-    default_config_path = str(Path(__file__).with_suffix(".json"))
-    parser.add_argument(
-        "--config",
-        default=default_config_path,
-        help="Path to JSON config file (default: script name with .json suffix)",
-    )
+    add_config_argument(parser, __file__)
 
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
@@ -850,10 +848,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_pos", type=int)
     parser.add_argument("--loop_seconds", type=float)
     parser.add_argument("--min_order_size", type=int)
-    parser.add_argument("--market_timezone")
-    parser.add_argument("--market_open_hour", type=int)
-    parser.add_argument("--market_open_minute", type=int)
-    parser.add_argument("--market_close_hour", type=int)
+    add_session_hours_arguments(parser)
     parser.add_argument("--tif")
     parser.add_argument("--price_round_digits", type=int)
     parser.add_argument("--resync_debounce_seconds", type=float)
@@ -868,16 +863,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Fraction of NBBO spread for REL auxPrice only (effective max < 0.5)",
     )
 
-    cli_flags: Tuple[Tuple[str, Dict[str, Any]], ...] = (
-        ("--log_dir", {}),
-        ("--log_file", {}),
-        ("--level", {}),
-        ("--max_bytes", {"type": int}),
-        ("--backup_count", {"type": int}),
-        ("--console", {"action": argparse.BooleanOptionalAction}),
-    )
-    for flag, kwargs in cli_flags:
-        parser.add_argument(flag, **kwargs)
+    add_logging_arguments(parser)
     return parser
 
 
