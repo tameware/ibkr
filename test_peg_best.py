@@ -70,16 +70,15 @@ sys.modules['ibapi.order'] = mock_ibapi.order
 sys.modules['ibapi.ticktype'] = MagicMock()
 sys.modules['pytz'] = mock_pytz
 
-# Now import peg_best
-from peg_best import (
-    Trader, 
-    load_config_file, 
-    cli_to_config, 
-    merge_config, 
+from ibkr_app_support import (
+    cli_to_config,
+    load_config_file,
+    merge_config,
     require_fields,
-    tprint,
-    build_arg_parser
 )
+
+# Now import peg_best
+from peg_best import Trader, tprint, build_arg_parser
 
 
 class TestHelpers(unittest.TestCase):

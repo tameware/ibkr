@@ -53,16 +53,15 @@ sys.modules['ibapi.contract'] = mock_ibapi.contract
 sys.modules['ibapi.order'] = mock_ibapi.order
 sys.modules['ibapi.ticktype'] = MagicMock()
 
-# Now import midprice
-from midprice import (
-    Trader, 
-    load_config_file, 
-    cli_to_config, 
-    merge_config, 
+from ibkr_app_support import (
+    cli_to_config,
+    load_config_file,
+    merge_config,
     require_fields,
-    tprint,
-    build_arg_parser
 )
+
+# Now import midprice
+from midprice import Trader, tprint, build_arg_parser
 
 
 class TestHelpers(unittest.TestCase):

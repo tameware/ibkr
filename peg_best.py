@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import json
 import pytz
 import threading
 import time
@@ -17,6 +16,13 @@ from ibapi.order import Order, COMPETE_AGAINST_BEST_OFFSET_UP_TO_MID
 from ibapi.ticktype import TickType
 from ibapi.wrapper import EWrapper
 
+from ibkr_app_support import (
+    cli_to_config,
+    load_config_file,
+    merge_config,
+    require_fields,
+)
+
 HIST_REQ_ID = 1001
 LAST_TRADE_REQ_ID = 2001
 MKTDATA_REQ_ID = 3001
@@ -24,35 +30,6 @@ MKTDATA_REQ_ID = 3001
 def tprint(msg: str) -> None:
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"{now} {msg}")
-
-
-def load_config_file(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        raise ValueError("Config file must contain a JSON object at the top level")
-    return data
-
-
-def cli_to_config(args: argparse.Namespace) -> Dict[str, Any]:
-    result: Dict[str, Any] = {}
-    for key, value in vars(args).items():
-        if key == "config" or value is None:
-            continue
-        result[key] = value
-    return result
-
-
-def merge_config(file_config: Dict[str, Any], cli_config: Dict[str, Any]) -> Dict[str, Any]:
-    merged = dict(file_config)
-    merged.update(cli_config)
-    return merged
-
-
-def require_fields(config: Dict[str, Any], required_fields: list[str]) -> None:
-    missing = [field for field in required_fields if field not in config]
-    if missing:
-        raise ValueError(f"Missing required configuration fields: {', '.join(missing)}")
 
 
 class Trader(EWrapper, EClient):
