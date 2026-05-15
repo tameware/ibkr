@@ -19,6 +19,10 @@ The bot does not place, modify, or cancel orders until both bid and ask are vali
 (positive and ask > bid). Orders are
 not submitted when computed quantity is below ``min_order_size`` (default 10).
 
+Quoting is **callback-driven**: ``tickPrice`` and fill/position callbacks call
+``sync_orders`` (with throttling). The main thread only handles session
+transitions, periodic snapshot refresh (``loop_seconds``), and shutdown.
+
 On each connection, after the first ``reqOpenOrders`` snapshot completes, all
 open orders for the configured symbol are logged, then ``sync_orders`` may
 resize or re-peg existing working orders to match current NBBO / limits.
@@ -37,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import signal
 import sys
 import threading
 import time
@@ -133,8 +138,13 @@ class Trader(EWrapper, EClient):
         self.open_orders_snapshot_complete = False
         self.sync_requested = False
         self.last_resync_request_ts = 0.0
+        self.last_nbbo_sync_ts = 0.0
+        self._last_nbbo_key: tuple[float, float] | None = None
         self.resync_debounce_seconds = float(self.config.get("resync_debounce_seconds", 0.35))
+        self.nbbo_sync_interval_seconds = float(self.config["loop_seconds"])
         self._prev_us_regular_hours: bool | None = None
+        self.shutdown_flag = False
+        self._stop_called = False
         _mos = int(self.config.get("min_order_size", 10))
         self.min_order_size = max(1, _mos)
 
@@ -290,33 +300,33 @@ class Trader(EWrapper, EClient):
         elif tickType == 2:
             self._ask = price
 
-        if self._bid is not None and self._ask is not None and self._bid > 0 and self._ask > 0:
-            mid = self._nbbo_mid_rounded()
-            if mid != self.ref_price:
-                self.logger.info(
-                    f"ref_price updated: bid={self._bid} ask={self._ask} mid={mid}"
-                )
-                self.ref_price = mid
+        if self._has_valid_nbbo():
+            self.maybe_sync_orders_from_nbbo()
 
     def connectAck(self):
         self.logger.info("IBKR connectAck received")
 
     def connectionClosed(self):
         self.api_ready = False
+        self.shutdown_flag = True
         self.logger.warning("IBKR connection closed (connectionClosed callback)")
 
-    def nextValidId(self, orderId: int):
-        GENERIC_TICKS = ""
+    def startup(self) -> None:
+        """Subscribe to market data and request startup snapshots (from ``nextValidId``)."""
+        self._startup_open_orders_logged = False
+        self.request_positions_snapshot()
+        self.request_today_open_or_prior_close()
+        self.reqMktData(MKTDATA_REQ_ID, self.contract, "", False, False, [])
+        self.request_open_orders_snapshot()
+        self.logger.info(
+            "Startup: requested positions, daily bars, market data, and open orders."
+        )
 
+    def nextValidId(self, orderId: int):
         self.logger.info("nextValidId: %s", orderId)
         self.nextOrderId = orderId
         self.api_ready = True
-        self._startup_open_orders_logged = False
-
-        self.request_positions_snapshot()
-        self.request_today_open_or_prior_close()
-        self.reqMktData(MKTDATA_REQ_ID, self.contract, GENERIC_TICKS, False, False, [])
-        self.request_open_orders_snapshot()
+        self.startup()
 
     def openOrder(self, orderId, contract, order, orderState):
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
@@ -481,6 +491,37 @@ class Trader(EWrapper, EClient):
             self.sync_requested = False
             self.sync_orders()
 
+    def maybe_sync_orders_from_nbbo(self, *, force: bool = False) -> None:
+        """Re-peg working REL orders when NBBO moves (API callback thread)."""
+        if self.shutdown_flag:
+            return
+        if not self.us_regular_hours():
+            return
+        if not self.ready_for_trading or not self._has_valid_nbbo():
+            return
+
+        nbbo_key = (float(self._bid), float(self._ask))
+        now = time.monotonic()
+        if not force:
+            if now - self.last_nbbo_sync_ts < self.nbbo_sync_interval_seconds:
+                if nbbo_key == self._last_nbbo_key:
+                    return
+
+        self.last_nbbo_sync_ts = now
+        self._last_nbbo_key = nbbo_key
+
+        mid = self._nbbo_mid_rounded()
+        if mid != self.ref_price:
+            self.logger.info(
+                "ref_price updated: bid=%s ask=%s mid=%s",
+                self._bid,
+                self._ask,
+                mid,
+            )
+            self.ref_price = mid
+
+        self.sync_orders()
+
     def _clear_order_state(self, action: str) -> None:
         if action == "BUY":
             oid = self.buy_order_id
@@ -588,12 +629,12 @@ class Trader(EWrapper, EClient):
         self._note_order_cache(oid, new_order)
         return True
 
-    def trigger_resync(self):
-        if not self.isConnected():
+    def trigger_resync(self, *, force: bool = False) -> None:
+        if self.shutdown_flag or not self.isConnected():
             return
 
         now = time.monotonic()
-        if now - self.last_resync_request_ts < self.resync_debounce_seconds:
+        if not force and now - self.last_resync_request_ts < self.resync_debounce_seconds:
             return
 
         self.last_resync_request_ts = now
@@ -603,7 +644,7 @@ class Trader(EWrapper, EClient):
         self.maybe_sync_orders()
 
     def sync_orders(self):
-        if not self.ready_for_trading:
+        if self.shutdown_flag or not self.ready_for_trading:
             return
 
         if self.nextOrderId is None:
@@ -624,7 +665,7 @@ class Trader(EWrapper, EClient):
                     self.sell_order_id,
                 )
                 sid = self.sell_order_id
-                safe_cancel_order(self,sid)
+                safe_cancel_order(self, sid)
                 self.pending_sell = False
                 self.sell_order_id = None
                 self.sell_order_qty = None
@@ -679,7 +720,7 @@ class Trader(EWrapper, EClient):
                     self.buy_order_id,
                 )
                 buy_oid = self.buy_order_id
-                safe_cancel_order(self,buy_oid)
+                safe_cancel_order(self, buy_oid)
                 self.pending_buy = False
                 self.buy_order_id = None
                 self.buy_order_qty = None
@@ -799,23 +840,64 @@ class Trader(EWrapper, EClient):
             self.placeOrder(oid, self.contract, order)
             self._note_order_cache(oid, order)
 
-    def run_loop(self):
-        while True:
+    def stop(self) -> None:
+        if self._stop_called:
+            return
+        self._stop_called = True
+        self.shutdown_flag = True
+        self.logger.info("Shutdown requested.")
+
+        for label, oid in (("BUY", self.buy_order_id), ("SELL", self.sell_order_id)):
+            if oid is None:
+                continue
+            try:
+                safe_cancel_order(self, oid)
+                self.logger.info("Cancel %s order id=%s on shutdown", label, oid)
+            except Exception as e:
+                self.logger.warning("Cancel %s order id=%s failed: %s", label, oid, e)
+
+        self.buy_order_id = None
+        self.sell_order_id = None
+        self.pending_buy = False
+        self.pending_sell = False
+
+        try:
+            if self.isConnected() and self.serverVersion() is not None:
+                self.cancelMktData(MKTDATA_REQ_ID)
+        except Exception as e:
+            self.logger.warning("cancelMktData failed: %s", e)
+
+        time.sleep(1.0)
+
+        try:
+            self.disconnect()
+        except Exception as e:
+            self.logger.warning("Disconnect failed: %s", e)
+
+        self.logger.info("Disconnected cleanly.")
+
+    def run_until_shutdown(self) -> None:
+        """Main thread: session logging, periodic snapshot refresh, disconnect detection."""
+        last_periodic = 0.0
+        interval = self.nbbo_sync_interval_seconds
+
+        while not self.shutdown_flag:
             if not self.isConnected():
                 if self.api_ready:
                     self.logger.warning(
-                        "Lost connection to IBKR; exiting run loop "
-                        "(check TWS/Gateway and API client settings)"
+                        "Lost connection to IBKR (check TWS/Gateway and API client settings)"
                     )
                 else:
                     self.logger.error(
-                        "Never received nextValidId from IBKR; exiting run loop. "
-                        "Check that TWS/IB Gateway is running, API is enabled "
-                        "(Configure → API → Settings), host/port match config "
-                        "(paper often 7497), and client_id=%s is not already in use.",
+                        "Never received nextValidId from IBKR. "
+                        "Check that TWS/IB Gateway is running, API is enabled, "
+                        "host/port match config (paper often 7497), and client_id=%s "
+                        "is not already in use.",
                         self.config.get("client_id", 1),
                     )
                 break
+
+            now = time.monotonic()
             in_hours = self.us_regular_hours()
             log_session_transition(
                 self.logger,
@@ -824,12 +906,12 @@ class Trader(EWrapper, EClient):
                 in_hours=in_hours,
             )
             self._prev_us_regular_hours = in_hours
-            if in_hours:
-                self.sync_requested = True
-                self.request_positions_snapshot()
-                self.request_open_orders_snapshot()
-                self.maybe_sync_orders()
-            time.sleep(float(self.config["loop_seconds"]))
+
+            if in_hours and (now - last_periodic) >= interval:
+                last_periodic = now
+                self.trigger_resync()
+
+            time.sleep(1.0)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -928,12 +1010,20 @@ def main() -> None:
         app.disconnect()
         return
 
-    try:
-        app.run_loop()
-    except KeyboardInterrupt:
+    def handle_sig(*_):
         app.logger.info("Stopping...")
+        app.stop()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, handle_sig)
+    signal.signal(signal.SIGTERM, handle_sig)
+
+    try:
+        app.run_until_shutdown()
+    except KeyboardInterrupt:
+        handle_sig()
     finally:
-        app.disconnect()
+        app.stop()
 
 
 if __name__ == "__main__":

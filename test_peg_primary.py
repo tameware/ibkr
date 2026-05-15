@@ -67,6 +67,7 @@ sys.modules["ibapi.ticktype"] = MagicMock()
 sys.modules["pytz"] = mock_pytz
 
 from peg_primary import (
+    MKTDATA_REQ_ID,
     Trader,
     build_arg_parser,
     cli_to_config,
@@ -458,9 +459,40 @@ class TestTrader(unittest.TestCase):
             self.t.trigger_resync()
             self.assertEqual(self.t.request_positions_snapshot.call_count, c1)
             self.t.sync_requested = False
-            self.t.trigger_resync()
+            self.t.trigger_resync(force=True)
             self.assertTrue(self.t.sync_requested)
             self.assertEqual(self.t.request_positions_snapshot.call_count, c1 + 1)
+
+    def test_maybe_sync_orders_from_nbbo_throttles_unchanged_nbbo(self):
+        self.t.ready_for_trading = True
+        self.t._bid = 50.0
+        self.t._ask = 50.10
+        self.t.nbbo_sync_interval_seconds = 10.0
+        self.t.sync_orders = Mock()
+        with patch("peg_primary.regular_session_open", return_value=True):
+            with patch("peg_primary.time.monotonic", side_effect=[100.0, 100.5]):
+                self.t.last_nbbo_sync_ts = 0.0
+                self.t.maybe_sync_orders_from_nbbo()
+                self.t.maybe_sync_orders_from_nbbo()
+        self.t.sync_orders.assert_called_once()
+
+    def test_maybe_sync_orders_from_nbbo_skips_outside_session(self):
+        self.t.ready_for_trading = True
+        self.t._bid = 50.0
+        self.t._ask = 50.10
+        self.t.sync_orders = Mock()
+        with patch("peg_primary.regular_session_open", return_value=False):
+            self.t.maybe_sync_orders_from_nbbo()
+        self.t.sync_orders.assert_not_called()
+
+    def test_tick_price_triggers_nbbo_sync(self):
+        self.t._bid = None
+        self.t._ask = None
+        self.t.maybe_sync_orders_from_nbbo = Mock()
+        self.t.tickPrice(MKTDATA_REQ_ID, 1, 50.0, Mock())
+        self.t.maybe_sync_orders_from_nbbo.assert_not_called()
+        self.t.tickPrice(MKTDATA_REQ_ID, 2, 50.10, Mock())
+        self.t.maybe_sync_orders_from_nbbo.assert_called_once()
 
     def test_us_regular_hours(self):
         from ibkr_app_support import regular_session_open
