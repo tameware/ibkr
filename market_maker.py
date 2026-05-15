@@ -27,6 +27,7 @@ from ibkr_app_support import (
     cli_to_config,
     flatten_config_sections,
     load_config_file,
+    log_ib_error,
     merge_config,
 )
 
@@ -231,17 +232,15 @@ class MarketMaker(EWrapper, EClient):
         advancedOrderReject: str = "",
     ):
         """IB API passes (reqId, errorTime, errorCode, errorString, advancedOrderReject)."""
-        if "data farm" in (advancedOrderReject or ""):
-            return
-
-        msg = f"reqId={reqId} errorTime={errorTime} code={errorCode} msg={errorString}"
-        if advancedOrderReject:
-            msg += f" reject={advancedOrderReject}"
-
-        if errorCode in {2104, 2106, 2158}:
-            self.logger.info("IB status: %s", msg)
-        else:
-            self.logger.warning("IB error: %s", msg)
+        log_ib_error(
+            self.logger,
+            self.config,
+            req_id=reqId,
+            error_time=errorTime,
+            error_code=errorCode,
+            error_string=errorString,
+            advanced_order_reject=advancedOrderReject,
+        )
 
     def nextValidId(self, orderId: OrderId):
         with self.lock:

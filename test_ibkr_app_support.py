@@ -6,9 +6,12 @@ from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 from ibkr_app_support import (
+    ib_error_is_status_info,
+    log_ib_error,
     log_session_transition,
     regular_session_open,
     session_wall_clock,
+    should_suppress_ib_error,
     wait_for_ib_ready,
 )
 
@@ -80,6 +83,66 @@ class TestRegularSession(unittest.TestCase):
             in_hours=True,
         )
         logger.info.assert_not_called()
+
+
+class TestIbErrorFiltering(unittest.TestCase):
+    _CFG = {
+        "ignored_error_codes": [2104, 2106],
+        "ignore_error_substrings": ["HMDS", "data farm connection is broken"],
+    }
+
+    def test_should_suppress_ignored_code(self):
+        self.assertTrue(
+            should_suppress_ib_error(self._CFG, 2104, "Market data farm connected")
+        )
+
+    def test_should_suppress_substring_in_message(self):
+        self.assertTrue(
+            should_suppress_ib_error(self._CFG, 10000, "Error: HMDS connection issue")
+        )
+
+    def test_should_suppress_data_farm_in_reject_json(self):
+        self.assertTrue(
+            should_suppress_ib_error(
+                {},
+                500,
+                "other",
+                advanced_order_reject='{"reason":"data farm offline"}',
+            )
+        )
+
+    def test_should_not_suppress_critical(self):
+        self.assertFalse(should_suppress_ib_error(self._CFG, 500, "Critical error"))
+
+    def test_log_ib_error_warning(self):
+        logger = MagicMock()
+        log_ib_error(
+            logger,
+            self._CFG,
+            req_id=1,
+            error_time="t",
+            error_code=1999,
+            error_string="oops",
+        )
+        logger.warning.assert_called_once()
+        logger.info.assert_not_called()
+
+    def test_log_ib_error_status_info(self):
+        logger = MagicMock()
+        log_ib_error(
+            logger,
+            self._CFG,
+            req_id=0,
+            error_time="",
+            error_code=2158,
+            error_string="Farm OK",
+        )
+        logger.info.assert_called_once()
+        logger.warning.assert_not_called()
+
+    def test_ib_error_is_status_info(self):
+        self.assertTrue(ib_error_is_status_info(2104))
+        self.assertFalse(ib_error_is_status_info(500))
 
 
 class TestWaitForIbReady(unittest.TestCase):

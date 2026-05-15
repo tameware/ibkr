@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+_IB_STATUS_INFO_CODES_DEFAULT = frozenset({2104, 2106, 2158})
+
 
 def normalize_config_key(name: str) -> str:
     return name.replace("-", "_")
@@ -198,6 +200,95 @@ def log_session_transition(
             mch,
             tz_name,
         )
+
+
+def should_suppress_ib_error(
+    config: Dict[str, Any],
+    error_code: Any,
+    error_string: Any,
+    *,
+    advanced_order_reject: str = "",
+) -> bool:
+    """True when this IB API error should not be logged."""
+    reject_text = str(advanced_order_reject or "")
+    if reject_text and "data farm" in reject_text.lower():
+        return True
+
+    codes = config.get("ignored_error_codes") or []
+    if str(error_code) in {str(x) for x in codes}:
+        return True
+
+    error_text = str(error_string or "")
+    for text in config.get("ignore_error_substrings") or []:
+        if text and (text in error_text or text in reject_text):
+            return True
+    return False
+
+
+def ib_error_is_status_info(
+    error_code: Any,
+    *,
+    status_info_codes: Optional[frozenset[int]] = None,
+) -> bool:
+    """True for routine IB connection / market-data status codes (log at INFO)."""
+    codes = (
+        status_info_codes
+        if status_info_codes is not None
+        else _IB_STATUS_INFO_CODES_DEFAULT
+    )
+    try:
+        return int(error_code) in codes
+    except (TypeError, ValueError):
+        return str(error_code) in {str(c) for c in codes}
+
+
+def format_ib_error_message(
+    req_id: Any,
+    error_time: Any,
+    error_code: Any,
+    error_string: Any,
+    advanced_order_reject: str = "",
+) -> str:
+    return (
+        f"Error reqId={req_id} errorTime={error_time} errorCode={error_code} "
+        f"errorString={error_string} advancedOrderRejectJson={advanced_order_reject}"
+    )
+
+
+def log_ib_error(
+    logger: logging.Logger,
+    config: Dict[str, Any],
+    *,
+    req_id: Any,
+    error_time: Any,
+    error_code: Any,
+    error_string: Any,
+    advanced_order_reject: str = "",
+    status_info_codes: Optional[frozenset[int]] = None,
+) -> bool:
+    """Log IB API error unless suppressed. Returns True if a line was logged."""
+    if should_suppress_ib_error(
+        config, error_code, error_string, advanced_order_reject=advanced_order_reject
+    ):
+        return False
+
+    text = str(error_string or "")
+    if ib_error_is_status_info(error_code, status_info_codes=status_info_codes):
+        msg = f"reqId={req_id} errorTime={error_time} code={error_code} msg={text}"
+        if advanced_order_reject:
+            msg += f" reject={advanced_order_reject}"
+        logger.info("IB status: %s", msg)
+        return True
+
+    logger.warning(
+        "Error reqId=%s errorTime=%s errorCode=%s errorString=%s advancedOrderRejectJson=%s",
+        req_id,
+        error_time,
+        error_code,
+        text,
+        advanced_order_reject,
+    )
+    return True
 
 
 def wait_for_ib_ready(

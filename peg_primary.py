@@ -47,6 +47,7 @@ from ibkr_app_support import (
     build_logger,
     cli_to_config,
     load_config_file,
+    log_ib_error,
     log_session_transition,
     merge_config,
     regular_session_open,
@@ -364,22 +365,14 @@ class Trader(EWrapper, EClient):
         self.maybe_sync_orders()
 
     def error(self, reqId, errorTime, errorCode, errorString, advancedOrderRejectJson=""):
-        noisy_codes = {str(x) for x in self.config["ignored_error_codes"]}
-        if str(errorCode) in noisy_codes:
-            return
-
-        ignored_substrings = [str(x) for x in self.config["ignore_error_substrings"]]
-        error_text = str(errorString)
-        if any(text in error_text for text in ignored_substrings):
-            return
-
-        self.logger.warning(
-            "Error reqId=%s errorTime=%s errorCode=%s errorString=%s advancedOrderRejectJson=%s",
-            reqId,
-            errorTime,
-            errorCode,
-            error_text,
-            advancedOrderRejectJson,
+        log_ib_error(
+            self.logger,
+            self.config,
+            req_id=reqId,
+            error_time=errorTime,
+            error_code=errorCode,
+            error_string=errorString,
+            advanced_order_reject=advancedOrderRejectJson,
         )
 
     def position(self, account, contract, pos, avgCost):

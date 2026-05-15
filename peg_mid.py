@@ -17,10 +17,12 @@ from ibapi.wrapper import EWrapper
 
 from ibkr_app_support import (
     cli_to_config,
+    format_ib_error_message,
     load_config_file,
     merge_config,
     regular_session_open,
     require_fields,
+    should_suppress_ib_error,
 )
 
 HIST_REQ_ID = 1001
@@ -191,18 +193,21 @@ class Trader(EWrapper, EClient):
         self.maybe_sync_orders()
 
     def error(self, reqId, errorTime, errorCode, errorString, advancedOrderRejectJson=""):
-        noisy_codes = {str(x) for x in self.config["ignored_error_codes"]}
-        if str(errorCode) in noisy_codes:
+        if should_suppress_ib_error(
+            self.config,
+            errorCode,
+            errorString,
+            advanced_order_reject=advancedOrderRejectJson,
+        ):
             return
-
-        ignored_substrings = [str(x) for x in self.config["ignore_error_substrings"]]
-        error_text = str(errorString)
-        if any(text in error_text for text in ignored_substrings):
-            return
-
         tprint(
-            f"Error reqId={reqId} errorTime={errorTime} errorCode={errorCode} "
-            f"errorString={error_text} advancedOrderRejectJson={advancedOrderRejectJson}"
+            format_ib_error_message(
+                reqId,
+                errorTime,
+                errorCode,
+                errorString,
+                advancedOrderRejectJson,
+            )
         )
 
     def position(self, account, contract, pos, avgCost):
