@@ -75,6 +75,46 @@ def merge_config(file_config: Dict[str, Any], cli_config: Dict[str, Any]) -> Dic
     return merged
 
 
+def ib_client_id_from_config(config: Dict[str, Any], *, default: int = 1) -> int:
+    """Socket API ``client_id`` used when connecting; attributes orders/fills to this session."""
+    try:
+        return int(config.get("client_id", default))
+    except (TypeError, ValueError):
+        return default
+
+
+def open_order_belongs_to_client(order: Any, our_client_id: int) -> bool:
+    """True if IB ``Order`` in ``openOrder`` belongs to this API client."""
+    if order is None:
+        return False
+    if not hasattr(order, "clientId"):
+        return True
+    try:
+        return int(order.clientId) == int(our_client_id)
+    except (TypeError, ValueError):
+        return False
+
+
+def execution_belongs_to_client(execution: Any, our_client_id: int) -> bool:
+    """True if ``execDetails`` execution originated from ``our_client_id``."""
+    if execution is None:
+        return False
+    if not hasattr(execution, "clientId"):
+        return True
+    try:
+        return int(execution.clientId) == int(our_client_id)
+    except (TypeError, ValueError):
+        return False
+
+
+def order_status_clients_match(wrapper_client_id: Any, our_client_id: int) -> bool:
+    """``orderStatus`` callbacks pass ``clientId`` of the originating client."""
+    try:
+        return int(wrapper_client_id) == int(our_client_id)
+    except (TypeError, ValueError):
+        return False
+
+
 def require_fields(config: Dict[str, Any], required_fields: list[str]) -> None:
     missing = [field for field in required_fields if field not in config]
     if missing:

@@ -21,10 +21,13 @@ from ibkr_app_support import (
     add_ib_connection_arguments,
     add_logging_arguments,
     cfg_bool as _cfg_bool,
+    execution_belongs_to_client,
     flatten_config_sections,
     idle_until_shutdown,
     load_merged_config,
     NbboThrottle,
+    open_order_belongs_to_client,
+    order_status_clients_match,
     run_bot,
     safe_cancel_order,
 )
@@ -472,6 +475,8 @@ class MarketMaker(IbkrBotApp):
     def openOrder(self, orderId, contract, order, orderState):
         if not self._is_target_contract(contract):
             return
+        if not open_order_belongs_to_client(order, self.client_id):
+            return
 
         side = order.action.upper()
         if side not in {"BUY", "SELL"}:
@@ -580,6 +585,8 @@ class MarketMaker(IbkrBotApp):
         whyHeld,
         mktCapPrice,
     ):
+        if not order_status_clients_match(clientId, self.client_id):
+            return
         with self.lock:
             target = None
             if self.buy_order and self.buy_order.order_id == orderId:
@@ -614,6 +621,8 @@ class MarketMaker(IbkrBotApp):
 
     def execDetails(self, reqId, contract, execution):
         if not self._is_target_contract(contract):
+            return
+        if not execution_belongs_to_client(execution, self.client_id):
             return
 
         shares = int(execution.shares)

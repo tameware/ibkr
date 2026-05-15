@@ -53,10 +53,14 @@ from ibkr_app_support import (
     add_ib_connection_arguments,
     add_logging_arguments,
     add_session_hours_arguments,
+    execution_belongs_to_client,
+    ib_client_id_from_config,
     load_merged_config,
     NbboCoalescer,
     NbboThrottle,
     log_session_transition,
+    open_order_belongs_to_client,
+    order_status_clients_match,
     regular_session_open,
     run_bot,
     safe_cancel_order,
@@ -163,13 +167,16 @@ class Trader(IbkrBotApp):
         self.order_working_lmt: Dict[int, float] = {}
         self.order_working_aux: Dict[int, float] = {}
 
+        self.ib_client_id = ib_client_id_from_config(config, default=1)
+
         self.logger.info(
             "REL quoter initialized symbol=%s exchange=%s "
-            "(NBBO coalesce quiet=%.2fs min_interval=%.2fs)",
+            "(NBBO coalesce quiet=%.2fs min_interval=%.2fs; ib_client_id=%s)",
             self.config["symbol"],
             self.config["exchange"],
             self.nbbo_coalesce_seconds,
             self.nbbo_coalesce_max_seconds,
+            self.ib_client_id,
         )
 
     def market_data_req_ids(self):
@@ -236,6 +243,8 @@ class Trader(IbkrBotApp):
         whyHeld,
         mktCapPrice,
     ):
+        if not order_status_clients_match(clientId, self.ib_client_id):
+            return
         self.remaining_by_order[orderId] = remaining
 
         try:
@@ -299,6 +308,8 @@ class Trader(IbkrBotApp):
             or contract.secType != self.config["sec_type"]
         ):
             return
+        if not execution_belongs_to_client(execution, self.ib_client_id):
+            return
 
         raw_side = getattr(execution, "side", "")
         side = "BUY" if raw_side == "BOT" else "SELL" if raw_side == "SLD" else raw_side
@@ -349,6 +360,8 @@ class Trader(IbkrBotApp):
 
     def openOrder(self, orderId, contract, order, orderState):
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
+            if not open_order_belongs_to_client(order, self.ib_client_id):
+                return
             try:
                 qty = int(float(order.totalQuantity))
             except (TypeError, ValueError):

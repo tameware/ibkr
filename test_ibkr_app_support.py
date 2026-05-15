@@ -9,6 +9,7 @@ import argparse
 import json
 import tempfile
 import threading
+import types
 from pathlib import Path
 
 from ibkr_app_support import (
@@ -19,6 +20,8 @@ from ibkr_app_support import (
     cli_to_config,
     default_config_path,
     disconnect_cleanly,
+    execution_belongs_to_client,
+    ib_client_id_from_config,
     ib_error_is_status_info,
     idle_until_shutdown,
     load_config_file,
@@ -29,6 +32,8 @@ from ibkr_app_support import (
     make_stock_contract,
     log_session_transition,
     merge_config,
+    open_order_belongs_to_client,
+    order_status_clients_match,
     regular_session_open,
     run_bot,
     safe_cancel_order,
@@ -520,6 +525,39 @@ class TestRunBot(unittest.TestCase):
         app.shutdown_flag = False
         app.isConnected.return_value = False
         idle_until_shutdown(app, poll_seconds=0.02)
+
+
+class TestIbClientOwnership(unittest.TestCase):
+    """Helpers for ignoring other API clients' orders and executions."""
+
+    def test_ib_client_id_from_config(self):
+        self.assertEqual(ib_client_id_from_config({"client_id": 7}), 7)
+        self.assertEqual(ib_client_id_from_config({"client_id": "9"}), 9)
+        self.assertEqual(ib_client_id_from_config({}), 1)
+        self.assertEqual(ib_client_id_from_config({"client_id": None}), 1)
+
+    def test_open_order_without_client_id_is_accepted(self):
+        order = types.SimpleNamespace()
+        self.assertTrue(open_order_belongs_to_client(order, 1))
+
+    def test_open_order_filters_by_client_id(self):
+        o = types.SimpleNamespace(clientId=3)
+        self.assertTrue(open_order_belongs_to_client(o, 3))
+        self.assertFalse(open_order_belongs_to_client(o, 4))
+
+    def test_execution_without_client_id_is_accepted(self):
+        ex = types.SimpleNamespace()
+        self.assertTrue(execution_belongs_to_client(ex, 1))
+
+    def test_execution_filters_by_client_id(self):
+        ex = types.SimpleNamespace(clientId=901)
+        self.assertTrue(execution_belongs_to_client(ex, 901))
+        self.assertFalse(execution_belongs_to_client(ex, 1))
+
+    def test_order_status_matches_client_id_strictly(self):
+        self.assertTrue(order_status_clients_match(901, 901))
+        self.assertFalse(order_status_clients_match(0, 901))
+        self.assertFalse(order_status_clients_match("x", 1))
 
 
 class TestWaitForIbReady(unittest.TestCase):

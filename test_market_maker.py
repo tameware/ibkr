@@ -626,7 +626,7 @@ class TestMarketMakerCore(unittest.TestCase):
             0,
             0,
             0.0,
-            0,
+            self.mm.client_id,
             "",
             0.0,
         )

@@ -491,12 +491,16 @@ class TestTrader(unittest.TestCase):
         self.t.sync_orders.assert_not_called()
 
     def test_tick_price_triggers_nbbo_sync(self):
+        """``tickPrice`` stages bid/ask; :meth:`~peg_primary.Trader._flush_pending_nbbo`
+        applies them and may invoke :meth:`~peg_primary.Trader.maybe_sync_orders_from_nbbo`."""
         self.t._bid = None
         self.t._ask = None
+        self.t.ready_for_trading = True
         self.t.maybe_sync_orders_from_nbbo = Mock()
         self.t.tickPrice(MKTDATA_REQ_ID, 1, 50.0, Mock())
         self.t.maybe_sync_orders_from_nbbo.assert_not_called()
         self.t.tickPrice(MKTDATA_REQ_ID, 2, 50.10, Mock())
+        self.t._flush_pending_nbbo()
         self.t.maybe_sync_orders_from_nbbo.assert_called_once()
 
     def test_tick_price_coalesces_before_flush(self):
@@ -577,7 +581,7 @@ class TestExecutionLogging(unittest.TestCase):
                       avgFillPrice=0.0, lastFillPrice=0.0):
         self.t.orderStatus(
             orderId, status, filled, remaining, avgFillPrice,
-            0, 0, lastFillPrice, 0, "", 0.0,
+            0, 0, lastFillPrice, self.t.ib_client_id, "", 0.0,
         )
 
     def test_order_status_logs_filled_terminal(self):
@@ -658,6 +662,7 @@ class TestExecutionLogging(unittest.TestCase):
             "orderId": 1, "execId": "ex-1", "side": "BOT", "shares": 25,
             "price": 49.97, "exchange": "ARCA", "cumQty": 25,
             "avgPrice": 49.97, "time": "20260513 17:00:00",
+            "clientId": self.cfg.get("client_id", 1),
         }
         defaults.update(kwargs)
         for k, v in defaults.items():
@@ -705,6 +710,35 @@ class TestExecutionLogging(unittest.TestCase):
             self.t.execDetails(0, self._contract(sec_type="OPT"),
                                self._execution())
         tp.assert_not_called()
+
+    def test_exec_details_filters_wrong_client_id(self):
+        with patch.object(self.t.logger, "info") as tp:
+            self.t.execDetails(
+                0,
+                self._contract(),
+                self._execution(clientId=999),
+            )
+        tp.assert_not_called()
+
+    def test_order_status_ignores_other_client_id(self):
+        self.t.buy_order_id = 42
+        with patch.object(self.t.logger, "info") as tp:
+            self.t.orderStatus(
+                42,
+                "Filled",
+                100,
+                0,
+                49.95,
+                0,
+                0,
+                0.0,
+                999,
+                "",
+                0.0,
+            )
+        self.assertEqual(self.t.buy_order_id, 42)
+        tp.assert_not_called()
+        self.t.trigger_resync.assert_not_called()
 
     def test_terminal_status_clears_order_qty(self):
         self.t.buy_order_id = 5
@@ -939,6 +973,7 @@ class TestStartupOpenOrders(unittest.TestCase):
         contract.symbol = "TEST"
         contract.secType = "STK"
         order = MockOrder()
+        order.clientId = cfg["client_id"]
         order.action = "BUY"
         order.orderType = "REL"
         order.totalQuantity = 100
