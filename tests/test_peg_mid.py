@@ -131,7 +131,7 @@ class TestTrader(unittest.TestCase):
             "peg_mid_offset_half": 0.015,
         }
 
-        self._log_patcher = patch("peg_mid.build_logger", return_value=MagicMock())
+        self._log_patcher = patch("ibkr_bot_base.build_logger", return_value=MagicMock())
         self._log_patcher.start()
         self.addCleanup(self._log_patcher.stop)
 
@@ -913,17 +913,17 @@ class TestTrader(unittest.TestCase):
         self.trader.logger.warning.assert_called_once()
         self.assertEqual(self.trader.logger.warning.call_args[0][4], "Critical error")
     
-    def test_run_loop_disconnected(self):
-        """Test run loop when disconnected"""
+    def test_run_until_shutdown_disconnected(self):
+        """Test main loop when disconnected"""
         self.trader.isConnected = Mock(return_value=False)
         
         with patch('time.sleep') as mock_sleep:
-            self.trader.run_loop()
+            self.trader.run_until_shutdown()
             mock_sleep.assert_not_called()
     
     @patch('time.sleep')
-    def test_run_loop_market_hours(self, mock_sleep):
-        """Test run loop during market hours"""
+    def test_run_until_shutdown_market_hours(self, mock_sleep):
+        """Test main loop during market hours"""
         call_count = 0
         
         def is_connected_mock():
@@ -938,15 +938,15 @@ class TestTrader(unittest.TestCase):
         self.trader.request_open_orders_snapshot = Mock()
         self.trader.maybe_sync_orders = Mock()
         
-        self.trader.run_loop()
+        self.trader.run_until_shutdown()
         
         self.trader.request_positions_snapshot.assert_called()
         self.trader.request_open_orders_snapshot.assert_called()
         self.trader.maybe_sync_orders.assert_called()
     
     @patch('time.sleep')
-    def test_run_loop_outside_market_hours(self, mock_sleep):
-        """Test run loop outside market hours - should not sync"""
+    def test_run_until_shutdown_outside_market_hours(self, mock_sleep):
+        """Test main loop outside market hours - should not sync"""
         self.trader.isConnected = Mock(side_effect=[True, False])
         self.trader.us_regular_hours = Mock(return_value=False)
         
@@ -954,7 +954,7 @@ class TestTrader(unittest.TestCase):
         self.trader.request_open_orders_snapshot = Mock()
         self.trader.maybe_sync_orders = Mock()
         
-        self.trader.run_loop()
+        self.trader.run_until_shutdown()
         
         self.trader.request_positions_snapshot.assert_not_called()
         self.trader.request_open_orders_snapshot.assert_not_called()
