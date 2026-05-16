@@ -67,6 +67,7 @@ sys.modules["ibapi.ticktype"] = MagicMock()
 sys.modules["pytz"] = mock_pytz
 
 from ibkr_app_support import (
+    seed_ledger_position,
     NbboCoalescer,
     cli_to_config,
     load_config_file,
@@ -87,6 +88,10 @@ def _log_line(call) -> str:
     if len(a) == 1:
         return str(a[0])
     return str(a[0] % tuple(a[1:]))
+
+
+def _seed_trader(t, qty, avg_cost=150.0):
+    seed_ledger_position(t.ledger, t, int(qty), avg_cost=avg_cost)
 
 
 def _minimal_config(**overrides):
@@ -276,7 +281,7 @@ class TestTrader(unittest.TestCase):
         self.t.ready_for_trading = True
         self.t.ref_price = 50.0
         self.t.nextOrderId = 100
-        self.t.position_size = 0
+        _seed_trader(self.t, 0)
         self.t.open_symbol_buys = 0
         self.t.open_symbol_sells = 0
         self.t.pending_buy = False
@@ -299,7 +304,7 @@ class TestTrader(unittest.TestCase):
         self.t.nextOrderId = 100
         self.t._bid = None
         self.t._ask = None
-        self.t.position_size = 0
+        _seed_trader(self.t, 0)
         self.t.open_symbol_buys = 0
         self.t.open_symbol_sells = 0
         self.t.pending_buy = False
@@ -312,7 +317,7 @@ class TestTrader(unittest.TestCase):
         """If working qty matches target but lmtPrice differs from NBBO-derived limit, amend."""
         self.t.ready_for_trading = True
         self.t.nextOrderId = 500
-        self.t.position_size = 0
+        _seed_trader(self.t, 0)
         self.t.buy_order_id = 77
         self.t.buy_order_qty = 100
         self.t.remaining_by_order[77] = 100
@@ -331,7 +336,7 @@ class TestTrader(unittest.TestCase):
         self.t.ready_for_trading = True
         self.t.ref_price = 50.0
         self.t.nextOrderId = 200
-        self.t.position_size = 75
+        _seed_trader(self.t, 75)
         self.t.open_symbol_buys = 0
         self.t.open_symbol_sells = 0
         self.t.pending_buy = False
@@ -362,7 +367,7 @@ class TestTrader(unittest.TestCase):
         self.t.ready_for_trading = True
         self.t.ref_price = 50.0
         self.t.nextOrderId = 200
-        self.t.position_size = 100
+        _seed_trader(self.t, 100)
         self.t.open_symbol_buys = 0
         self.t.open_symbol_sells = 0
         self.t.pending_buy = False
@@ -380,7 +385,7 @@ class TestTrader(unittest.TestCase):
         self.t.ready_for_trading = True
         self.t.ref_price = 50.0
         self.t.nextOrderId = 200
-        self.t.position_size = 8
+        _seed_trader(self.t, 8)
         self.t.open_symbol_buys = 0
         self.t.open_symbol_sells = 0
         self.t.pending_buy = False
@@ -398,7 +403,7 @@ class TestTrader(unittest.TestCase):
         self.t.ready_for_trading = True
         self.t.ref_price = 50.0
         self.t.nextOrderId = 100
-        self.t.position_size = 0
+        _seed_trader(self.t, 0)
         self.t.open_symbol_buys = 0
         self.t.open_symbol_sells = 0
         self.t.pending_buy = False
@@ -413,7 +418,7 @@ class TestTrader(unittest.TestCase):
         self.t.ready_for_trading = True
         self.t.ref_price = 50.0
         self.t.nextOrderId = 300
-        self.t.position_size = 100
+        _seed_trader(self.t, 100)
         self.t.open_symbol_buys = 0
         self.t.open_symbol_sells = 0
         self.t.pending_buy = False
@@ -431,7 +436,7 @@ class TestTrader(unittest.TestCase):
         self.t.ready_for_trading = True
         self.t.ref_price = 50.0
         self.t.nextOrderId = 400
-        self.t.position_size = 100
+        _seed_trader(self.t, 100)
         self.t.buy_order_id = 88
         self.t.placeOrder = Mock()
         with patch("peg_primary.safe_cancel_order") as cancel:
@@ -443,7 +448,7 @@ class TestTrader(unittest.TestCase):
         self.t.ready_for_trading = True
         self.t.ref_price = 40.0
         self.t.nextOrderId = 1
-        self.t.position_size = 0
+        _seed_trader(self.t, 0)
         self.t.sell_order_id = 55
         self.t.placeOrder = Mock()
         with patch("peg_primary.safe_cancel_order") as cancel:
@@ -795,7 +800,7 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         """Position was 20 with SELL sized 20. BUY partially filled to 50.
         SELL should be amended to total 50 (filled 0 + desired 50)."""
         self.cfg["max_pos"] = 100
-        self.t.position_size = 50
+        _seed_trader(self.t, 50)
         self.t.buy_order_id = 10
         self.t.buy_order_qty = 80
         self.t.remaining_by_order[10] = 50
@@ -820,7 +825,7 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         existing BUY's remaining (70) is now smaller than desired (90).
         BUY should be amended to total 90 (filled 0 + desired 90)."""
         self.cfg["max_pos"] = 100
-        self.t.position_size = 10
+        _seed_trader(self.t, 10)
         self.t.buy_order_id = 20
         self.t.buy_order_qty = 70
         self.t.remaining_by_order[20] = 70
@@ -845,7 +850,7 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         partial fill where remaining naturally equals max_pos - pos),
         sync_orders should not modify or cancel."""
         self.cfg["max_pos"] = 100
-        self.t.position_size = 30
+        _seed_trader(self.t, 30)
         self.t.buy_order_id = 30
         self.t.buy_order_qty = 100
         self.t.remaining_by_order[30] = 70
@@ -865,7 +870,7 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         self.cfg["max_pos"] = 96
         self.cfg["min_order_size"] = 10
         self.t.min_order_size = 10
-        self.t.position_size = 95
+        _seed_trader(self.t, 95)
         self.t.buy_order_id = 40
         self.t.buy_order_qty = 100
         self.t.remaining_by_order[40] = 5
@@ -887,7 +892,7 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         """Transition to flat (SELL fully filled). An existing BUY left over
         from partial state should be amended up to the flat target."""
         self.cfg["max_pos"] = 100
-        self.t.position_size = 0
+        _seed_trader(self.t, 0)
         self.t.buy_order_id = 50
         self.t.buy_order_qty = 70
         self.t.remaining_by_order[50] = 40
@@ -910,7 +915,7 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         """Transition to at-max (BUY fully filled). An existing SELL left over
         from partial state should be amended up to the at-max target."""
         self.cfg["max_pos"] = 100
-        self.t.position_size = 100
+        _seed_trader(self.t, 100)
         self.t.buy_order_id = None
         self.t.buy_order_qty = None
         self.t.sell_order_id = 60
@@ -932,7 +937,7 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         """Critical: modification uses the same orderId so IB amends rather
         than placing a second order."""
         self.cfg["max_pos"] = 100
-        self.t.position_size = 50
+        _seed_trader(self.t, 50)
         self.t.buy_order_id = 70
         self.t.buy_order_qty = 80
         self.t.remaining_by_order[70] = 50
@@ -953,7 +958,7 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
         """Before any orderStatus has arrived for an order (no entry in
         remaining_by_order), don't try to resize."""
         self.cfg["max_pos"] = 100
-        self.t.position_size = 50
+        _seed_trader(self.t, 50)
         self.t.sell_order_id = 80
         self.t.sell_order_qty = 20
         self.t.open_symbol_buys = 0

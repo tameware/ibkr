@@ -54,6 +54,7 @@ sys.modules['ibapi.order'] = mock_ibapi.order
 sys.modules['ibapi.ticktype'] = MagicMock()
 
 from ibkr_app_support import (
+    seed_ledger_position,
     cli_to_config,
     load_config_file,
     make_stock_contract,
@@ -185,13 +186,16 @@ class TestTrader(unittest.TestCase):
         self.trader.open_symbol_sells = 0
         self.trader.pending_buy = False
         self.trader.pending_sell = False
-        self.trader.position_size = 0
+        self._seed(0)
         self.trader.ref_price = None
         
         # Mock request methods
         self.trader.request_open_orders_snapshot = Mock()
         self.trader.request_positions_snapshot = Mock()
     
+    def _seed(self, qty, avg_cost=150.0):
+        seed_ledger_position(self.trader.ledger, self.trader, int(qty), avg_cost=avg_cost)
+
     def test_initialization(self):
         """Test trader initialization"""
         self.assertEqual(self.trader.config, self.config)
@@ -573,7 +577,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_places_both_buy_and_sell_when_position_below_max(self):
         """Test sync_orders places both BUY and SELL orders when position is between 0 and max"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 30
+        self._seed(30)
         
         captured_orders = []
         def capture_order(order_id, contract, order):
@@ -610,7 +614,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_places_only_buy_when_no_position(self):
         """Test sync_orders places only BUY order when position is 0"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 0
+        self._seed(0)
         
         captured_orders = []
         def capture_order(order_id, contract, order):
@@ -635,7 +639,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_places_only_sell_when_at_max_position(self):
         """Test sync_orders places only SELL order when position is at max"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 100
+        self._seed(100)
         
         captured_orders = []
         def capture_order(order_id, contract, order):
@@ -660,7 +664,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_cancels_existing_orders_when_position_changes(self):
         """Test sync_orders cancels existing orders when they're no longer needed"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 50
+        self._seed(50)
         # Set existing orders
         self.trader.buy_order_id = 500
         self.trader.sell_order_id = 501
@@ -679,7 +683,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_cancels_buy_when_at_max(self):
         """Test sync_orders cancels BUY order when position at max"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 100
+        self._seed(100)
         self.trader.buy_order_id = 500
         self.trader.sell_order_id = None
         
@@ -696,7 +700,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_cancels_sell_when_no_position(self):
         """Test sync_orders cancels SELL order when position is 0"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 0
+        self._seed(0)
         self.trader.sell_order_id = 501
         self.trader.buy_order_id = None
         
@@ -713,7 +717,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_respects_existing_buy_order_count(self):
         """Test sync_orders does not place new BUY when open_symbol_buys > 0"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 30
+        self._seed(30)
         self.trader.open_symbol_buys = 1  # Already has a buy order
         self.trader.buy_order_id = 500
         
@@ -727,7 +731,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_respects_existing_sell_order_count(self):
         """Test sync_orders does not place new SELL when open_symbol_sells > 0"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 50
+        self._seed(50)
         self.trader.open_symbol_sells = 1  # Already has a sell order
         self.trader.sell_order_id = 501
         
@@ -741,7 +745,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_respects_pending_buy_flag(self):
         """Test sync_orders does not place new BUY when pending_buy is True"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 30
+        self._seed(30)
         self.trader.pending_buy = True
         self.trader.open_symbol_buys = 0
         
@@ -755,7 +759,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_respects_pending_sell_flag(self):
         """Test sync_orders does not place new SELL when pending_sell is True"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 50
+        self._seed(50)
         self.trader.pending_sell = True
         self.trader.open_symbol_sells = 0
         
@@ -770,7 +774,7 @@ class TestTrader(unittest.TestCase):
         """Test sync_orders does nothing when not ready"""
         self.trader.ready_for_trading = False
         self.trader.ref_price = 150.00
-        self.trader.position_size = 30
+        self._seed(30)
         
         self.trader.sync_orders()
         
@@ -780,7 +784,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_does_nothing_when_no_ref_price(self):
         """Test sync_orders does nothing when no ref_price"""
         self.trader.ref_price = None
-        self.trader.position_size = 30
+        self._seed(30)
         
         self.trader.sync_orders()
         

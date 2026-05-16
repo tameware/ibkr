@@ -72,6 +72,7 @@ sys.modules['ibapi.ticktype'] = MagicMock()
 sys.modules['pytz'] = mock_pytz
 
 from ibkr_app_support import (
+    seed_ledger_position,
     cli_to_config,
     load_config_file,
     make_stock_contract,
@@ -199,6 +200,9 @@ class TestTrader(unittest.TestCase):
         self.trader.nextOrderId = 1000
         self.trader.ready_for_trading = True
     
+    def _seed(self, qty, avg_cost=150.0):
+        seed_ledger_position(self.trader.ledger, self.trader, int(qty), avg_cost=avg_cost)
+
     def test_initialization(self):
         """Test trader initialization"""
         self.assertEqual(self.trader.config, self.config)
@@ -522,7 +526,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_buy_when_no_position(self):
         """Test sync_orders when no position - should place BUY order"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 0
+        self._seed(0)
         
         # Capture the order that gets passed to placeOrder
         captured_order = None
@@ -545,7 +549,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_sell_when_has_position(self):
         """Test sync_orders when has position - should place SELL order"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 50
+        self._seed(50)
         
         # Capture the order that gets passed to placeOrder
         captured_order = None
@@ -568,7 +572,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_cancels_opposite_buy_order(self):
         """Test that sync_orders cancels opposite BUY order when wanting to sell"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 50
+        self._seed(50)
         self.trader.buy_order_id = 999  # Has open BUY order but wants to SELL
         
         with patch("peg_best.safe_cancel_order") as cancel:
@@ -580,7 +584,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_cancels_opposite_sell_order(self):
         """Test that sync_orders cancels opposite SELL order when wanting to buy"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 0
+        self._seed(0)
         self.trader.sell_order_id = 999  # Has open SELL order but wants to BUY
         
         with patch("peg_best.safe_cancel_order") as cancel:
@@ -593,7 +597,7 @@ class TestTrader(unittest.TestCase):
         """Test sync_orders does nothing when not ready"""
         self.trader.ready_for_trading = False
         self.trader.ref_price = 150.00
-        self.trader.position_size = 0
+        self._seed(0)
         
         self.trader.sync_orders()
         
@@ -602,7 +606,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_does_not_place_when_no_ref_price(self):
         """Test sync_orders does nothing when no ref_price"""
         self.trader.ref_price = None
-        self.trader.position_size = 0
+        self._seed(0)
         
         self.trader.sync_orders()
         
@@ -611,7 +615,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_respects_existing_orders(self):
         """Test sync_orders does not place new order when one already exists"""
         self.trader.ref_price = 150.00
-        self.trader.position_size = 0
+        self._seed(0)
         self.trader.open_symbol_buys = 1  # Already has a buy order
         
         self.trader.sync_orders()

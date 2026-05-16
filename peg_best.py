@@ -25,6 +25,7 @@ from ibkr_app_support import (
     ib_client_id_from_config,
     load_merged_config,
     log_startup_timezones,
+    max_sell_shares,
     make_stock_contract,
     regular_session_open,
     safe_cancel_order,
@@ -313,7 +314,7 @@ class Trader(EWrapper, EClient):
             desired_limit = buy_limit
         else:
             desired_side = "SELL"
-            desired_qty = pos
+            desired_qty = max_sell_shares(self.ledger)
             desired_limit = sell_limit
 
         if desired_side == "BUY":
@@ -347,6 +348,14 @@ class Trader(EWrapper, EClient):
                 return
 
             if self.open_symbol_buys > 0:
+                return
+
+            if desired_qty <= 0 and self.sell_order_id is not None:
+                tprint(f"Cancelling SELL order id={self.sell_order_id} (no shares to sell)")
+                safe_cancel_order(self, self.sell_order_id)
+                self.pending_sell = False
+                self.sell_order_id = None
+                self.open_symbol_sells = 0
                 return
 
             if desired_qty > 0 and self.open_symbol_sells == 0 and not self.pending_sell:

@@ -59,6 +59,7 @@ from ibkr_app_support import (
     handle_ledger_ib_position,
     ib_client_id_from_config,
     load_merged_config,
+    max_sell_shares,
     NbboCoalescer,
     NbboThrottle,
     log_session_transition,
@@ -776,7 +777,7 @@ class Trader(IbkrBotApp):
             if self.open_symbol_buys > 0:
                 return
 
-            sell_qty = pos
+            sell_qty = max_sell_shares(self.ledger)
             if self.sell_order_id is not None and self.sell_order_qty is not None:
                 oid = self.sell_order_id
                 qty = self.sell_order_qty
@@ -814,7 +815,7 @@ class Trader(IbkrBotApp):
 
         # 0 < pos < max_pos: quote both add (room to max_pos) and exit (current position).
         buy_qty = max_pos - pos
-        sell_qty = pos
+        sell_qty = max_sell_shares(self.ledger)
 
         if self.buy_order_id is not None and self.buy_order_qty is not None:
             oid = self.buy_order_id

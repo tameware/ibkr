@@ -30,6 +30,7 @@ from ibkr_app_support import (
     idle_until_shutdown,
     load_merged_config,
     log_session_transition,
+    max_sell_shares,
     NbboThrottle,
     open_order_belongs_to_client,
     order_status_clients_match,
@@ -72,6 +73,7 @@ class QuoteMgmtSnapshot:
     gross_shares_traded: int
     avg_cost: float
     buy_shares_filled: int
+    max_sell: int
     last_quote_eval: float
     last_nbbo_snap: Optional[Tuple[Optional[float], Optional[float], int, int]]
     quote_bid: Optional[float]
@@ -825,7 +827,7 @@ class MarketMaker(IbkrBotApp):
             return True
 
     def max_sellable_qty(self) -> int:
-        return max(0, self.position_size)
+        return max_sell_shares(self.ledger)
 
     def _market_invalid_reason_for_nbbo(
         self,
@@ -965,7 +967,7 @@ class MarketMaker(IbkrBotApp):
         if self.max_buy_shares_per_run is not None:
             room = max(0, self.max_buy_shares_per_run - buy_shares_filled)
             buy_qty = min(buy_qty, room)
-        sell_qty = max(0, position_size)
+        sell_qty = max_sell_shares(self.ledger)
         return buy_qty, sell_qty
 
     def desired_sizes(self):
@@ -1128,6 +1130,7 @@ class MarketMaker(IbkrBotApp):
                 gross_shares_traded=self.gross_shares_traded,
                 avg_cost=self.avg_cost,
                 buy_shares_filled=self.buy_shares_filled,
+                max_sell=max_sell_shares(self.ledger),
                 last_quote_eval=self.last_quote_eval,
                 last_nbbo_snap=self._nbbo_throttle.last_key,
                 quote_bid=self.quote.bid,
@@ -1170,8 +1173,8 @@ class MarketMaker(IbkrBotApp):
 
         buy_qty, sell_qty = self._desired_sizes_for(snap.position_size, snap.buy_shares_filled)
 
-        sell_qty = min(sell_qty, snap.position_size)
-        if snap.position_size <= 0:
+        sell_qty = min(sell_qty, snap.max_sell)
+        if snap.max_sell <= 0:
             sell_qty = 0
 
         if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:

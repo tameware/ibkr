@@ -256,6 +256,9 @@ class PositionLedger:
                 elif qty == 0:
                     avg = 0.0
         else:
+            shares = min(shares, max(0, qty))
+            if shares <= 0:
+                return False
             qty -= shares
             if qty <= 0:
                 avg = 0.0 if qty == 0 else price
@@ -289,6 +292,49 @@ class PositionLedger:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(payload)
         tmp.replace(self._path)
+
+    def max_sell_shares(self) -> int:
+        """Shares this strategy may sell without exceeding ledger or account long size."""
+        return max_sell_shares(self)
+
+
+def max_sell_shares(ledger: PositionLedger) -> int:
+    """Cap sell size so the account cannot go short on this symbol.
+
+    Uses ``min(ledger qty, IB position snapshot)`` when a snapshot is available.
+    """
+    own = max(0, int(ledger.qty))
+    ib = ledger.ib_snapshot_qty
+    if ib is None:
+        return own
+    return min(own, max(0, int(ib)))
+
+
+def clamp_sell_quantity(ledger: PositionLedger, desired_qty: int) -> int:
+    """Return ``desired_qty`` capped to :func:`max_sell_shares`."""
+    return min(max(0, int(desired_qty)), max_sell_shares(ledger))
+
+
+def seed_ledger_position(
+    ledger: PositionLedger,
+    target: Any,
+    qty: int,
+    *,
+    qty_attr: str = "position_size",
+    avg_attr: Optional[str] = "avg_cost",
+    avg_cost: float = 0.0,
+    account: str = "TEST",
+    clamp_qty_nonneg: bool = False,
+) -> None:
+    """Align ledger, IB snapshot, and in-memory position for tests or manual resets."""
+    q = max(0, int(qty)) if clamp_qty_nonneg else int(qty)
+    ac = float(avg_cost) if q > 0 else 0.0
+    ledger._data["qty"] = q
+    ledger._data["avg_cost"] = ac
+    ledger.record_ib_snapshot(account, q, ac)
+    setattr(target, qty_attr, q)
+    if avg_attr is not None and hasattr(target, avg_attr):
+        setattr(target, avg_attr, ac)
 
 
 def _normalize_fill_side(side: str) -> Optional[str]:

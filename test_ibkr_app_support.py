@@ -23,6 +23,7 @@ from ibkr_app_support import (
     disconnect_cleanly,
     execution_belongs_to_client,
     handle_ledger_execution,
+    max_sell_shares,
     ib_client_id_from_config,
     ib_error_is_status_info,
     idle_until_shutdown,
@@ -104,6 +105,24 @@ class TestPositionLedger(unittest.TestCase):
         execution.price = 10.0
         execution.execId = "bad"
         self.assertFalse(handle_ledger_execution(ledger, execution, 7))
+        self.assertEqual(ledger.qty, 0)
+
+    def test_max_sell_shares_zero_ledger_with_account_long(self):
+        ledger = PositionLedger.open("peg_primary", self.config)
+        ledger.record_ib_snapshot("U123", 500, 100.0)
+        self.assertEqual(ledger.qty, 0)
+        self.assertEqual(max_sell_shares(ledger), 0)
+
+    def test_max_sell_shares_capped_by_ib_snapshot(self):
+        ledger = PositionLedger.open("peg_primary", self.config)
+        ledger.apply_fill("BUY", 100, 50.0)
+        ledger.record_ib_snapshot("U123", 30, 50.0)
+        self.assertEqual(max_sell_shares(ledger), 30)
+
+    def test_apply_fill_sell_cannot_drive_ledger_negative(self):
+        ledger = PositionLedger.open("peg_mid", self.config)
+        ledger.apply_fill("BUY", 10, 50.0)
+        ledger.apply_fill("SELL", 25, 51.0)
         self.assertEqual(ledger.qty, 0)
 
 

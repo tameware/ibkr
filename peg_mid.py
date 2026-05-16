@@ -25,6 +25,7 @@ from ibkr_app_support import (
     ib_client_id_from_config,
     load_merged_config,
     log_startup_timezones,
+    max_sell_shares,
     make_stock_contract,
     regular_session_open,
     safe_cancel_order,
@@ -371,7 +372,7 @@ class Trader(EWrapper, EClient):
                 safe_cancel_order(self,self.buy_order_id)
                 self.pending_buy = False
 
-        sell_qty = pos
+        sell_qty = max_sell_shares(self.ledger)
         if sell_qty > 0:
             if self.open_symbol_sells == 0 and not self.pending_sell:
                 oid = self.nextOrderId
