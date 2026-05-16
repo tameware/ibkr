@@ -18,6 +18,7 @@ install_ibapi_mocks(ticktype=False, order_cancel=True)
 from ibkr_app_support import (
     NbboThrottle,
     cli_to_config,
+    deep_merge_config_sections,
     flatten_config_sections,
     load_config_file,
     make_stock_contract,
@@ -100,6 +101,61 @@ class TestFlattenConfig(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             flatten_config_sections(data)
         self.assertIn("port", str(ctx.exception))
+
+    def test_deep_merge_config_sections(self):
+        base = {
+            "ibkr": {"host": "127.0.0.1", "port": 7496},
+            "strategy": {"loop_seconds": 10, "max_pos": 100},
+        }
+        override = {
+            "ibkr": {"client_id": 4},
+            "strategy": {"mid_delta": 0.01},
+            "logging": {"log_file": "peg_best.log"},
+        }
+        merged = deep_merge_config_sections(base, override)
+        self.assertEqual(merged["ibkr"]["host"], "127.0.0.1")
+        self.assertEqual(merged["ibkr"]["client_id"], 4)
+        self.assertEqual(merged["strategy"]["loop_seconds"], 10)
+        self.assertEqual(merged["strategy"]["mid_delta"], 0.01)
+        self.assertEqual(merged["logging"]["log_file"], "peg_best.log")
+
+    def test_load_config_file_merges_base_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "base.json").write_text(
+                json.dumps(
+                    {
+                        "ibkr": {"host": "127.0.0.1", "port": 7496},
+                        "strategy": {"max_pos": 100},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "bot.json").write_text(
+                json.dumps({"ibkr": {"client_id": 9}, "strategy": {"loop_seconds": 5}}),
+                encoding="utf-8",
+            )
+            out = load_config_file(str(root / "bot.json"))
+        self.assertEqual(out["host"], "127.0.0.1")
+        self.assertEqual(out["port"], 7496)
+        self.assertEqual(out["client_id"], 9)
+        self.assertEqual(out["max_pos"], 100)
+        self.assertEqual(out["loop_seconds"], 5)
+
+    def test_load_config_file_skips_base_merge_when_loading_base(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "base.json"
+            path.write_text(json.dumps({"ibkr": {"host": "10.0.0.1"}}), encoding="utf-8")
+            out = load_config_file(str(path))
+        self.assertEqual(out["host"], "10.0.0.1")
+
+    def test_repo_peg_best_config_includes_base_defaults(self):
+        out = load_config_file("config/peg_best.json")
+        self.assertEqual(out["host"], "127.0.0.1")
+        self.assertEqual(out["client_id"], 4)
+        self.assertEqual(out["exchange"], "IBKRATS")
+        self.assertEqual(out["log_file"], "peg_best.log")
+        self.assertEqual(out["ignored_error_codes"], [2103, 2104, 2106, 2108, 2158])
 
 
 class TestHelpers(unittest.TestCase):

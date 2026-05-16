@@ -1,29 +1,15 @@
 {
   "ibkr": {
-    "host": "127.0.0.1",
-    "port": 7496,
-    "//": "Paper trading port = 7497. REL pegging is not available in paper trading for some products — use live paper carefully or check IB order-type docs.",
+    "//": "REL pegging is not available in paper trading for some products — use live paper carefully or check IB order-type docs.",
     "client_id": 1
   },
 
   "contract": {
-    "symbol": "Your stock's ticker here",
-    "sec_type": "STK",
-    "currency": "USD",
-    "exchange": "SMART",
-    "primary_exchange": "Your stock's exchange here"
+    "exchange": "SMART"
   },
 
   "strategy": {
-    "max_pos": 100,
-    "loop_seconds": 10,
-    "market_timezone": "America/New_York",
-    "market_open_hour": 9,
-    "market_open_minute": 30,
-    "market_close_hour": 16,
-    "price_round_digits": 2,
     "mid_delta": 0.01,
-    "tif": "DAY",
     "offset_pct": 0.4,
     "//": "Any offset_pct above 0.5 should have no effect",
     "min_order_size": 10,
@@ -33,18 +19,7 @@
     "//": "Commit pending NBBO after 4s quiet ticks, or at least every 10s if ticks never pause"
   },
 
-  "risk": {
-    "ignored_error_codes": [2103, 2104, 2106, 2108, 2158],
-    "ignore_error_substrings": ["data farm connection is broken"],
-    "cancel_open_orders_on_shutdown": false
-  },
-
   "logging": {
-    "log_dir": "logs",
-    "log_file": "peg_primary.log",
-    "level": "INFO",
-    "max_bytes": 5000000,
-    "backup_count": 10,
-    "console": true
+    "log_file": "peg_primary.log"
   }
 }

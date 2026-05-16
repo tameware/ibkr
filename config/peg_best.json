@@ -1,22 +1,13 @@
 {
   "ibkr": {
-    "host": "127.0.0.1",
-    "port": 7496,
-    "//": "Paper trading port = 7497",
     "client_id": 4
   },
 
   "contract": {
-    "symbol": "Your stock's ticker here",
-    "sec_type": "STK",
-    "currency": "USD",
-    "exchange": "IBKRATS",
-    "primary_exchange": "Your stock's exchange here"
+    "exchange": "IBKRATS"
   },
 
   "strategy": {
-    "max_pos": 100,
-    "loop_seconds": 10,
     "mid_delta": 0.01,
     "buy_limit_multiplier": 1.02,
     "sell_limit_multiplier": 0.98,
@@ -24,26 +15,10 @@
     "mid_offset_whole": -0.01,
     "mid_offset_half": -0.005,
     "post_to_ats_seconds": 1,
-    "market_timezone": "America/New_York",
-    "market_open_hour": 9,
-    "market_open_minute": 30,
-    "market_close_hour": 16,
-    "price_round_digits": 2,
-    "last_trade_min_size": 100.0,
-    "tif": "DAY"
-  },
-
-  "risk": {
-    "ignored_error_codes": [2103, 2104, 2106, 2108, 2158],
-    "ignore_error_substrings": ["data farm connection is broken"]
+    "last_trade_min_size": 100.0
   },
 
   "logging": {
-    "log_dir": "logs",
-    "log_file": "peg_best.log",
-    "level": "INFO",
-    "max_bytes": 5000000,
-    "backup_count": 10,
-    "console": true
+    "log_file": "peg_best.log"
   }
 }

@@ -1,18 +1,11 @@
 {
   "ibkr": {
-    "host": "127.0.0.1",
-    "port": 7496,
-    "//": "Paper trading port = 7497",
     "client_id": 2,
     "account": ""
   },
 
   "contract": {
-    "symbol": "Your stock's ticker here",
-    "sec_type": "STK",
-    "exchange": "SMART",
-    "currency": "USD",
-    "primary_exchange": "Your stock's exchange here"
+    "exchange": "SMART"
   },
 
   "strategy": {
@@ -28,26 +21,16 @@
     "quote_refresh_seconds": 3.0,
     "max_market_stale_seconds": 1200,
     "min_quote_spread_cents": 50,
-    "mid_delta": 0.01,
-    "market_timezone": "America/New_York",
-    "market_open_hour": 9,
-    "market_open_minute": 30,
-    "market_close_hour": 16
+    "mid_delta": 0.01
   },
 
   "risk": {
     "cancel_on_invalid_market": true,
-    "cancel_open_orders_on_shutdown": false,
     "require_live_data": false
   },
 
   "logging": {
-    "log_dir": "logs",
-    "log_file": "market_maker.log",
-    "level": "INFO",
-    "max_bytes": 5000000,
-    "backup_count": 10,
-    "console": true
+    "log_file": "market_maker.log"
   },
 
   "diagnostics": {

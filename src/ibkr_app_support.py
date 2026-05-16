@@ -47,6 +47,40 @@ def _config_json_object_pairs_hook(
     return out
 
 
+CONFIG_DIR_NAME = "config"
+CONFIG_BASE_FILENAME = "base.json"
+
+
+def config_base_path(for_config_path: str | Path) -> Path:
+    """``config/base.json`` adjacent to the bot config file's directory."""
+    return Path(for_config_path).resolve().parent / CONFIG_BASE_FILENAME
+
+
+def _read_config_json(path: Path) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f, object_pairs_hook=_config_json_object_pairs_hook)
+    if not isinstance(data, dict):
+        raise ValueError("Config file must contain a JSON object at the top level")
+    return data
+
+
+def deep_merge_config_sections(
+    base: Dict[str, Any],
+    override: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Recursively merge nested config sections; ``override`` wins on conflicts."""
+    merged: Dict[str, Any] = dict(base)
+    for key, override_val in override.items():
+        if is_ignored_config_key(str(key)):
+            continue
+        base_val = merged.get(key)
+        if isinstance(base_val, dict) and isinstance(override_val, dict):
+            merged[key] = deep_merge_config_sections(base_val, override_val)
+        else:
+            merged[key] = override_val
+    return merged
+
+
 def flatten_config_sections(data: Dict[str, Any]) -> Dict[str, Any]:
     """Expand one level of nested dicts into flat keys.
 
@@ -74,11 +108,17 @@ def flatten_config_sections(data: Dict[str, Any]) -> Dict[str, Any]:
     return merged
 
 
-def load_config_file(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f, object_pairs_hook=_config_json_object_pairs_hook)
-    if not isinstance(data, dict):
-        raise ValueError("Config file must contain a JSON object at the top level")
+def load_config_file(path: str, *, merge_base: bool = True) -> Dict[str, Any]:
+    """Load a JSON config file, optionally merged with ``config/base.json`` first."""
+    config_path = Path(path)
+    data = _read_config_json(config_path)
+
+    if merge_base and config_path.name != CONFIG_BASE_FILENAME:
+        base_path = config_base_path(config_path)
+        if base_path.is_file():
+            base_data = _read_config_json(base_path)
+            data = deep_merge_config_sections(base_data, data)
+
     return flatten_config_sections(data)
 
 

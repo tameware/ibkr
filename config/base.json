@@ -1,0 +1,39 @@
+{
+  "ibkr": {
+    "host": "127.0.0.1",
+    "port": 7496,
+    "//": "Paper trading port = 7497"
+  },
+
+  "contract": {
+    "symbol": "Your stock's ticker here",
+    "sec_type": "STK",
+    "currency": "USD",
+    "primary_exchange": "Your stock's exchange here"
+  },
+
+  "strategy": {
+    "market_timezone": "America/New_York",
+    "market_open_hour": 9,
+    "market_open_minute": 30,
+    "market_close_hour": 16,
+    "price_round_digits": 2,
+    "loop_seconds": 10,
+    "max_pos": 100,
+    "tif": "DAY"
+  },
+
+  "risk": {
+    "ignored_error_codes": [2103, 2104, 2106, 2108, 2158],
+    "ignore_error_substrings": ["data farm connection is broken"],
+    "cancel_open_orders_on_shutdown": false
+  },
+
+  "logging": {
+    "log_dir": "logs",
+    "level": "INFO",
+    "max_bytes": 5000000,
+    "backup_count": 10,
+    "console": true
+  }
+}
