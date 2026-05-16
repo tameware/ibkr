@@ -20,14 +20,17 @@ from ibkr_app_support import (
     add_config_argument,
     add_ib_connection_arguments,
     add_logging_arguments,
+    add_session_hours_arguments,
     cfg_bool as _cfg_bool,
     execution_belongs_to_client,
     flatten_config_sections,
     idle_until_shutdown,
     load_merged_config,
+    log_session_transition,
     NbboThrottle,
     open_order_belongs_to_client,
     order_status_clients_match,
+    regular_session_open,
     run_bot,
     safe_cancel_order,
 )
@@ -202,6 +205,7 @@ class MarketMaker(IbkrBotApp):
         self.target_conid: Optional[int] = None
         self.open_orders_snapshot_done = False
         self.adoption_phase = False
+        self._prev_us_regular_hours: bool | None = None
 
         self.logger.info(
             "Bot initialized for %s on %s/%s",
@@ -816,6 +820,22 @@ class MarketMaker(IbkrBotApp):
             self.quote.last_update_ts,
         )
 
+    def us_regular_hours(self) -> bool:
+        return regular_session_open(self.config)
+
+    def _poll_session_hours(self) -> None:
+        """Log session transitions and cancel quotes when the regular session closes."""
+        in_hours = self.us_regular_hours()
+        log_session_transition(
+            self.logger,
+            self.config,
+            prev_in_hours=self._prev_us_regular_hours,
+            in_hours=in_hours,
+        )
+        if not in_hours and self._prev_us_regular_hours is not False:
+            self._cancel_working_quotes_flat_inventory()
+        self._prev_us_regular_hours = in_hours
+
     def _cancel_working_quotes_flat_inventory(self) -> None:
         """Cancel working buy; cancel sell only when flat or short (no inventory to lift)."""
         self.place_or_replace_buy(0, None)
@@ -1175,6 +1195,9 @@ class MarketMaker(IbkrBotApp):
             )
             return
 
+        if not self.us_regular_hours():
+            return
+
         inv_reason = self._market_invalid_reason_for_nbbo(
             snap.quote_bid, snap.quote_ask, snap.quote_luts
         )
@@ -1263,6 +1286,7 @@ class MarketMaker(IbkrBotApp):
     def watchdog_loop(self):
         while not self.shutdown_flag:
             time.sleep(1.0)
+            self._poll_session_hours()
             now = time.time()
 
             with self.lock:
@@ -1358,6 +1382,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min_quote_spread_cents", type=float)
     parser.add_argument("--min_tick", type=float)
 
+    add_session_hours_arguments(parser)
     add_logging_arguments(parser)
     return parser
 
@@ -1366,7 +1391,22 @@ def main():
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    config = load_merged_config(args)
+    config = load_merged_config(
+        args,
+        required=[
+            "host",
+            "port",
+            "symbol",
+            "sec_type",
+            "currency",
+            "exchange",
+            "primary_exchange",
+            "market_timezone",
+            "market_open_hour",
+            "market_open_minute",
+            "market_close_hour",
+        ],
+    )
     app = MarketMaker(config)
 
     sys.exit(

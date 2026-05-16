@@ -27,7 +27,11 @@
     "target_roundtrip_capture": 0.3,
     "quote_refresh_seconds": 3.0,
     "max_market_stale_seconds": 1200,
-    "min_quote_spread_cents": 50
+    "min_quote_spread_cents": 50,
+    "market_timezone": "America/New_York",
+    "market_open_hour": 9,
+    "market_open_minute": 30,
+    "market_close_hour": 16
   },
 
   "risk": {

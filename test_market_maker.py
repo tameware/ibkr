@@ -2,12 +2,14 @@
 
 # Coded by Cursor
 
+import datetime
 import json
 import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
+from zoneinfo import ZoneInfo
 
 import sys
 
@@ -68,12 +70,21 @@ from ibkr_app_support import (
     make_stock_contract,
     merge_config,
 )
+from ibkr_app_support import regular_session_open  # noqa: E402
+
 from market_maker import (  # noqa: E402
     LiveOrder,
     MarketMaker,
     QuoteState,
     build_arg_parser,
 )
+
+_SESSION_CFG = {
+    "market_timezone": "America/New_York",
+    "market_open_hour": 9,
+    "market_open_minute": 30,
+    "market_close_hour": 16,
+}
 
 
 class TestFlattenConfig(unittest.TestCase):
@@ -177,6 +188,7 @@ class TestNbboTickImprove(unittest.TestCase):
                 "console": False,
                 "min_quote_spread_cents": 50.0,
                 "min_tick": 0.01,
+                **_SESSION_CFG,
             }
         )
 
@@ -308,8 +320,14 @@ class TestMarketMakerCore(unittest.TestCase):
             "target_roundtrip_capture": 0.30,
             "quote_refresh_seconds": 3.0,
             "max_market_stale_seconds": 60.0,
+            **_SESSION_CFG,
         }
         self.mm = MarketMaker(self.base_config)
+        self._session_open_patcher = patch(
+            "market_maker.regular_session_open", return_value=True
+        )
+        self._session_open_patcher.start()
+        self.addCleanup(self._session_open_patcher.stop)
         self.mm.cancelOrder = Mock()
         self.mm.placeOrder = Mock()
         self.mm.reqMarketDataType = Mock()
@@ -375,6 +393,60 @@ class TestMarketMakerCore(unittest.TestCase):
             reason = self.mm.market_invalid_reason()
         self.assertIsNotNone(reason)
         self.assertIn("spread too small", reason or "")
+
+    def test_us_regular_hours_during_session(self):
+        ny = ZoneInfo("America/New_York")
+        during = datetime.datetime(2026, 5, 11, 10, 30, 0, tzinfo=ny)
+        self.assertTrue(regular_session_open(self.base_config, now=during))
+        with patch("market_maker.regular_session_open", return_value=True) as mock_open:
+            self.assertTrue(self.mm.us_regular_hours())
+        mock_open.assert_called_once_with(self.mm.config)
+
+    def test_us_regular_hours_outside_session(self):
+        with patch("market_maker.regular_session_open", return_value=False) as mock_open:
+            self.assertFalse(self.mm.us_regular_hours())
+        mock_open.assert_called_once_with(self.mm.config)
+
+    def test_maybe_manage_quotes_skips_outside_regular_session(self):
+        ts = 3_000_000.0
+        self.mm.connected_flag = True
+        self.mm.shutdown_flag = False
+        self.mm.open_orders_snapshot_done = True
+        self.mm.quote.bid = 50.0
+        self.mm.quote.ask = 51.0
+        self.mm.quote.bid_size = 100
+        self.mm.quote.ask_size = 100
+        self.mm.quote.last_update_ts = ts
+        self.mm.place_or_replace_buy = Mock()
+        self.mm.place_or_replace_sell = Mock()
+
+        with patch("market_maker.time.time", return_value=ts), patch(
+            "market_maker.regular_session_open", return_value=False
+        ):
+            self.mm.maybe_manage_quotes(force=True)
+
+        self.mm.place_or_replace_buy.assert_not_called()
+        self.mm.place_or_replace_sell.assert_not_called()
+
+    def test_poll_session_hours_cancels_when_session_closes(self):
+        self.mm._prev_us_regular_hours = True
+        self.mm.buy_order = LiveOrder(
+            order_id=1, side="BUY", price=50.0, qty=100, remaining=100
+        )
+        with patch("market_maker.regular_session_open", return_value=False), patch.object(
+            self.mm, "_cancel_working_quotes_flat_inventory"
+        ) as mock_cancel, patch("market_maker.log_session_transition"):
+            self.mm._poll_session_hours()
+        mock_cancel.assert_called_once()
+        self.assertFalse(self.mm._prev_us_regular_hours)
+
+    def test_poll_session_hours_does_not_cancel_while_still_closed(self):
+        self.mm._prev_us_regular_hours = False
+        with patch("market_maker.regular_session_open", return_value=False), patch.object(
+            self.mm, "_cancel_working_quotes_flat_inventory"
+        ) as mock_cancel, patch("market_maker.log_session_transition"):
+            self.mm._poll_session_hours()
+        mock_cancel.assert_not_called()
 
     def test_compute_desired_quotes_flat_position(self):
         self.mm.quote.bid = 100.0
