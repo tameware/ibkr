@@ -838,7 +838,7 @@ class TestArgParser(unittest.TestCase):
     def test_build_arg_parser_defaults(self):
         parser = build_arg_parser()
         args = parser.parse_args([])
-        self.assertTrue(str(args.config).endswith("market_maker.json"))
+        self.assertEqual(str(args.config), str(Path("config") / "market_maker.json"))
 
     def test_parse_overrides(self):
         parser = build_arg_parser()

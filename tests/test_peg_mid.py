@@ -1048,7 +1048,7 @@ class TestArgParser(unittest.TestCase):
         """Test default config path"""
         parser = build_arg_parser()
         args = parser.parse_args([])
-        self.assertTrue(args.config.endswith('peg_mid.json'))
+        self.assertEqual(args.config, str(Path("config") / "peg_mid.json"))
     
     def test_peg_mid_offsets_are_optional_in_parser(self):
         """Test that peg_mid offsets are optional in command line"""

@@ -975,7 +975,7 @@ class TestBuildArgParser(unittest.TestCase):
     def test_defaults(self):
         p = build_arg_parser()
         args = p.parse_args([])
-        self.assertTrue(str(args.config).endswith("peg_primary.json"))
+        self.assertEqual(str(args.config), str(Path("config") / "peg_primary.json"))
 
 
 class TestStartupOpenOrders(unittest.TestCase):

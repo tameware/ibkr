@@ -417,13 +417,13 @@ class TestLoadMergedConfig(unittest.TestCase):
 class TestArgparseHelpers(unittest.TestCase):
     def test_default_config_path(self):
         p = Path(tempfile.gettempdir()) / "bot_script.py"
-        self.assertTrue(default_config_path(p).endswith("bot_script.json"))
+        self.assertEqual(default_config_path(p), str(Path("config") / "bot_script.json"))
 
     def test_add_config_argument_default(self):
         parser = argparse.ArgumentParser()
         add_config_argument(parser, "/foo/peg_primary.py")
         args = parser.parse_args([])
-        self.assertEqual(args.config, "/foo/peg_primary.json")
+        self.assertEqual(args.config, str(Path("config") / "peg_primary.json"))
 
     def test_add_ib_connection_arguments(self):
         parser = argparse.ArgumentParser()

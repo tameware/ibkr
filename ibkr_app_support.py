@@ -575,8 +575,9 @@ def handle_ledger_ib_position(
 
 
 def default_config_path(script_file: str | Path) -> str:
-    """Default JSON config path beside a bot script (``script.py`` → ``script.json``)."""
-    return str(Path(script_file).with_suffix(".json"))
+    """Default JSON config path under ``config/`` (``peg_primary.py`` → ``config/peg_primary.json``)."""
+    name = Path(script_file).with_suffix(".json").name
+    return str(Path("config") / name)
 
 
 def add_config_argument(
@@ -586,7 +587,7 @@ def add_config_argument(
     parser.add_argument(
         "--config",
         default=default_config_path(script_file),
-        help="Path to JSON config file (default: script name with .json suffix)",
+        help="Path to JSON config file (default: config/<script>.json)",
     )
 
 

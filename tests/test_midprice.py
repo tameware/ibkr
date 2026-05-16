@@ -987,7 +987,7 @@ class TestArgParser(unittest.TestCase):
         """Test default config path"""
         parser = build_arg_parser()
         args = parser.parse_args([])
-        self.assertTrue(args.config.endswith('midprice.json'))
+        self.assertEqual(args.config, str(Path("config") / "midprice.json"))
 
 
 if __name__ == '__main__':
