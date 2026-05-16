@@ -78,7 +78,7 @@ class Trader(EWrapper, EClient):
         self.last_resync_request_ts = 0.0
         self.resync_debounce_seconds = float(self.config.get("resync_debounce_seconds", 0.35))
 
-        self.client_id = ib_client_id_from_config(config, default=1)
+        self.client_id = ib_client_id_from_config(config, default=5)
         self.ledger = PositionLedger.open("midprice", config, client_id=self.client_id)
         sync_attrs_from_ledger(self.ledger, self, qty_attr="position_size", avg_attr=None)
 

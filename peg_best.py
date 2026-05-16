@@ -75,7 +75,7 @@ class Trader(EWrapper, EClient):
         self.pending_buy = False
         self.pending_sell = False
 
-        self.client_id = ib_client_id_from_config(config, default=1)
+        self.client_id = ib_client_id_from_config(config, default=4)
         self.ledger = PositionLedger.open(
             "peg_best", config, client_id=self.client_id
         )

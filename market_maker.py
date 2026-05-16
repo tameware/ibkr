@@ -27,6 +27,7 @@ from ibkr_app_support import (
     execution_fill_tuple,
     flatten_config_sections,
     handle_ledger_ib_position,
+    ib_client_id_from_config,
     idle_until_shutdown,
     clamp_buy_to_avoid_self_trade,
     clamp_quote_prices_to_avoid_self_trade,
@@ -116,7 +117,7 @@ class MarketMaker(IbkrBotApp):
 
         self.host = str(config.get("host", "127.0.0.1"))
         self.port = int(config.get("port", 7496))
-        self.client_id = int(config.get("client_id", 901))
+        self.client_id = ib_client_id_from_config(config, default=2)
         raw_acct = config.get("account", "") or ""
         self.account_filter = str(raw_acct).strip() or None
 
