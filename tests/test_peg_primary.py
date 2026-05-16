@@ -1,4 +1,4 @@
-# Usage: python -m unittest test_peg_primary.py -v
+# Usage: python -m unittest discover -s tests -t . -v
 
 import datetime
 import json

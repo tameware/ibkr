@@ -1,4 +1,4 @@
-# Usage: python -m unittest test_market_maker.py -v
+# Usage: python -m unittest discover -s tests -t . -v
 
 # Coded by Cursor
 

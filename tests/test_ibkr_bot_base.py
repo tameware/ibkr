@@ -1,4 +1,4 @@
-# Usage: python -m unittest test_ibkr_bot_base.py -v
+# Usage: python -m unittest discover -s tests -t . -v
 
 import sys
 import unittest

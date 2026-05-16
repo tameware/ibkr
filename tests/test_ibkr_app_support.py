@@ -1,4 +1,4 @@
-# Usage: python -m unittest test_ibkr_app_support.py -v
+# Usage: python -m unittest discover -s tests -t . -v
 
 import datetime
 import unittest

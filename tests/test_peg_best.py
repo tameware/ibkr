@@ -1,4 +1,4 @@
-# Usage: python -m unittest test_peg_best.py -v
+# Usage: python -m unittest discover -s tests -t . -v
 
 # Coded by DeepSeek
 
