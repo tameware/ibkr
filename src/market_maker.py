@@ -26,7 +26,9 @@ from ibkr_app_support import (
     execution_belongs_to_client,
     execution_fill_tuple,
     flatten_config_sections,
+    has_valid_nbbo,
     handle_ledger_ib_position,
+    is_valid_quote_pair,
     ib_client_id_from_config,
     idle_until_shutdown,
     clamp_buy_to_avoid_self_trade,
@@ -843,12 +845,17 @@ class MarketMaker(IbkrBotApp):
             return "missing bid"
         if ask is None:
             return "missing ask"
-        if bid <= 0:
-            return f"nonpositive bid {bid}"
-        if ask <= 0:
-            return f"nonpositive ask {ask}"
-        if bid >= ask:
-            return f"crossed_or_locked bid={bid:.2f} ask={ask:.2f}"
+        if not has_valid_nbbo(bid, ask):
+            try:
+                b = float(bid)
+                a = float(ask)
+            except (TypeError, ValueError):
+                return "invalid nbbo"
+            if b <= 0:
+                return f"nonpositive bid {bid}"
+            if a <= 0:
+                return f"nonpositive ask {ask}"
+            return f"crossed_or_locked bid={b:.2f} ask={a:.2f}"
 
         age = time.time() - last_update_ts
         if age > self.max_market_stale_seconds:
@@ -908,11 +915,7 @@ class MarketMaker(IbkrBotApp):
 
     @staticmethod
     def _quotes_pair_is_valid(buy_px: Optional[float], sell_px: Optional[float]) -> bool:
-        return (
-            buy_px is not None
-            and sell_px is not None
-            and buy_px < sell_px
-        )
+        return is_valid_quote_pair(buy_px, sell_px)
 
     def _abort_quotes_on_invalid_pair(
         self,

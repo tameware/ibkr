@@ -63,6 +63,10 @@ from ibkr_app_support import (
     load_merged_config,
     max_sell_shares,
     NbboCoalescer,
+    has_valid_nbbo,
+    nbbo_coalesce_intervals_from_config,
+    nbbo_mid_rounded,
+    plan_working_order_reconcile,
     self_trade_limits_from_nbbo,
     NbboThrottle,
     log_session_transition,
@@ -131,14 +135,8 @@ class Trader(IbkrBotApp):
         self._ask = None
         self._pending_bid: float | None = None
         self._pending_ask: float | None = None
-        self.nbbo_coalesce_seconds = float(
-            self.config.get(
-                "nbbo_coalesce_seconds",
-                self.config.get("resync_debounce_seconds", 0.35),
-            )
-        )
-        self.nbbo_coalesce_max_seconds = float(
-            self.config.get("nbbo_coalesce_max_seconds", 1.0)
+        self.nbbo_coalesce_seconds, self.nbbo_coalesce_max_seconds = (
+            nbbo_coalesce_intervals_from_config(self.config)
         )
 
         self.remaining_by_order: Dict[int, Any] = {}
@@ -496,19 +494,11 @@ class Trader(IbkrBotApp):
         return regular_session_open(self.config)
 
     def _has_valid_nbbo(self) -> bool:
-        bid = self._bid
-        ask = self._ask
-        return (
-            bid is not None
-            and ask is not None
-            and float(bid) > 0
-            and float(ask) > 0
-            and float(ask) > float(bid)
-        )
+        return has_valid_nbbo(self._bid, self._ask)
 
     def _nbbo_mid_rounded(self) -> float:
         """NBBO mid rounded to :attr:`_digits`. Caller must ensure :meth:`_has_valid_nbbo`."""
-        return round((float(self._bid) + float(self._ask)) / 2.0, self._digits)
+        return nbbo_mid_rounded(float(self._bid), float(self._ask), self.config)
 
     def adjusted_rel_limits(self) -> tuple[float, float]:
         """REL buy/sell ``lmtPrice`` from NBBO mid and ``mid_delta``.
@@ -605,42 +595,37 @@ class Trader(IbkrBotApp):
 
         Returns ``True`` when any side-effect (modify/cancel) was issued.
         """
-        remaining_raw = self.remaining_by_order.get(oid)
-        if remaining_raw is None:
-            return False
-        try:
-            remaining_now = int(float(remaining_raw))
-        except (TypeError, ValueError):
-            return False
-
-        if remaining_now == desired_remaining:
+        plan = plan_working_order_reconcile(
+            self.remaining_by_order.get(oid),
+            current_total_qty=current_total_qty,
+            desired_remaining=desired_remaining,
+            min_order_size=self.min_order_size,
+        )
+        if plan.kind == "noop":
             return False
 
-        filled_now = max(0, current_total_qty - remaining_now)
-
-        if desired_remaining < self.min_order_size:
+        if plan.kind == "cancel":
             self.logger.info(
                 f"Cancelling {action} id={oid} (desired remaining "
                 f"{desired_remaining} < min_order_size {self.min_order_size}; "
-                f"filled={filled_now})"
+                f"filled={plan.filled_now})"
             )
             safe_cancel_order(self, oid)
             self._clear_order_state(action)
             return True
 
-        new_total = filled_now + desired_remaining
         self.logger.info(
-            f"Modifying {action} id={oid} totalQty {current_total_qty}->{new_total} "
-            f"(filled={filled_now} remaining {remaining_now}->{desired_remaining} "
+            f"Modifying {action} id={oid} totalQty {current_total_qty}->{plan.new_total_qty} "
+            f"(filled={plan.filled_now} remaining {plan.remaining_now}->{desired_remaining} "
             f"lmtPrice={limit_price})"
         )
-        order = self.build_rel_order(action, new_total, limit_price)
+        order = self.build_rel_order(action, plan.new_total_qty, limit_price)
         self.placeOrder(oid, self.contract, order)
         self._note_order_cache(oid, order)
         if action == "BUY":
-            self.buy_order_qty = new_total
+            self.buy_order_qty = plan.new_total_qty
         else:
-            self.sell_order_qty = new_total
+            self.sell_order_qty = plan.new_total_qty
         return True
 
     def _note_order_cache(self, oid: int, order: Order) -> None:

@@ -26,8 +26,12 @@ from ibkr_app_support import (
     clamp_quote_prices_to_avoid_self_trade,
     clamp_sell_to_avoid_self_trade,
     handle_ledger_execution,
+    has_valid_nbbo,
+    is_valid_quote_pair,
     max_sell_shares,
     mid_delta_for_config,
+    nbbo_coalesce_intervals_from_config,
+    plan_working_order_reconcile,
     self_trade_limits_from_nbbo,
     ib_client_id_from_config,
     ib_error_is_status_info,
@@ -88,6 +92,59 @@ class TestSelfTradeLimits(unittest.TestCase):
     def test_legacy_buy_sell_delta_fallback(self):
         cfg = {"price_round_digits": 2, "buy_delta": 0.05, "sell_delta": 0.03}
         self.assertEqual(mid_delta_for_config(cfg), 0.05)
+
+
+class TestQuotingPrimitives(unittest.TestCase):
+    def test_has_valid_nbbo(self):
+        self.assertTrue(has_valid_nbbo(50.0, 50.1))
+        self.assertFalse(has_valid_nbbo(None, 50.1))
+        self.assertFalse(has_valid_nbbo(50.0, 50.0))
+        self.assertFalse(has_valid_nbbo(50.1, 50.0))
+
+    def test_is_valid_quote_pair(self):
+        self.assertTrue(is_valid_quote_pair(49.99, 50.01))
+        self.assertFalse(is_valid_quote_pair(50.0, 50.0))
+        self.assertFalse(is_valid_quote_pair(None, 50.0))
+
+    def test_nbbo_coalesce_intervals_from_config(self):
+        cfg = {
+            "nbbo_coalesce_seconds": 4.0,
+            "nbbo_coalesce_max_seconds": 10.0,
+        }
+        self.assertEqual(nbbo_coalesce_intervals_from_config(cfg), (4.0, 10.0))
+        self.assertEqual(
+            nbbo_coalesce_intervals_from_config(
+                {"resync_debounce_seconds": 0.35}
+            ),
+            (0.35, 1.0),
+        )
+
+    def test_plan_working_order_reconcile(self):
+        noop = plan_working_order_reconcile(
+            70,
+            current_total_qty=100,
+            desired_remaining=70,
+            min_order_size=10,
+        )
+        self.assertEqual(noop.kind, "noop")
+
+        cancel = plan_working_order_reconcile(
+            20,
+            current_total_qty=100,
+            desired_remaining=5,
+            min_order_size=10,
+        )
+        self.assertEqual(cancel.kind, "cancel")
+        self.assertEqual(cancel.filled_now, 80)
+
+        amend = plan_working_order_reconcile(
+            50,
+            current_total_qty=80,
+            desired_remaining=20,
+            min_order_size=10,
+        )
+        self.assertEqual(amend.kind, "amend")
+        self.assertEqual(amend.new_total_qty, 50)
 
 
 class TestPositionLedger(unittest.TestCase):

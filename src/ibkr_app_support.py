@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+from dataclasses import dataclass
 import json
 import logging
 import logging.handlers
@@ -12,7 +13,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Literal, Optional, Sequence, Tuple, Union
 from zoneinfo import ZoneInfo
 
 DaemonThreadSpec = Union[Callable[[], None], Tuple[str, Callable[[], None]]]
@@ -462,6 +463,85 @@ def has_valid_nbbo(
     except (TypeError, ValueError):
         return False
     return b > 0 and a > b
+
+
+def is_valid_quote_pair(
+    buy_px: Optional[float],
+    sell_px: Optional[float],
+) -> bool:
+    """True when both prices exist and buy is strictly below sell."""
+    if buy_px is None or sell_px is None:
+        return False
+    try:
+        return float(buy_px) < float(sell_px)
+    except (TypeError, ValueError):
+        return False
+
+
+def nbbo_coalesce_intervals_from_config(
+    config: Dict[str, Any],
+    *,
+    quiet_default: float = 0.35,
+    max_default: float = 1.0,
+) -> Tuple[float, float]:
+    """Return ``(quiet_seconds, max_interval_seconds)`` for :class:`NbboCoalescer`."""
+    quiet = float(
+        config.get(
+            "nbbo_coalesce_seconds",
+            config.get("resync_debounce_seconds", quiet_default),
+        )
+    )
+    max_interval = float(config.get("nbbo_coalesce_max_seconds", max_default))
+    return quiet, max_interval
+
+
+@dataclass(frozen=True)
+class WorkingOrderReconcilePlan:
+    """How to reconcile a working order when ``remaining`` drifts from target."""
+
+    kind: Literal["noop", "cancel", "amend"]
+    remaining_now: int = 0
+    filled_now: int = 0
+    new_total_qty: int = 0
+
+
+def parse_order_remaining(remaining_raw: Any) -> Optional[int]:
+    if remaining_raw is None:
+        return None
+    try:
+        return int(float(remaining_raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def plan_working_order_reconcile(
+    remaining_raw: Any,
+    *,
+    current_total_qty: int,
+    desired_remaining: int,
+    min_order_size: int,
+) -> WorkingOrderReconcilePlan:
+    """Plan cancel/amend when IB ``remaining`` no longer matches desired working size."""
+    remaining_now = parse_order_remaining(remaining_raw)
+    if remaining_now is None:
+        return WorkingOrderReconcilePlan("noop")
+    if remaining_now == desired_remaining:
+        return WorkingOrderReconcilePlan("noop")
+
+    filled_now = max(0, int(current_total_qty) - remaining_now)
+    if desired_remaining < min_order_size:
+        return WorkingOrderReconcilePlan(
+            "cancel",
+            remaining_now=remaining_now,
+            filled_now=filled_now,
+        )
+
+    return WorkingOrderReconcilePlan(
+        "amend",
+        remaining_now=remaining_now,
+        filled_now=filled_now,
+        new_total_qty=filled_now + desired_remaining,
+    )
 
 
 def clamp_buy_to_avoid_self_trade(
