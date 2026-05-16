@@ -63,7 +63,7 @@ from ibkr_app_support import (
 )
 
 # Now import midprice
-from midprice import Trader, tprint, build_arg_parser
+from midprice import Trader, build_arg_parser
 
 
 class TestHelpers(unittest.TestCase):
@@ -160,7 +160,11 @@ class TestTrader(unittest.TestCase):
             "ignored_error_codes": [2104, 2106, 2158],
             "ignore_error_substrings": ["HMDS", "market data farm"],
         }
-        
+
+        self._log_patcher = patch("midprice.build_logger", return_value=MagicMock())
+        self._log_patcher.start()
+        self.addCleanup(self._log_patcher.stop)
+
         # Create trader instance
         self.trader = Trader(self.config)
         
@@ -402,19 +406,17 @@ class TestTrader(unittest.TestCase):
         self.trader._ask = 150.50
         self.trader.ref_price = 150.00
         
-        with patch('midprice.tprint'):
-            self.trader.tickPrice(3001, 2, 150.50, Mock())
-    
+        self.trader.tickPrice(3001, 2, 150.50, Mock())
+
     def test_tick_price_updates_with_new_mid(self):
         """Test that bid/ask updates ref_price when mid changes"""
         self.trader._bid = 150.00
         self.trader._ask = 152.00
         self.trader.ref_price = 150.00
-        
-        with patch('midprice.tprint') as mock_print:
-            self.trader.tickPrice(3001, 2, 152.00, Mock())
-            self.assertEqual(self.trader.ref_price, 151.00)
-            mock_print.assert_called_once()
+
+        self.trader.tickPrice(3001, 2, 152.00, Mock())
+        self.assertEqual(self.trader.ref_price, 151.00)
+        self.trader.logger.info.assert_called_once()
     
     def test_open_order_tracking(self):
         """Test tracking of open orders"""
@@ -507,9 +509,8 @@ class TestTrader(unittest.TestCase):
         bar.close = 145.50
         
         self.trader._bars = [bar]
-        with patch('midprice.tprint'):
-            self.trader.historicalDataEnd(1001, "", "")
-            self.assertEqual(self.trader.open_price, 145.50)
+        self.trader.historicalDataEnd(1001, "", "")
+        self.assertEqual(self.trader.open_price, 145.50)
     
     def test_historical_data_sets_ref_price(self):
         """Test that historical data sets ref_price if None"""
@@ -881,23 +882,21 @@ class TestTrader(unittest.TestCase):
     
     def test_error_filtering_ignores_codes(self):
         """Test that error codes in ignored list are suppressed"""
-        with patch('midprice.tprint') as mock_print:
-            self.trader.error(0, "", 2104, "Market data farm connection is OK", "")
-            mock_print.assert_not_called()
-    
+        self.trader.error(0, "", 2104, "Market data farm connection is OK", "")
+        self.trader.logger.warning.assert_not_called()
+        self.trader.logger.info.assert_not_called()
+
     def test_error_filtering_ignores_substrings(self):
         """Test that error messages with ignored substrings are suppressed"""
-        with patch('midprice.tprint') as mock_print:
-            self.trader.error(0, "", 10000, "Error: HMDS connection issue", "")
-            mock_print.assert_not_called()
-    
+        self.trader.error(0, "", 10000, "Error: HMDS connection issue", "")
+        self.trader.logger.warning.assert_not_called()
+        self.trader.logger.info.assert_not_called()
+
     def test_error_prints_non_ignored(self):
-        """Test that non-ignored errors are printed"""
-        with patch('midprice.tprint') as mock_print:
-            self.trader.error(0, "", 500, "Critical error", "")
-            mock_print.assert_called_once()
-            call_args = mock_print.call_args[0][0]
-            self.assertIn("Critical error", call_args)
+        """Test that non-ignored errors are logged"""
+        self.trader.error(0, "", 500, "Critical error", "")
+        self.trader.logger.warning.assert_called_once()
+        self.assertEqual(self.trader.logger.warning.call_args[0][4], "Critical error")
     
     def test_run_loop_disconnected(self):
         """Test run loop when disconnected"""

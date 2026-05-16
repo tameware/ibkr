@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import datetime
 import threading
 import time
 from decimal import Decimal
@@ -18,13 +17,15 @@ from ibkr_app_support import (
     PositionLedger,
     add_config_argument,
     add_ib_connection_arguments,
+    add_logging_arguments,
     add_session_hours_arguments,
-    format_ib_error_message,
+    build_logger,
     handle_ledger_execution,
     handle_ledger_ib_position,
     ib_client_id_from_config,
     clamp_quote_prices_to_avoid_self_trade,
     load_merged_config,
+    log_ib_error,
     log_startup_timezones,
     max_sell_shares,
     make_stock_contract,
@@ -39,15 +40,13 @@ LAST_TRADE_REQ_ID = 2001
 MKTDATA_REQ_ID = 3001
 
 
-def tprint(msg: str) -> None:
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"{now} {msg}")
-
-
 class Trader(EWrapper, EClient):
     def __init__(self, config: Dict[str, Any]):
         EClient.__init__(self, self)
         self.config = config
+        self.logger = build_logger(
+            config, logger_name="midprice", default_log_file="midprice.log"
+        )
 
         self.ready_for_trading = False
         self.nextOrderId = None
@@ -106,17 +105,17 @@ class Trader(EWrapper, EClient):
 
         if status in ("Filled", "Cancelled", "Inactive", "ApiCancelled"):
             if orderId == self.buy_order_id:
-                tprint(f"BUY {orderId} {status} @ {avgFillPrice}")
+                self.logger.info(f"BUY {orderId} {status} @ {avgFillPrice}")
                 self.pending_buy = False
                 self.buy_order_id = None
             if orderId == self.sell_order_id:
-                tprint(f"SELL {orderId} {status} @ {avgFillPrice}")
+                self.logger.info(f"SELL {orderId} {status} @ {avgFillPrice}")
                 self.pending_sell = False
                 self.sell_order_id = None
             self.remaining_by_order.pop(orderId, None)
             self.trigger_resync()
         elif status == "PartiallyFilled":
-            tprint(f"Order {orderId} partially filled: filled={filled} remaining={remaining} avgFillPrice={avgFillPrice}")
+            self.logger.info(f"Order {orderId} partially filled: filled={filled} remaining={remaining} avgFillPrice={avgFillPrice}")
             self.trigger_resync()
 
     def tickByTickAllLast(
@@ -139,7 +138,7 @@ class Trader(EWrapper, EClient):
         if float(size) >= float(self.config["last_trade_min_size"]):
             if self.ref_price != price:
                 self.ref_price = price
-                tprint(f"New ref_price from last trade: {price} size={size}")
+                self.logger.info(f"New ref_price from last trade: {price} size={size}")
 
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
         if reqId != MKTDATA_REQ_ID:
@@ -153,14 +152,14 @@ class Trader(EWrapper, EClient):
         if self._bid is not None and self._ask is not None and self._bid > 0 and self._ask > 0:
             mid = (self._bid + self._ask) / 2.0
             if mid != self.ref_price:
-                tprint(f"ref_price updated: bid={self._bid} ask={self._ask} mid={mid}")
+                self.logger.info(f"ref_price updated: bid={self._bid} ask={self._ask} mid={mid}")
                 self.ref_price = mid
 
     def nextValidId(self, orderId):
         GENERIC_TICKS = ""
         TICK_BY_TICK_TYPE = "Last"
 
-        tprint(f"nextValidId: {orderId}")
+        self.logger.info(f"nextValidId: {orderId}")
         self.nextOrderId = orderId
 
         self.request_positions_snapshot()
@@ -191,21 +190,14 @@ class Trader(EWrapper, EClient):
         self.maybe_sync_orders()
 
     def error(self, reqId, errorTime, errorCode, errorString, advancedOrderRejectJson=""):
-        if should_suppress_ib_error(
+        log_ib_error(
+            self.logger,
             self.config,
-            errorCode,
-            errorString,
+            req_id=reqId,
+            error_time=errorTime,
+            error_code=errorCode,
+            error_string=errorString,
             advanced_order_reject=advancedOrderRejectJson,
-        ):
-            return
-        tprint(
-            format_ib_error_message(
-                reqId,
-                errorTime,
-                errorCode,
-                errorString,
-                advancedOrderRejectJson,
-            )
         )
 
     def execDetails(self, reqId, contract, execution):
@@ -215,12 +207,12 @@ class Trader(EWrapper, EClient):
         ):
             return
         if handle_ledger_execution(
-            self.ledger, execution, self.client_id, logger=None
+            self.ledger, execution, self.client_id, logger=self.logger
         ):
             sync_attrs_from_ledger(
                 self.ledger, self, qty_attr="position_size", avg_attr=None
             )
-            tprint(
+            self.logger.info(
                 f"Ledger {self.ledger.path.name} qty={self.ledger.qty} "
                 f"after fill execId={getattr(execution, 'execId', '')}"
             )
@@ -228,16 +220,11 @@ class Trader(EWrapper, EClient):
     def position(self, account, contract, pos, avgCost):
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
             handle_ledger_ib_position(
-                self.ledger, account, int(pos), float(avgCost), logger=None
+                self.ledger, account, int(pos), float(avgCost), logger=self.logger
             )
             sync_attrs_from_ledger(
                 self.ledger, self, qty_attr="position_size", avg_attr=None
             )
-            if self.ledger.qty != int(pos):
-                tprint(
-                    f"Ledger {self.ledger.path.name} qty={self.ledger.qty} "
-                    f"(IB snapshot qty={int(pos)})"
-                )
 
     def positionEnd(self):
         self.position_snapshot_complete = True
@@ -245,7 +232,7 @@ class Trader(EWrapper, EClient):
         self.maybe_sync_orders()
 
     def request_today_open_or_prior_close(self):
-        tprint("Requesting daily bars for open/prior close")
+        self.logger.info("Requesting daily bars for open/prior close")
         self._bars = []
         self.reqHistoricalData(
             HIST_REQ_ID,
@@ -270,17 +257,17 @@ class Trader(EWrapper, EClient):
             return
 
         if not self._bars:
-            tprint("No historical bars returned; cannot set open_price")
+            self.logger.info("No historical bars returned; cannot set open_price")
             return
 
         last_bar = self._bars[-1]
 
         if last_bar.open and last_bar.open > 0:
             self.open_price = last_bar.open
-            tprint(f"Today's open price: {self.open_price}")
+            self.logger.info(f"Today's open price: {self.open_price}")
         else:
             self.open_price = last_bar.close
-            tprint(f"No valid open; using prior close: {self.open_price}")
+            self.logger.info(f"No valid open; using prior close: {self.open_price}")
 
         if self.ref_price is None:
             self.ref_price = self.open_price
@@ -356,11 +343,11 @@ class Trader(EWrapper, EClient):
                 self.buy_order_id = oid
                 self.pending_buy = True
                 order = self.make_midprice_order("BUY", buy_qty, buy_limit)
-                tprint(f"Placing MIDPRICE BUY {buy_qty} cap={buy_limit}, id={oid}")
+                self.logger.info(f"Placing MIDPRICE BUY {buy_qty} cap={buy_limit}, id={oid}")
                 self.placeOrder(oid, self.contract, order)
         else:
             if self.buy_order_id is not None:
-                tprint(f"Cancelling BUY order id={self.buy_order_id} because position is at max_pos")
+                self.logger.info(f"Cancelling BUY order id={self.buy_order_id} because position is at max_pos")
                 safe_cancel_order(self,self.buy_order_id)
                 self.pending_buy = False
 
@@ -372,18 +359,18 @@ class Trader(EWrapper, EClient):
                 self.sell_order_id = oid
                 self.pending_sell = True
                 order = self.make_midprice_order("SELL", sell_qty, sell_limit)
-                tprint(f"Placing MIDPRICE SELL {sell_qty} floor={sell_limit}, id={oid}")
+                self.logger.info(f"Placing MIDPRICE SELL {sell_qty} floor={sell_limit}, id={oid}")
                 self.placeOrder(oid, self.contract, order)
         else:
             if self.sell_order_id is not None:
-                tprint(f"Cancelling SELL order id={self.sell_order_id} because position is zero")
+                self.logger.info(f"Cancelling SELL order id={self.sell_order_id} because position is zero")
                 safe_cancel_order(self,self.sell_order_id)
                 self.pending_sell = False
 
     def run_loop(self):
         while True:
             if not self.isConnected():
-                tprint("Disconnected from IBKR; exiting run loop")
+                self.logger.info("Disconnected from IBKR; exiting run loop")
                 break
             if self.us_regular_hours():
                 self.sync_requested = True
@@ -406,6 +393,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--last_trade_min_size", type=float)
     parser.add_argument("--tif")
     parser.add_argument("--price_round_digits", type=int)
+    add_logging_arguments(parser)
     return parser
 
 
@@ -449,7 +437,7 @@ def main() -> None:
     try:
         app.run_loop()
     except KeyboardInterrupt:
-        tprint("Stopping...")
+        app.logger.info("Stopping...")
     finally:
         app.disconnect()
 
