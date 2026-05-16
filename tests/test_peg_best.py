@@ -11,65 +11,10 @@ from decimal import Decimal
 import datetime
 from argparse import Namespace
 from zoneinfo import ZoneInfo
-import sys
 
-# Create mock classes for IB API before importing peg_best
-class MockEWrapper:
-    pass
+from tests.ibapi_mocks import install_ibapi_mocks
 
-class MockEClient:
-    def __init__(self, wrapper):
-        pass
-
-class MockContract:
-    def __init__(self):
-        self.symbol = ""
-        self.secType = ""
-        self.currency = ""
-        self.exchange = ""
-        self.primaryExch = ""
-
-class MockOrder:
-    def __init__(self):
-        self.action = ""
-        self.orderType = ""
-        self.totalQuantity = 0
-        self.lmtPrice = 0.0
-        self.exchange = ""
-        self.tif = ""
-        self.notHeld = False
-        self.minCompeteSize = 0
-        self.competeAgainstBestOffset = ""
-        self.midOffsetAtWhole = 0.0
-        self.midOffsetAtHalf = 0.0
-        self.postToAts = 0
-
-# Set up the module mocks
-mock_ibapi = MagicMock()
-mock_ibapi.wrapper.EWrapper = MockEWrapper
-mock_ibapi.client.EClient = MockEClient
-mock_ibapi.contract.Contract = MockContract
-mock_ibapi.order.Order = MockOrder
-mock_ibapi.order.COMPETE_AGAINST_BEST_OFFSET_UP_TO_MID = "COMPETE_AGAINST_BEST_OFFSET_UP_TO_MID"
-
-mock_pytz = MagicMock()
-
-
-class MockTimezone:
-    def localize(self, dt):
-        return dt
-
-
-mock_pytz.timezone = Mock(return_value=MockTimezone())
-
-sys.modules['ibapi'] = mock_ibapi
-sys.modules['ibapi.client'] = mock_ibapi.client
-sys.modules['ibapi.wrapper'] = mock_ibapi.wrapper
-sys.modules['ibapi.common'] = MagicMock()
-sys.modules['ibapi.contract'] = mock_ibapi.contract
-sys.modules['ibapi.order'] = mock_ibapi.order
-sys.modules['ibapi.ticktype'] = MagicMock()
-sys.modules['pytz'] = mock_pytz
+install_ibapi_mocks(pytz=True, peg_best_constants=True)
 
 from ibkr_app_support import (
     seed_ledger_position,

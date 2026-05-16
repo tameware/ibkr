@@ -11,56 +11,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 from zoneinfo import ZoneInfo
 
-import sys
+from tests.ibapi_mocks import install_ibapi_mocks
 
-# Mock IB API before importing market_maker
-class MockEWrapper:
-    pass
-
-
-class MockEClient:
-    def __init__(self, wrapper):
-        pass
-
-
-class MockContract:
-    def __init__(self):
-        self.symbol = ""
-        self.secType = ""
-        self.currency = ""
-        self.exchange = ""
-        self.primaryExchange = ""
-        self.conId = 0
-
-
-class MockOrder:
-    def __init__(self):
-        self.action = ""
-        self.orderType = ""
-        self.totalQuantity = 0
-        self.lmtPrice = 0.0
-        self.tif = ""
-        self.outsideRth = False
-
-
-class MockOrderCancel:
-    pass
-
-
-mock_ibapi = MagicMock()
-mock_ibapi.wrapper.EWrapper = MockEWrapper
-mock_ibapi.client.EClient = MockEClient
-mock_ibapi.contract.Contract = MockContract
-mock_ibapi.order.Order = MockOrder
-mock_ibapi.order_cancel.OrderCancel = MockOrderCancel
-
-sys.modules["ibapi"] = mock_ibapi
-sys.modules["ibapi.client"] = mock_ibapi.client
-sys.modules["ibapi.wrapper"] = mock_ibapi.wrapper
-sys.modules["ibapi.common"] = MagicMock()
-sys.modules["ibapi.contract"] = mock_ibapi.contract
-sys.modules["ibapi.order"] = mock_ibapi.order
-sys.modules["ibapi.order_cancel"] = mock_ibapi.order_cancel
+install_ibapi_mocks(ticktype=False, order_cancel=True)
 
 from ibkr_app_support import (
     NbboThrottle,

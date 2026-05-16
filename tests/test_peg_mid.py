@@ -15,49 +15,9 @@ from zoneinfo import ZoneInfo
 import sys
 import time
 
-# Create mock classes for IB API before importing peg_mid
-class MockEWrapper:
-    pass
+from tests.ibapi_mocks import install_ibapi_mocks
 
-class MockEClient:
-    def __init__(self, wrapper):
-        pass
-
-class MockContract:
-    def __init__(self):
-        self.symbol = ""
-        self.secType = ""
-        self.currency = ""
-        self.exchange = ""
-        self.primaryExch = ""
-
-class MockOrder:
-    def __init__(self):
-        self.action = ""
-        self.orderType = ""
-        self.totalQuantity = 0
-        self.lmtPrice = 0.0
-        self.auxPrice = 0.0
-        self.midOffsetAtWhole = 0.0
-        self.midOffsetAtHalf = 0.0
-        self.notHeld = False
-        self.exchange = ""
-        self.tif = ""
-
-# Set up the module mocks
-mock_ibapi = MagicMock()
-mock_ibapi.wrapper.EWrapper = MockEWrapper
-mock_ibapi.client.EClient = MockEClient
-mock_ibapi.contract.Contract = MockContract
-mock_ibapi.order.Order = MockOrder
-
-sys.modules['ibapi'] = mock_ibapi
-sys.modules['ibapi.client'] = mock_ibapi.client
-sys.modules['ibapi.wrapper'] = mock_ibapi.wrapper
-sys.modules['ibapi.common'] = MagicMock()
-sys.modules['ibapi.contract'] = mock_ibapi.contract
-sys.modules['ibapi.order'] = mock_ibapi.order
-sys.modules['ibapi.ticktype'] = MagicMock()
+install_ibapi_mocks()
 
 from ibkr_app_support import (
     seed_ledger_position,

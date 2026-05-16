@@ -1,37 +1,11 @@
 # Usage: python -m unittest discover -s tests -t . -v
 
-import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-# Mock IB API before importing ibkr_bot_base
-class MockEWrapper:
-    pass
+from tests.ibapi_mocks import install_ibapi_mocks
 
-
-class MockEClient:
-    def __init__(self, wrapper):
-        pass
-
-
-class MockContract:
-    def __init__(self):
-        self.symbol = ""
-        self.secType = ""
-        self.currency = ""
-        self.exchange = ""
-        self.primaryExchange = ""
-
-
-mock_ibapi = MagicMock()
-mock_ibapi.wrapper.EWrapper = MockEWrapper
-mock_ibapi.client.EClient = MockEClient
-mock_ibapi.contract.Contract = MockContract
-
-sys.modules["ibapi"] = mock_ibapi
-sys.modules["ibapi.client"] = mock_ibapi.client
-sys.modules["ibapi.wrapper"] = mock_ibapi.wrapper
-sys.modules["ibapi.contract"] = mock_ibapi.contract
+install_ibapi_mocks(ticktype=False)
 
 from ibkr_bot_base import IbkrBotApp
 
