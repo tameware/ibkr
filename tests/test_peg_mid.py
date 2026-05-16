@@ -1,6 +1,7 @@
 # Usage: python -m unittest discover -s tests -t . -v
-
-# Coded by DeepSeek
+#        python -m unittest tests.test_peg_mid.TestTrader -v
+#
+# Coded by DeepSeek and Cursor
 
 import unittest
 from unittest.mock import Mock, patch, MagicMock, call
