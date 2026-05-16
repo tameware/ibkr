@@ -1,2 +1,3 @@
 ledgers/*.json
 ledgers/*.tmp
+backups/
