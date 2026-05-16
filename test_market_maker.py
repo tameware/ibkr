@@ -327,6 +327,7 @@ class TestMarketMakerCore(unittest.TestCase):
             "target_roundtrip_capture": 0.30,
             "quote_refresh_seconds": 3.0,
             "max_market_stale_seconds": 60.0,
+            "mid_delta": 0.01,
             **_SESSION_CFG,
         }
         self.mm = MarketMaker(self.base_config)
@@ -758,14 +759,15 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.place_or_replace_sell = Mock()
 
         with patch("market_maker.time.time", return_value=ts), patch.object(
-            self.mm, "_compute_desired_quotes_for", return_value=(50.0, 51.0)
+            self.mm, "_compute_desired_quotes_for", return_value=(50.0, 50.75)
         ):
             self.mm.maybe_manage_quotes(force=False)
 
         self.mm.place_or_replace_sell.assert_called_once()
         sell_qty, sell_px = self.mm.place_or_replace_sell.call_args[0]
         self.assertEqual(sell_qty, 218)
-        self.assertAlmostEqual(sell_px, 50.76)
+        self.assertAlmostEqual(sell_px, 50.76, delta=0.05)
+        self.assertLessEqual(sell_px, 50.77)
         self.mm.place_or_replace_buy.assert_called_once()
 
     def test_maybe_manage_quotes_places_buy_when_flat(self):

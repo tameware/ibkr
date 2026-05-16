@@ -23,6 +23,7 @@ from ibkr_app_support import (
     handle_ledger_execution,
     handle_ledger_ib_position,
     ib_client_id_from_config,
+    clamp_quote_prices_to_avoid_self_trade,
     load_merged_config,
     log_startup_timezones,
     max_sell_shares,
@@ -338,6 +339,14 @@ class Trader(EWrapper, EClient):
 
         buy_limit = round(self.ref_price - float(self.config["buy_delta"]), int(self.config["price_round_digits"]))
         sell_limit = round(self.ref_price + float(self.config["sell_delta"]), int(self.config["price_round_digits"]))
+        buy_limit, sell_limit = clamp_quote_prices_to_avoid_self_trade(
+            buy_limit,
+            sell_limit,
+            self.config,
+            bid=self._bid,
+            ask=self._ask,
+            mid=self.ref_price,
+        )
 
         buy_qty = max_pos - pos
         if buy_qty > 0:

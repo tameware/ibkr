@@ -153,6 +153,7 @@ class TestTrader(unittest.TestCase):
             "primary_exchange": "NASDAQ",
             "max_pos": 100,
             "loop_seconds": 1.0,
+            "mid_delta": 0.01,
             "buy_delta": 0.05,
             "sell_delta": 0.05,
             "market_timezone": "America/New_York",

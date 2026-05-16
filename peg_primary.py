@@ -58,9 +58,12 @@ from ibkr_app_support import (
     handle_ledger_execution,
     handle_ledger_ib_position,
     ib_client_id_from_config,
+    clamp_buy_to_avoid_self_trade,
+    clamp_sell_to_avoid_self_trade,
     load_merged_config,
     max_sell_shares,
     NbboCoalescer,
+    self_trade_limits_from_nbbo,
     NbboThrottle,
     log_session_transition,
     open_order_belongs_to_client,
@@ -516,11 +519,9 @@ class Trader(IbkrBotApp):
         above ``mid``. Caller must ensure :meth:`_has_valid_nbbo` is true.
         """
         assert self._has_valid_nbbo()
-        mid_delta = max(float(self.config.get("mid_delta", 0.02)), self._tick)
-        mid = self._nbbo_mid_rounded()
-        buy_limit = round(mid - mid_delta, self._digits)
-        sell_limit = round(mid + mid_delta, self._digits)
-        return buy_limit, sell_limit
+        return self_trade_limits_from_nbbo(
+            float(self._bid), float(self._ask), self.config
+        )
 
     def request_positions_snapshot(self):
         self.position_snapshot_complete = False
@@ -655,6 +656,21 @@ class Trader(IbkrBotApp):
         """Amend working ``lmtPrice`` / ``auxPrice`` when NBBO-derived limits move but size is unchanged."""
         if oid not in self.order_working_lmt or oid not in self.order_working_aux:
             return False
+        if self._has_valid_nbbo():
+            if action == "BUY":
+                limit_price = clamp_buy_to_avoid_self_trade(
+                    limit_price,
+                    self.config,
+                    bid=self._bid,
+                    ask=self._ask,
+                )
+            else:
+                limit_price = clamp_sell_to_avoid_self_trade(
+                    limit_price,
+                    self.config,
+                    bid=self._bid,
+                    ask=self._ask,
+                )
         new_order = self.build_rel_order(action, total_qty, limit_price)
         new_l = float(new_order.lmtPrice)
         new_a = float(new_order.auxPrice)

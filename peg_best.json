@@ -9,6 +9,7 @@
   "primary_exchange": "Your stock's exchange here",
   "max_pos": 100,
   "loop_seconds": 10,
+  "mid_delta": 0.01,
   "buy_limit_multiplier": 1.02,
   "sell_limit_multiplier": 0.98,
   "min_compete_size": 50,

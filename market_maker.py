@@ -28,6 +28,9 @@ from ibkr_app_support import (
     flatten_config_sections,
     handle_ledger_ib_position,
     idle_until_shutdown,
+    clamp_buy_to_avoid_self_trade,
+    clamp_quote_prices_to_avoid_self_trade,
+    clamp_sell_to_avoid_self_trade,
     load_merged_config,
     log_session_transition,
     max_sell_shares,
@@ -950,6 +953,10 @@ class MarketMaker(IbkrBotApp):
         buy_px = self.round_down_cent(buy_px)
         sell_px = self.round_up_cent(sell_px)
 
+        buy_px, sell_px = clamp_quote_prices_to_avoid_self_trade(
+            buy_px, sell_px, self.config, bid=bid, ask=ask
+        )
+
         if buy_px >= sell_px:
             return None, None
 
@@ -1081,6 +1088,13 @@ class MarketMaker(IbkrBotApp):
                 self.cancel_live_order(prior)
             return
 
+        bid = self.quote.bid
+        ask = self.quote.ask
+        if side == "BUY":
+            px = clamp_buy_to_avoid_self_trade(px, self.config, bid=bid, ask=ask)
+        else:
+            px = clamp_sell_to_avoid_self_trade(px, self.config, bid=bid, ask=ask)
+
         if side == "BUY":
             if not self.can_open_new_long():
                 if self.buy_order:
@@ -1103,7 +1117,11 @@ class MarketMaker(IbkrBotApp):
         order = self.build_lmt_order(side, qty, px)
         self.placeOrder(oid, self.contract, order)
         if side == "BUY":
-            self.buy_order = LiveOrder(order_id=oid, side="BUY", price=px, qty=qty)
+            self.buy_order = LiveOrder(
+                order_id=oid,
+                side="BUY",
+                price=px,
+                qty=qty)
         else:
             self.sell_order = LiveOrder(
                 order_id=oid,
@@ -1165,8 +1183,6 @@ class MarketMaker(IbkrBotApp):
             return QuotePipelineInvalidPair(True, buy_px, sell_px)
 
         assert buy_px is not None and sell_px is not None
-        buy_px = max(buy_px, bid)
-        sell_px = min(sell_px, ask)
 
         if not self._quotes_pair_is_valid(buy_px, sell_px):
             return QuotePipelineInvalidPair(False, buy_px, sell_px)
@@ -1189,6 +1205,10 @@ class MarketMaker(IbkrBotApp):
             ask,
             snap.quote_bid_sz,
             snap.quote_ask_sz,
+        )
+
+        buy_px, sell_px = clamp_quote_prices_to_avoid_self_trade(
+            buy_px, sell_px, self.config, bid=bid, ask=ask
         )
 
         if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:

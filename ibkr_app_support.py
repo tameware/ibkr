@@ -337,6 +337,125 @@ def seed_ledger_position(
         setattr(target, avg_attr, ac)
 
 
+def price_digits_from_config(config: Dict[str, Any]) -> int:
+    return int(config.get("price_round_digits", 2))
+
+
+def price_tick_from_config(config: Dict[str, Any]) -> float:
+    return 10.0 ** (-price_digits_from_config(config))
+
+
+def mid_delta_for_config(config: Dict[str, Any], *, default: float = 0.02) -> float:
+    """Minimum half-spread vs mid for self-trade guards (``mid_delta`` or legacy deltas)."""
+    tick = price_tick_from_config(config)
+    if "mid_delta" in config:
+        return max(float(config["mid_delta"]), tick)
+    buy_d = float(config.get("buy_delta", default))
+    sell_d = float(config.get("sell_delta", default))
+    return max(abs(buy_d), abs(sell_d), tick)
+
+
+def nbbo_mid_rounded(bid: float, ask: float, config: Dict[str, Any]) -> float:
+    digits = price_digits_from_config(config)
+    return round((float(bid) + float(ask)) / 2.0, digits)
+
+
+def self_trade_limits_from_nbbo(
+    bid: float,
+    ask: float,
+    config: Dict[str, Any],
+) -> Tuple[float, float]:
+    """Return ``(buy_cap, sell_floor)`` at ``mid ∓ mid_delta`` for valid NBBO."""
+    digits = price_digits_from_config(config)
+    delta = mid_delta_for_config(config)
+    mid = nbbo_mid_rounded(bid, ask, config)
+    buy_cap = round(mid - delta, digits)
+    sell_floor = round(mid + delta, digits)
+    return buy_cap, sell_floor
+
+
+def self_trade_limits_from_mid(
+    mid: float,
+    config: Dict[str, Any],
+) -> Tuple[float, float]:
+    """Return ``(buy_cap, sell_floor)`` when only a mid proxy is available."""
+    digits = price_digits_from_config(config)
+    delta = mid_delta_for_config(config)
+    m = round(float(mid), digits)
+    buy_cap = round(m - delta, digits)
+    sell_floor = round(m + delta, digits)
+    return buy_cap, sell_floor
+
+
+def has_valid_nbbo(
+    bid: Optional[float],
+    ask: Optional[float],
+) -> bool:
+    if bid is None or ask is None:
+        return False
+    try:
+        b = float(bid)
+        a = float(ask)
+    except (TypeError, ValueError):
+        return False
+    return b > 0 and a > b
+
+
+def clamp_buy_to_avoid_self_trade(
+    buy_px: float,
+    config: Dict[str, Any],
+    *,
+    bid: Optional[float] = None,
+    ask: Optional[float] = None,
+    mid: Optional[float] = None,
+) -> float:
+    """Never bid above ``mid - mid_delta`` (avoids crossing own sell)."""
+    if has_valid_nbbo(bid, ask):
+        buy_cap, _ = self_trade_limits_from_nbbo(float(bid), float(ask), config)
+    elif mid is not None:
+        buy_cap, _ = self_trade_limits_from_mid(float(mid), config)
+    else:
+        return float(buy_px)
+    return min(float(buy_px), buy_cap)
+
+
+def clamp_sell_to_avoid_self_trade(
+    sell_px: float,
+    config: Dict[str, Any],
+    *,
+    bid: Optional[float] = None,
+    ask: Optional[float] = None,
+    mid: Optional[float] = None,
+) -> float:
+    """Never offer below ``mid + mid_delta`` (avoids crossing own buy)."""
+    if has_valid_nbbo(bid, ask):
+        _, sell_floor = self_trade_limits_from_nbbo(float(bid), float(ask), config)
+    elif mid is not None:
+        _, sell_floor = self_trade_limits_from_mid(float(mid), config)
+    else:
+        return float(sell_px)
+    return max(float(sell_px), sell_floor)
+
+
+def clamp_quote_prices_to_avoid_self_trade(
+    buy_px: float,
+    sell_px: float,
+    config: Dict[str, Any],
+    *,
+    bid: Optional[float] = None,
+    ask: Optional[float] = None,
+    mid: Optional[float] = None,
+) -> Tuple[float, float]:
+    """Apply buy cap and sell floor together."""
+    buy = clamp_buy_to_avoid_self_trade(
+        buy_px, config, bid=bid, ask=ask, mid=mid
+    )
+    sell = clamp_sell_to_avoid_self_trade(
+        sell_px, config, bid=bid, ask=ask, mid=mid
+    )
+    return buy, sell
+
+
 def _normalize_fill_side(side: str) -> Optional[str]:
     raw = str(side or "").upper()
     if raw in ("BOT", "BUY"):

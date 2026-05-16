@@ -22,8 +22,13 @@ from ibkr_app_support import (
     default_config_path,
     disconnect_cleanly,
     execution_belongs_to_client,
+    clamp_buy_to_avoid_self_trade,
+    clamp_quote_prices_to_avoid_self_trade,
+    clamp_sell_to_avoid_self_trade,
     handle_ledger_execution,
     max_sell_shares,
+    mid_delta_for_config,
+    self_trade_limits_from_nbbo,
     ib_client_id_from_config,
     ib_error_is_status_info,
     idle_until_shutdown,
@@ -53,6 +58,36 @@ _SESSION_CFG = {
     "market_open_minute": 30,
     "market_close_hour": 16,
 }
+
+
+class TestSelfTradeLimits(unittest.TestCase):
+    def setUp(self):
+        self.cfg = {
+            "price_round_digits": 2,
+            "mid_delta": 0.02,
+        }
+
+    def test_limits_from_nbbo(self):
+        buy_cap, sell_floor = self_trade_limits_from_nbbo(49.90, 50.10, self.cfg)
+        self.assertEqual(buy_cap, 49.98)
+        self.assertEqual(sell_floor, 50.02)
+
+    def test_clamp_buy_and_sell(self):
+        buy, sell = clamp_quote_prices_to_avoid_self_trade(
+            50.05, 49.95, self.cfg, bid=49.90, ask=50.10
+        )
+        self.assertEqual(buy, 49.98)
+        self.assertEqual(sell, 50.02)
+
+    def test_mid_delta_at_least_one_tick(self):
+        cfg = {**self.cfg, "mid_delta": 0.001}
+        buy_cap, sell_floor = self_trade_limits_from_nbbo(100.00, 100.04, cfg)
+        self.assertEqual(buy_cap, 100.01)
+        self.assertEqual(sell_floor, 100.03)
+
+    def test_legacy_buy_sell_delta_fallback(self):
+        cfg = {"price_round_digits": 2, "buy_delta": 0.05, "sell_delta": 0.03}
+        self.assertEqual(mid_delta_for_config(cfg), 0.05)
 
 
 class TestPositionLedger(unittest.TestCase):

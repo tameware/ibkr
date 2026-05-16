@@ -23,6 +23,8 @@ from ibkr_app_support import (
     handle_ledger_execution,
     handle_ledger_ib_position,
     ib_client_id_from_config,
+    clamp_buy_to_avoid_self_trade,
+    clamp_sell_to_avoid_self_trade,
     load_merged_config,
     log_startup_timezones,
     max_sell_shares,
@@ -307,6 +309,12 @@ class Trader(EWrapper, EClient):
         # errorCode=110 The price does not conform to the minimum price variation for this contract
         buy_limit = round(self.ref_price * self.config["buy_limit_multiplier"], int(self.config["price_round_digits"]))
         sell_limit = round(self.ref_price * self.config["sell_limit_multiplier"], int(self.config["price_round_digits"]))
+        buy_limit = clamp_buy_to_avoid_self_trade(
+            buy_limit, self.config, bid=self._bid, ask=self._ask, mid=self.ref_price
+        )
+        sell_limit = clamp_sell_to_avoid_self_trade(
+            sell_limit, self.config, bid=self._bid, ask=self._ask, mid=self.ref_price
+        )
 
         if pos <= 0:
             desired_side = "BUY"
