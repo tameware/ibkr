@@ -20,6 +20,7 @@ from ibkr_app_support import (
     add_session_hours_arguments,
     format_ib_error_message,
     load_merged_config,
+    log_startup_timezones,
     make_stock_contract,
     regular_session_open,
     safe_cancel_order,
@@ -384,6 +385,7 @@ def main() -> None:
             "ignore_error_substrings",
         ],
     )
+    log_startup_timezones(config)
 
     app = Trader(config)
     CLIENT_ID = 1

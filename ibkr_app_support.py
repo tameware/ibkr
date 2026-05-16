@@ -423,7 +423,62 @@ def build_logger(
         ch.setLevel(getattr(logging, level_name, logging.INFO))
         logger.addHandler(ch)
 
+    log_startup_timezones(config, logger=logger)
     return logger
+
+
+def log_startup_timezones(
+    config: Dict[str, Any],
+    *,
+    logger: Optional[logging.Logger] = None,
+    now: Optional[datetime.datetime] = None,
+) -> None:
+    """Log local wall clock and, when configured, ``market_timezone`` wall clock at startup."""
+    if now is None:
+        local_now = datetime.datetime.now().astimezone()
+    else:
+        local_now = (
+            now.astimezone()
+            if now.tzinfo is not None
+            else now.replace(tzinfo=datetime.timezone.utc).astimezone()
+        )
+
+    local_tz = (
+        getattr(local_now.tzinfo, "key", None)
+        or local_now.tzname()
+        or str(local_now.tzinfo)
+    )
+
+    def emit(fmt: str, *args: object) -> None:
+        if logger is not None:
+            logger.info(fmt, *args)
+        else:
+            print(fmt % args, flush=True)
+
+    emit(
+        "Startup local timezone=%s, now=%s",
+        local_tz,
+        local_now.strftime("%Y-%m-%d %H:%M:%S %Z"),
+    )
+
+    market_tz = config.get("market_timezone")
+    if not market_tz:
+        return
+
+    tz_name = str(market_tz)
+    tz = ZoneInfo(tz_name)
+    if now is None:
+        market_now = datetime.datetime.now(tz=tz)
+    elif now.tzinfo is None:
+        market_now = now.replace(tzinfo=tz)
+    else:
+        market_now = now.astimezone(tz)
+
+    emit(
+        "Startup market_timezone=%s, now=%s",
+        tz_name,
+        market_now.strftime("%Y-%m-%d %H:%M:%S %Z"),
+    )
 
 
 def session_wall_clock(

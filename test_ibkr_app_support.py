@@ -27,6 +27,7 @@ from ibkr_app_support import (
     load_config_file,
     load_merged_config,
     log_ib_error,
+    log_startup_timezones,
     NbboCoalescer,
     NbboThrottle,
     make_stock_contract,
@@ -48,6 +49,38 @@ _SESSION_CFG = {
     "market_open_minute": 30,
     "market_close_hour": 16,
 }
+
+
+class TestLogStartupTimezones(unittest.TestCase):
+    def test_logs_local_and_market_with_logger(self):
+        logger = MagicMock()
+        ny = ZoneInfo("America/New_York")
+        now = datetime.datetime(2026, 5, 11, 15, 45, 0, tzinfo=ny)
+        log_startup_timezones(_SESSION_CFG, logger=logger, now=now)
+        self.assertEqual(logger.info.call_count, 2)
+        self.assertIn("local timezone", logger.info.call_args_list[0][0][0])
+        self.assertEqual(
+            logger.info.call_args_list[1][0],
+            (
+                "Startup market_timezone=%s, now=%s",
+                "America/New_York",
+                "2026-05-11 15:45:00 EDT",
+            ),
+        )
+
+    def test_logs_local_only_when_market_timezone_missing(self):
+        logger = MagicMock()
+        log_startup_timezones({}, logger=logger)
+        logger.info.assert_called_once()
+        self.assertIn("local timezone", logger.info.call_args[0][0])
+
+    def test_prints_without_logger(self):
+        ny = ZoneInfo("America/New_York")
+        now = datetime.datetime(2026, 5, 11, 9, 0, 0, tzinfo=ny)
+        with patch("builtins.print") as mock_print:
+            log_startup_timezones(_SESSION_CFG, now=now)
+        self.assertEqual(mock_print.call_count, 2)
+        self.assertIn("market_timezone", mock_print.call_args_list[1][0][0])
 
 
 class TestRegularSession(unittest.TestCase):
