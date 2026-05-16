@@ -818,11 +818,20 @@ class TestArgParser(unittest.TestCase):
     def test_parse_overrides(self):
         parser = build_arg_parser()
         args = parser.parse_args(
-            ["--symbol", "XYZ", "--port", "7497", "--base_qty", "50"]
+            [
+                "--symbol",
+                "XYZ",
+                "--port",
+                "7497",
+                "--base_qty",
+                "50",
+                "--mid_delta=0.02",
+            ]
         )
         self.assertEqual(args.symbol, "XYZ")
         self.assertEqual(args.port, 7497)
         self.assertEqual(args.base_qty, 50)
+        self.assertEqual(args.mid_delta, 0.02)
 
 
 if __name__ == "__main__":

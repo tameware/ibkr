@@ -1449,6 +1449,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--watchdog_repeat_seconds", type=float)
     parser.add_argument("--min_quote_spread_cents", type=float)
     parser.add_argument("--min_tick", type=float)
+    parser.add_argument(
+        "--mid_delta",
+        type=float,
+        help="Half-width around NBBO mid for quote caps (default from JSON; >= one tick)",
+    )
 
     add_session_hours_arguments(parser)
     add_logging_arguments(parser)
