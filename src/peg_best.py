@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import argparse
-import threading
+import sys
 import time
 from decimal import Decimal
 from typing import Any, Dict
 
-from ibapi.client import EClient
 from ibapi.common import TickAttrib, TickAttribLast, TickerId
-from ibapi.contract import Contract
 from ibapi.order import Order, COMPETE_AGAINST_BEST_OFFSET_UP_TO_MID
 from ibapi.ticktype import TickType
-from ibapi.wrapper import EWrapper
 
 from ibkr_app_support import (
     PositionLedger,
@@ -19,47 +16,43 @@ from ibkr_app_support import (
     add_ib_connection_arguments,
     add_logging_arguments,
     add_session_hours_arguments,
-    build_logger,
+    clamp_buy_to_avoid_self_trade,
+    clamp_sell_to_avoid_self_trade,
     handle_ledger_execution,
     handle_ledger_ib_position,
     ib_client_id_from_config,
-    clamp_buy_to_avoid_self_trade,
-    clamp_sell_to_avoid_self_trade,
     load_merged_config,
-    log_ib_error,
     log_startup_timezones,
     max_sell_shares,
-    make_stock_contract,
     regular_session_open,
+    run_bot,
     safe_cancel_order,
-    should_suppress_ib_error,
     sync_attrs_from_ledger,
 )
+from ibkr_bot_base import IbkrBotApp
 
 HIST_REQ_ID = 1001
 LAST_TRADE_REQ_ID = 2001
 MKTDATA_REQ_ID = 3001
 
 
-class Trader(EWrapper, EClient):
+class Trader(IbkrBotApp):
     def __init__(self, config: Dict[str, Any]):
-        EClient.__init__(self, self)
-        self.config = config
-        self.logger = build_logger(
-            config, logger_name="peg_best", default_log_file="peg_best.log"
+        super().__init__(
+            config,
+            logger_name="peg_best",
+            default_log_file="peg_best.log",
         )
 
         self.ready_for_trading = False
-        self.nextOrderId = None
-
-        self.contract = make_stock_contract(self.config)
+        self.nextOrderId: int | None = None
 
         self.position_size = 0
         self.open_price = None
-        self._bars = []
+        self._bars: list[Any] = []
 
-        self.buy_order_id = None
-        self.sell_order_id = None
+        self.buy_order_id: int | None = None
+        self.sell_order_id: int | None = None
 
         # ref_price is used to calculate extreme limit prices,
         # to avoid bidding way too high or too low.
@@ -69,7 +62,7 @@ class Trader(EWrapper, EClient):
         self._bid = None
         self._ask = None
 
-        self.remaining_by_order = {}
+        self.remaining_by_order: Dict[int, Any] = {}
         self.open_symbol_buys = 0
         self.open_symbol_sells = 0
         self.pending_buy = False
@@ -80,6 +73,45 @@ class Trader(EWrapper, EClient):
             "peg_best", config, client_id=self.client_id
         )
         sync_attrs_from_ledger(self.ledger, self, qty_attr="position_size", avg_attr=None)
+
+    def market_data_req_ids(self):
+        return (MKTDATA_REQ_ID,)
+
+    def assign_next_order_id(self, order_id: int) -> None:
+        self.nextOrderId = order_id
+
+    def shutdown_quotes(self) -> None:
+        if self.cancel_open_orders_on_shutdown:
+            for label, oid in (("BUY", self.buy_order_id), ("SELL", self.sell_order_id)):
+                if oid is None:
+                    continue
+                safe_cancel_order(self, oid)
+                self.logger.info("Cancel %s order id=%s on shutdown", label, oid)
+        self.buy_order_id = None
+        self.sell_order_id = None
+        self.pending_buy = False
+        self.pending_sell = False
+
+    def startup(self) -> None:
+        """Subscribe to market data and request startup snapshots (from ``nextValidId``)."""
+        GENERIC_TICKS = ""
+        TICK_BY_TICK_TYPE = "Last"
+
+        self.reqPositions()
+        self.request_today_open_or_prior_close()
+        self.reqMktData(MKTDATA_REQ_ID, self.contract, GENERIC_TICKS, False, False, [])
+
+        self.open_symbol_buys = 0
+        self.open_symbol_sells = 0
+        self.reqOpenOrders()
+
+        self.reqTickByTickData(
+            LAST_TRADE_REQ_ID,
+            self.contract,
+            TICK_BY_TICK_TYPE,
+            0,
+            False,
+        )
 
     def orderStatus(
         self,
@@ -110,7 +142,7 @@ class Trader(EWrapper, EClient):
                 self.open_symbol_buys = 0
                 self.open_symbol_sells = 0
                 self.reqOpenOrders()
-                
+
     def tickByTickAllLast(
         self,
         reqId: int,
@@ -146,29 +178,6 @@ class Trader(EWrapper, EClient):
             if mid != self.ref_price:
                 self.ref_price = mid
 
-    def nextValidId(self, orderId):
-        GENERIC_TICKS = ""
-        TICK_BY_TICK_TYPE = "Last"
-
-        self.logger.info(f"nextValidId: {orderId}")
-        self.nextOrderId = orderId
-
-        self.reqPositions()
-        self.request_today_open_or_prior_close()
-        self.reqMktData(MKTDATA_REQ_ID, self.contract, GENERIC_TICKS, False, False, [])
-
-        self.open_symbol_buys = 0
-        self.open_symbol_sells = 0
-        self.reqOpenOrders()
-
-        self.reqTickByTickData(
-            LAST_TRADE_REQ_ID,
-            self.contract,
-            TICK_BY_TICK_TYPE,
-            0,      # Number of ticks
-            False,  # Ignore size
-        )
-
     def openOrder(self, orderId, contract, order, orderState):
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
             if order.action == "BUY":
@@ -181,17 +190,6 @@ class Trader(EWrapper, EClient):
     def openOrderEnd(self):
         self.ready_for_trading = True
         self.logger.info(f"Open {self.config['symbol']} orders: buys={self.open_symbol_buys}, sells={self.open_symbol_sells}")
-
-    def error(self, reqId, errorTime, errorCode, errorString, advancedOrderRejectJson=""):
-        log_ib_error(
-            self.logger,
-            self.config,
-            req_id=reqId,
-            error_time=errorTime,
-            error_code=errorCode,
-            error_string=errorString,
-            advanced_order_reject=advancedOrderRejectJson,
-        )
 
     def execDetails(self, reqId, contract, execution):
         if (
@@ -228,13 +226,13 @@ class Trader(EWrapper, EClient):
         self.reqHistoricalData(
             HIST_REQ_ID,
             self.contract,
-            "",         # endDateTime
-            "2 D",      # durationStr
-            "1 day",    # barSizeSetting
-            "TRADES",   # whatToShow
-            1,          # useRTH
-            1,          # formatDate
-            False,      # keepUpToDate
+            "",
+            "2 D",
+            "1 day",
+            "TRADES",
+            1,
+            1,
+            False,
             [],
         )
 
@@ -292,9 +290,7 @@ class Trader(EWrapper, EClient):
             return
 
         pos = self.position_size
-        
-        # Rounding to avoid this error:
-        # errorCode=110 The price does not conform to the minimum price variation for this contract
+
         buy_limit = round(self.ref_price * self.config["buy_limit_multiplier"], int(self.config["price_round_digits"]))
         sell_limit = round(self.ref_price * self.config["sell_limit_multiplier"], int(self.config["price_round_digits"]))
         buy_limit = clamp_buy_to_avoid_self_trade(
@@ -364,8 +360,8 @@ class Trader(EWrapper, EClient):
                 self.logger.info(f"Placing PEG BEST SELL {desired_qty} @ {desired_limit}, id={oid}")
                 self.placeOrder(oid, self.contract, order)
 
-    def run_loop(self):
-        while True:
+    def run_until_shutdown(self) -> None:
+        while not self.shutdown_flag:
             if not self.isConnected():
                 self.logger.info("Disconnected from IBKR; exiting run loop")
                 break
@@ -392,6 +388,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--last_trade_min_size", type=float)
     parser.add_argument("--tif")
     parser.add_argument("--price_round_digits", type=int)
+    parser.add_argument(
+        "--cancel_open_orders_on_shutdown",
+        action=argparse.BooleanOptionalAction,
+        help="Cancel tracked BUY/SELL quotes before disconnect (default: false)",
+    )
     add_logging_arguments(parser)
     return parser
 
@@ -432,17 +433,15 @@ def main() -> None:
     log_startup_timezones(config)
 
     app = Trader(config)
-    app.connect(config["host"], config["port"], app.client_id)
-
-    thread = threading.Thread(target=app.run, daemon=True)
-    thread.start()
-
-    try:
-        app.run_loop()
-    except KeyboardInterrupt:
-        app.logger.info("Stopping...")
-    finally:
-        app.disconnect()
+    exit_code = run_bot(
+        app,
+        config,
+        is_ready=lambda: app.api_ready,
+        main_loop=app.run_until_shutdown,
+        ready_label="nextValidId",
+    )
+    if exit_code != 0:
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

@@ -183,7 +183,7 @@ class TestTrader(unittest.TestCase):
             "ignore_error_substrings": ["HMDS", "market data farm"],
         }
 
-        self._log_patcher = patch("peg_best.build_logger", return_value=MagicMock())
+        self._log_patcher = patch("ibkr_bot_base.build_logger", return_value=MagicMock())
         self._log_patcher.start()
         self.addCleanup(self._log_patcher.stop)
 
@@ -640,17 +640,17 @@ class TestTrader(unittest.TestCase):
         self.trader.logger.warning.assert_called_once()
         self.assertEqual(self.trader.logger.warning.call_args[0][4], "Critical error")
     
-    def test_run_loop_disconnected(self):
-        """Test run loop when disconnected"""
+    def test_run_until_shutdown_disconnected(self):
+        """Test main loop when disconnected"""
         self.trader.isConnected = Mock(return_value=False)
         
         with patch('time.sleep') as mock_sleep:
-            self.trader.run_loop()
+            self.trader.run_until_shutdown()
             mock_sleep.assert_not_called()
     
     @patch('time.sleep')
-    def test_run_loop_market_hours(self, mock_sleep):
-        """Test run loop during market hours"""
+    def test_run_until_shutdown_market_hours(self, mock_sleep):
+        """Test main loop during market hours"""
         # First iteration: market open, then disconnect to break loop
         call_count = 0
         
@@ -666,7 +666,7 @@ class TestTrader(unittest.TestCase):
         self.trader.reqPositions.reset_mock()
         self.trader.sync_orders = Mock()
         
-        self.trader.run_loop()
+        self.trader.run_until_shutdown()
         
         # Should have called reqPositions at least once
         self.trader.reqPositions.assert_called()
@@ -674,8 +674,8 @@ class TestTrader(unittest.TestCase):
         self.trader.sync_orders.assert_called()
     
     @patch('time.sleep')
-    def test_run_loop_outside_market_hours(self, mock_sleep):
-        """Test run loop outside market hours"""
+    def test_run_until_shutdown_outside_market_hours(self, mock_sleep):
+        """Test main loop outside market hours"""
         # Mock connection to return True once then False
         self.trader.isConnected = Mock(side_effect=[True, False])
         self.trader.us_regular_hours = Mock(return_value=False)
@@ -684,7 +684,7 @@ class TestTrader(unittest.TestCase):
         self.trader.reqPositions = Mock()
         self.trader.sync_orders = Mock()
         
-        self.trader.run_loop()
+        self.trader.run_until_shutdown()
         
         # Should NOT call reqPositions outside market hours
         self.trader.reqPositions.assert_not_called()
