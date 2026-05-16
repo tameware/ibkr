@@ -2,3 +2,4 @@ ledgers/*.json
 ledgers/*.tmp
 backups/
 IBJts_10.44.01/
+META-INF/
