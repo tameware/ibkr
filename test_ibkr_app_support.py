@@ -13,6 +13,7 @@ import types
 from pathlib import Path
 
 from ibkr_app_support import (
+    PositionLedger,
     add_config_argument,
     add_ib_connection_arguments,
     add_logging_arguments,
@@ -21,9 +22,11 @@ from ibkr_app_support import (
     default_config_path,
     disconnect_cleanly,
     execution_belongs_to_client,
+    handle_ledger_execution,
     ib_client_id_from_config,
     ib_error_is_status_info,
     idle_until_shutdown,
+    ledger_path_for_strategy,
     load_config_file,
     load_merged_config,
     log_ib_error,
@@ -49,6 +52,59 @@ _SESSION_CFG = {
     "market_open_minute": 30,
     "market_close_hour": 16,
 }
+
+
+class TestPositionLedger(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.config = {
+            "symbol": "FDX",
+            "sec_type": "STK",
+            "client_id": 7,
+            "ledgers_dir": self._tmp.name,
+        }
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_ledger_path_in_ledgers_dir(self):
+        path = ledger_path_for_strategy("peg_primary", self.config)
+        self.assertEqual(path.parent, Path(self._tmp.name))
+        self.assertTrue(path.name.startswith("peg_primary_FDX_7"))
+
+    def test_apply_fill_buy_and_sell(self):
+        ledger = PositionLedger.open("market_maker", self.config)
+        self.assertTrue(ledger.apply_fill("BUY", 100, 150.0, exec_id="e1"))
+        self.assertEqual(ledger.qty, 100)
+        self.assertAlmostEqual(ledger.avg_cost, 150.0)
+        self.assertTrue(ledger.apply_fill("SELL", 40, 155.0, exec_id="e2"))
+        self.assertEqual(ledger.qty, 60)
+        self.assertAlmostEqual(ledger.avg_cost, 150.0)
+
+    def test_apply_fill_skips_duplicate_exec_id(self):
+        ledger = PositionLedger.open("peg_mid", self.config)
+        self.assertTrue(ledger.apply_fill("BUY", 10, 50.0, exec_id="dup"))
+        self.assertFalse(ledger.apply_fill("BUY", 10, 50.0, exec_id="dup"))
+        self.assertEqual(ledger.qty, 10)
+
+    def test_save_and_reload(self):
+        ledger = PositionLedger.open("midprice", self.config)
+        ledger.apply_fill("BUY", 25, 99.5, exec_id="x1")
+        ledger.save()
+        reloaded = PositionLedger.open("midprice", self.config)
+        self.assertEqual(reloaded.qty, 25)
+        self.assertAlmostEqual(reloaded.avg_cost, 99.5)
+
+    def test_handle_ledger_execution_filters_client(self):
+        ledger = PositionLedger.open("peg_best", self.config)
+        execution = Mock()
+        execution.clientId = 999
+        execution.side = "BOT"
+        execution.shares = 5
+        execution.price = 10.0
+        execution.execId = "bad"
+        self.assertFalse(handle_ledger_execution(ledger, execution, 7))
+        self.assertEqual(ledger.qty, 0)
 
 
 class TestLogStartupTimezones(unittest.TestCase):

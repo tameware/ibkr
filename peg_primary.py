@@ -49,11 +49,14 @@ import time
 from typing import Any, Dict
 
 from ibkr_app_support import (
+    PositionLedger,
     add_config_argument,
     add_ib_connection_arguments,
     add_logging_arguments,
     add_session_hours_arguments,
     execution_belongs_to_client,
+    handle_ledger_execution,
+    handle_ledger_ib_position,
     ib_client_id_from_config,
     load_merged_config,
     NbboCoalescer,
@@ -64,6 +67,7 @@ from ibkr_app_support import (
     regular_session_open,
     run_bot,
     safe_cancel_order,
+    sync_attrs_from_ledger,
 )
 from ibkr_bot_base import IbkrBotApp
 from ibapi.common import TickAttrib, TickerId
@@ -168,6 +172,17 @@ class Trader(IbkrBotApp):
         self.order_working_aux: Dict[int, float] = {}
 
         self.ib_client_id = ib_client_id_from_config(config, default=1)
+        self.ledger = PositionLedger.open(
+            "peg_primary", config, client_id=self.ib_client_id
+        )
+        sync_attrs_from_ledger(
+            self.ledger, self, qty_attr="position_size", avg_attr=None
+        )
+        self.logger.info(
+            "Position ledger %s qty=%s",
+            self.ledger.path,
+            self.ledger.qty,
+        )
 
         self.logger.info(
             "REL quoter initialized symbol=%s exchange=%s "
@@ -311,13 +326,21 @@ class Trader(IbkrBotApp):
         if not execution_belongs_to_client(execution, self.ib_client_id):
             return
 
+        if handle_ledger_execution(
+            self.ledger, execution, self.ib_client_id, logger=self.logger
+        ):
+            sync_attrs_from_ledger(
+                self.ledger, self, qty_attr="position_size", avg_attr=None
+            )
+
         raw_side = getattr(execution, "side", "")
         side = "BUY" if raw_side == "BOT" else "SELL" if raw_side == "SLD" else raw_side
         self.logger.info(
             f"Execution {side} orderId={execution.orderId} execId={execution.execId} "
             f"shares={execution.shares} price={execution.price} "
             f"exchange={execution.exchange} cumQty={execution.cumQty} "
-            f"avgPrice={execution.avgPrice} time={execution.time}"
+            f"avgPrice={execution.avgPrice} time={execution.time} "
+            f"ledger_qty={self.ledger.qty}"
         )
 
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
@@ -412,7 +435,12 @@ class Trader(IbkrBotApp):
 
     def position(self, account, contract, pos, avgCost):
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
-            self.position_size = int(pos)
+            handle_ledger_ib_position(
+                self.ledger, account, int(pos), float(avgCost), logger=self.logger
+            )
+            sync_attrs_from_ledger(
+                self.ledger, self, qty_attr="position_size", avg_attr=None
+            )
 
     def positionEnd(self):
         self.position_snapshot_complete = True
@@ -495,7 +523,6 @@ class Trader(IbkrBotApp):
 
     def request_positions_snapshot(self):
         self.position_snapshot_complete = False
-        self.position_size = 0
         self.reqPositions()
 
     def request_open_orders_snapshot(self):

@@ -17,13 +17,16 @@ from ibapi.contract import Contract
 from ibapi.order import Order
 
 from ibkr_app_support import (
+    PositionLedger,
     add_config_argument,
     add_ib_connection_arguments,
     add_logging_arguments,
     add_session_hours_arguments,
     cfg_bool as _cfg_bool,
     execution_belongs_to_client,
+    execution_fill_tuple,
     flatten_config_sections,
+    handle_ledger_ib_position,
     idle_until_shutdown,
     load_merged_config,
     log_session_transition,
@@ -33,6 +36,7 @@ from ibkr_app_support import (
     regular_session_open,
     run_bot,
     safe_cancel_order,
+    sync_attrs_from_ledger,
 )
 from ibkr_bot_base import IbkrBotApp
 
@@ -64,7 +68,7 @@ class QuoteMgmtSnapshot:
     connected_flag: bool
     shutdown_flag: bool
     open_orders_snapshot_done: bool
-    position_qty: int
+    position_size: int
     gross_shares_traded: int
     avg_cost: float
     buy_shares_filled: int
@@ -167,7 +171,7 @@ class MarketMaker(IbkrBotApp):
         self.contract_details_req_id: int = 2001
 
         self.quote = QuoteState()
-        self.position_qty = 0
+        self.position_size = 0
         self.avg_cost = 0.0
         self.account = None
         self.contract_resolved = False
@@ -206,6 +210,23 @@ class MarketMaker(IbkrBotApp):
         self.open_orders_snapshot_done = False
         self.adoption_phase = False
         self._prev_us_regular_hours: bool | None = None
+
+        self.ledger = PositionLedger.open(
+            "market_maker", config, client_id=self.client_id, account=raw_acct
+        )
+        sync_attrs_from_ledger(
+            self.ledger,
+            self,
+            qty_attr="position_size",
+            avg_attr="avg_cost",
+            clamp_qty_nonneg=True,
+        )
+        self.logger.info(
+            "Position ledger %s qty=%s avg_cost=%.4f",
+            self.ledger.path,
+            self.ledger.qty,
+            self.ledger.avg_cost,
+        )
 
         self.logger.info(
             "Bot initialized for %s on %s/%s",
@@ -462,15 +483,25 @@ class MarketMaker(IbkrBotApp):
 
         with self.lock:
             self.account = account
-            self.position_qty = max(0, int(position))
-            self.avg_cost = float(avgCost) if self.position_qty > 0 else 0.0
+            handle_ledger_ib_position(
+                self.ledger, account, int(position), float(avgCost), logger=self.logger
+            )
+            sync_attrs_from_ledger(
+                self.ledger,
+                self,
+                qty_attr="position_size",
+                avg_attr="avg_cost",
+                clamp_qty_nonneg=True,
+            )
 
         self.logger.info(
-            "Position update account=%s symbol=%s position=%s avgCost=%.4f",
+            "Position update account=%s symbol=%s ledger_qty=%s avgCost=%.4f "
+            "ib_snapshot_qty=%s",
             account,
             contract.symbol,
-            self.position_qty,
+            self.position_size,
             self.avg_cost,
+            self.ledger.ib_snapshot_qty,
         )
 
     def positionEnd(self):
@@ -629,25 +660,38 @@ class MarketMaker(IbkrBotApp):
         if not execution_belongs_to_client(execution, self.client_id):
             return
 
-        shares = int(execution.shares)
-        side = execution.side.upper()
-        px = float(execution.price)
+        fill = execution_fill_tuple(execution)
+        if fill is None:
+            return
+        side, shares, px = fill
+        side_raw = str(getattr(execution, "side", "")).upper()
 
         with self.lock:
+            if side_raw in ("SLD", "SELL") and self.ledger.qty > 0 and self.ledger.avg_cost > 0:
+                sellable = min(self.ledger.qty, shares)
+                self.realized_pnl += sellable * (px - self.ledger.avg_cost)
+
             self.gross_shares_traded += shares
-            if side in ("BOT", "BUY"):
+            if side == "BUY":
                 self.buy_shares_filled += shares
 
-            if side == "SLD" and self.position_qty > 0 and self.avg_cost > 0:
-                sellable = min(self.position_qty, shares)
-                self.realized_pnl += sellable * (px - self.avg_cost)
+            exec_id = getattr(execution, "execId", None)
+            if self.ledger.apply_fill(side, shares, px, exec_id=exec_id):
+                sync_attrs_from_ledger(
+                    self.ledger,
+                    self,
+                    qty_attr="position_size",
+                    avg_attr="avg_cost",
+                    clamp_qty_nonneg=True,
+                )
+                self.ledger.save()
 
         self.logger.info(
-            "execDetails side=%s shares=%s px=%.4f pos_snapshot=%s gross=%s realized=%.2f execId=%s",
-            side,
+            "execDetails side=%s shares=%s px=%.4f ledger_qty=%s gross=%s realized=%.2f execId=%s",
+            side_raw,
             shares,
             px,
-            self.position_qty,
+            self.position_size,
             self.gross_shares_traded,
             self.realized_pnl,
             execution.execId,
@@ -771,7 +815,7 @@ class MarketMaker(IbkrBotApp):
 
     def can_open_new_long(self) -> bool:
         with self.lock:
-            if self.position_qty >= self.max_position:
+            if self.position_size >= self.max_position:
                 return False
             if self.gross_shares_traded >= self.max_gross_shares:
                 return False
@@ -781,7 +825,7 @@ class MarketMaker(IbkrBotApp):
             return True
 
     def max_sellable_qty(self) -> int:
-        return max(0, self.position_qty)
+        return max(0, self.position_size)
 
     def _market_invalid_reason_for_nbbo(
         self,
@@ -839,7 +883,7 @@ class MarketMaker(IbkrBotApp):
     def _cancel_working_quotes_flat_inventory(self) -> None:
         """Cancel working buy; cancel sell only when flat or short (no inventory to lift)."""
         self.place_or_replace_buy(0, None)
-        if self.position_qty <= 0:
+        if self.position_size <= 0:
             self.place_or_replace_sell(0, None)
 
     def _abort_for_market_invalid_reason(self, reason: Optional[str]) -> bool:
@@ -881,20 +925,20 @@ class MarketMaker(IbkrBotApp):
         return self.market_invalid_reason() is None
 
     def _compute_desired_quotes_for(
-        self, bid: float, ask: float, position_qty: int, avg_cost: float
+        self, bid: float, ask: float, position_size: int, avg_cost: float
     ) -> Tuple[Optional[float], Optional[float]]:
         spread = ask - bid
 
         buy_px = bid + min(self.inside_improve, spread * 0.25)
         sell_px = ask - min(self.inside_improve, spread * 0.25)
 
-        long_hundreds = max(0, position_qty) / 100.0
+        long_hundreds = max(0, position_size) / 100.0
         skew = long_hundreds * self.inventory_penalty_per_100
 
         buy_px -= skew
         sell_px -= min(skew * 2.0, spread * 0.20)
 
-        if position_qty > 0 and avg_cost > 0:
+        if position_size > 0 and avg_cost > 0:
             sell_floor = avg_cost + self.target_roundtrip_capture
             sell_px = max(sell_px, sell_floor)
 
@@ -914,18 +958,18 @@ class MarketMaker(IbkrBotApp):
         ask = self.quote.ask
         if bid is None or ask is None:
             return None, None
-        return self._compute_desired_quotes_for(bid, ask, self.position_qty, self.avg_cost)
+        return self._compute_desired_quotes_for(bid, ask, self.position_size, self.avg_cost)
 
-    def _desired_sizes_for(self, position_qty: int, buy_shares_filled: int) -> Tuple[int, int]:
-        buy_qty = min(self.base_qty, max(0, self.max_position - position_qty))
+    def _desired_sizes_for(self, position_size: int, buy_shares_filled: int) -> Tuple[int, int]:
+        buy_qty = min(self.base_qty, max(0, self.max_position - position_size))
         if self.max_buy_shares_per_run is not None:
             room = max(0, self.max_buy_shares_per_run - buy_shares_filled)
             buy_qty = min(buy_qty, room)
-        sell_qty = max(0, position_qty)
+        sell_qty = max(0, position_size)
         return buy_qty, sell_qty
 
     def desired_sizes(self):
-        return self._desired_sizes_for(self.position_qty, self.buy_shares_filled)
+        return self._desired_sizes_for(self.position_size, self.buy_shares_filled)
 
     def _sell_working_open_qty(self, live: LiveOrder) -> int:
         """Working size for a sell (prefer IB ``remaining``, else last ``qty``)."""
@@ -935,10 +979,10 @@ class MarketMaker(IbkrBotApp):
 
     def _needs_quote_despite_nbbo_throttle_with(
         self,
-        position_qty: int,
+        position_size: int,
         sell_snap: Optional[Tuple[str, int, int]],
     ) -> bool:
-        if position_qty <= 0:
+        if position_size <= 0:
             return False
         if sell_snap is None:
             return True
@@ -952,7 +996,7 @@ class MarketMaker(IbkrBotApp):
         }:
             return True
         open_qty = int(remaining) if remaining > 0 else int(qty)
-        return open_qty < position_qty
+        return open_qty < position_size
 
     def _needs_quote_despite_nbbo_throttle(self) -> bool:
         """If True, run a quote cycle even when bid/ask and NBBO sizes are unchanged.
@@ -966,11 +1010,11 @@ class MarketMaker(IbkrBotApp):
             if self.sell_order
             else None
         )
-        return self._needs_quote_despite_nbbo_throttle_with(self.position_qty, sell_snap)
+        return self._needs_quote_despite_nbbo_throttle_with(self.position_size, sell_snap)
 
     def _should_keep_sell_adoption(self, incumbent: LiveOrder, candidate: LiveOrder) -> bool:
         """During ``reqOpenOrders`` adoption: prefer the sell that covers more shares."""
-        pos = self.position_qty
+        pos = self.position_size
         ir = self._sell_working_open_qty(incumbent)
         cr = self._sell_working_open_qty(candidate)
         active_statuses = {"PreSubmitted", "PendingSubmit", "Submitted"}
@@ -1080,7 +1124,7 @@ class MarketMaker(IbkrBotApp):
                 connected_flag=self.connected_flag,
                 shutdown_flag=self.shutdown_flag,
                 open_orders_snapshot_done=self.open_orders_snapshot_done,
-                position_qty=self.position_qty,
+                position_size=self.position_size,
                 gross_shares_traded=self.gross_shares_traded,
                 avg_cost=self.avg_cost,
                 buy_shares_filled=self.buy_shares_filled,
@@ -1109,7 +1153,7 @@ class MarketMaker(IbkrBotApp):
             return QuotePipelineInvalidPair(True, qb, qa)
 
         buy_px, sell_px = self._compute_desired_quotes_for(
-            float(qb), float(qa), snap.position_qty, snap.avg_cost
+            float(qb), float(qa), snap.position_size, snap.avg_cost
         )
         bid = float(qb)
         ask = float(qa)
@@ -1124,10 +1168,10 @@ class MarketMaker(IbkrBotApp):
         if not self._quotes_pair_is_valid(buy_px, sell_px):
             return QuotePipelineInvalidPair(False, buy_px, sell_px)
 
-        buy_qty, sell_qty = self._desired_sizes_for(snap.position_qty, snap.buy_shares_filled)
+        buy_qty, sell_qty = self._desired_sizes_for(snap.position_size, snap.buy_shares_filled)
 
-        sell_qty = min(sell_qty, snap.position_qty)
-        if snap.position_qty <= 0:
+        sell_qty = min(sell_qty, snap.position_size)
+        if snap.position_size <= 0:
             sell_qty = 0
 
         if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
@@ -1178,7 +1222,7 @@ class MarketMaker(IbkrBotApp):
             force,
             snap.connected_flag,
             snap.shutdown_flag,
-            snap.position_qty,
+            snap.position_size,
             snap.gross_shares_traded,
             snap.quote_bid,
             snap.quote_ask,
@@ -1214,7 +1258,7 @@ class MarketMaker(IbkrBotApp):
             nbbo_key,
             force=force,
             bypass_if=lambda: self._needs_quote_despite_nbbo_throttle_with(
-                snap.position_qty, snap.sell_snap
+                snap.position_size, snap.sell_snap
             ),
         ):
             return
@@ -1247,7 +1291,7 @@ class MarketMaker(IbkrBotApp):
         log_ask = self.quote.ask
         log_bid_sz = self.quote.bid_size
         log_ask_sz = self.quote.ask_size
-        log_pos = self.position_qty
+        log_pos = self.position_size
         log_avg = self.avg_cost
         decision_key = (
             None if log_bid is None else round(float(log_bid), 2),

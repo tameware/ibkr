@@ -121,6 +121,271 @@ def require_fields(config: Dict[str, Any], required_fields: list[str]) -> None:
         raise ValueError(f"Missing required configuration fields: {', '.join(missing)}")
 
 
+LEDGERS_DIR_NAME = "ledgers"
+
+
+def ledgers_dir_from_config(config: Dict[str, Any]) -> Path:
+    return Path(str(config.get("ledgers_dir", LEDGERS_DIR_NAME)))
+
+
+def _sanitize_ledger_token(value: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(value))
+
+
+def ledger_path_for_strategy(
+    strategy: str,
+    config: Dict[str, Any],
+    *,
+    client_id: Optional[int] = None,
+    ledgers_dir: Optional[Path] = None,
+) -> Path:
+    """Path to this strategy's JSON ledger file under ``ledgers/`` (or ``ledgers_dir``)."""
+    symbol = _sanitize_ledger_token(str(config.get("symbol", "UNKNOWN")))
+    cid = int(
+        client_id if client_id is not None else ib_client_id_from_config(config)
+    )
+    strategy_token = _sanitize_ledger_token(strategy)
+    base = ledgers_dir if ledgers_dir is not None else ledgers_dir_from_config(config)
+    return base / f"{strategy_token}_{symbol}_{cid}.json"
+
+
+class PositionLedger:
+    """Per-strategy position ledger persisted for parallel bot runs (keyed by client_id)."""
+
+    def __init__(self, path: Path, data: Dict[str, Any]) -> None:
+        self._path = path
+        self._data = data
+
+    @classmethod
+    def open(
+        cls,
+        strategy: str,
+        config: Dict[str, Any],
+        *,
+        client_id: Optional[int] = None,
+        account: Optional[str] = None,
+    ) -> PositionLedger:
+        path = ledger_path_for_strategy(strategy, config, client_id=client_id)
+        cid = int(
+            client_id if client_id is not None else ib_client_id_from_config(config)
+        )
+        acct = str(
+            account
+            if account is not None
+            else (config.get("account") or "")
+        ).strip()
+        if path.is_file():
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError(f"Ledger file must be a JSON object: {path}")
+        else:
+            data = {
+                "strategy": strategy,
+                "symbol": str(config.get("symbol", "")),
+                "sec_type": str(config.get("sec_type", "STK")),
+                "client_id": cid,
+                "account": acct,
+                "qty": 0,
+                "avg_cost": 0.0,
+                "updated_at": None,
+                "last_exec_id": None,
+                "ib_snapshot_qty": None,
+                "ib_snapshot_avg_cost": None,
+                "ib_snapshot_account": None,
+                "ib_snapshot_at": None,
+            }
+        ledger = cls(path, data)
+        ledger._data["strategy"] = strategy
+        ledger._data["symbol"] = str(config.get("symbol", ledger._data.get("symbol", "")))
+        ledger._data["sec_type"] = str(
+            config.get("sec_type", ledger._data.get("sec_type", "STK"))
+        )
+        ledger._data["client_id"] = cid
+        if acct:
+            ledger._data["account"] = acct
+        return ledger
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    @property
+    def qty(self) -> int:
+        return int(self._data.get("qty", 0))
+
+    @property
+    def avg_cost(self) -> float:
+        return float(self._data.get("avg_cost", 0.0))
+
+    @property
+    def ib_snapshot_qty(self) -> Optional[int]:
+        raw = self._data.get("ib_snapshot_qty")
+        return None if raw is None else int(raw)
+
+    def apply_fill(
+        self,
+        side: str,
+        shares: int,
+        price: float,
+        *,
+        exec_id: Optional[str] = None,
+    ) -> bool:
+        """Update ledger from a fill. Returns False if ``exec_id`` was already applied."""
+        if exec_id and exec_id == self._data.get("last_exec_id"):
+            return False
+        shares = int(shares)
+        if shares <= 0:
+            return False
+        price = float(price)
+        side_key = _normalize_fill_side(side)
+        if side_key is None:
+            return False
+
+        qty = self.qty
+        avg = self.avg_cost
+        if side_key == "BUY":
+            if qty >= 0:
+                total_cost = qty * avg + shares * price
+                qty += shares
+                avg = total_cost / qty if qty > 0 else 0.0
+            else:
+                qty += shares
+                if qty > 0:
+                    avg = price
+                elif qty == 0:
+                    avg = 0.0
+        else:
+            qty -= shares
+            if qty <= 0:
+                avg = 0.0 if qty == 0 else price
+
+        self._data["qty"] = int(qty)
+        self._data["avg_cost"] = float(avg)
+        if exec_id:
+            self._data["last_exec_id"] = str(exec_id)
+        return True
+
+    def record_ib_snapshot(
+        self,
+        account: str,
+        qty: int,
+        avg_cost: float,
+    ) -> None:
+        """Store the latest account-level IB position snapshot (does not change ledger qty)."""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self._data["ib_snapshot_account"] = str(account)
+        self._data["ib_snapshot_qty"] = int(qty)
+        self._data["ib_snapshot_avg_cost"] = float(avg_cost)
+        self._data["ib_snapshot_at"] = now
+
+    def save(self) -> None:
+        self._data["updated_at"] = datetime.datetime.now(
+            datetime.timezone.utc
+        ).isoformat()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+        payload = json.dumps(self._data, indent=2, sort_keys=True) + "\n"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(payload)
+        tmp.replace(self._path)
+
+
+def _normalize_fill_side(side: str) -> Optional[str]:
+    raw = str(side or "").upper()
+    if raw in ("BOT", "BUY"):
+        return "BUY"
+    if raw in ("SLD", "SELL"):
+        return "SELL"
+    return None
+
+
+def execution_fill_tuple(execution: Any) -> Optional[Tuple[str, int, float]]:
+    """Parse an IB ``execution`` into ``(side, shares, price)``."""
+    side = _normalize_fill_side(getattr(execution, "side", ""))
+    if side is None:
+        return None
+    try:
+        shares = int(float(execution.shares))
+        price = float(execution.price)
+    except (TypeError, ValueError):
+        return None
+    if shares <= 0:
+        return None
+    return side, shares, price
+
+
+def sync_attrs_from_ledger(
+    ledger: PositionLedger,
+    target: Any,
+    *,
+    qty_attr: str = "position_size",
+    avg_attr: Optional[str] = "avg_cost",
+    clamp_qty_nonneg: bool = False,
+) -> None:
+    qty = ledger.qty
+    if clamp_qty_nonneg:
+        qty = max(0, qty)
+    setattr(target, qty_attr, qty)
+    if avg_attr is not None and hasattr(target, avg_attr):
+        setattr(target, avg_attr, ledger.avg_cost if qty > 0 else 0.0)
+
+
+def handle_ledger_execution(
+    ledger: PositionLedger,
+    execution: Any,
+    our_client_id: int,
+    *,
+    logger: Optional[logging.Logger] = None,
+) -> bool:
+    """Apply a client-owned fill to ``ledger`` and persist. Returns True if applied."""
+    if not execution_belongs_to_client(execution, our_client_id):
+        return False
+    fill = execution_fill_tuple(execution)
+    if fill is None:
+        return False
+    side, shares, price = fill
+    exec_id = getattr(execution, "execId", None)
+    if not ledger.apply_fill(side, shares, price, exec_id=exec_id):
+        return False
+    ledger.save()
+    if logger is not None:
+        logger.info(
+            "Ledger %s qty=%s avg_cost=%.4f (%s %s @ %.4f execId=%s)",
+            ledger.path.name,
+            ledger.qty,
+            ledger.avg_cost,
+            side,
+            shares,
+            price,
+            exec_id,
+        )
+    return True
+
+
+def handle_ledger_ib_position(
+    ledger: PositionLedger,
+    account: str,
+    qty: int,
+    avg_cost: float,
+    *,
+    logger: Optional[logging.Logger] = None,
+) -> None:
+    """Record IB ``position`` snapshot; log if it differs from ledger qty."""
+    ledger.record_ib_snapshot(account, qty, avg_cost)
+    if logger is not None and ledger.qty != int(qty):
+        logger.warning(
+            "Ledger %s qty=%s differs from IB position snapshot qty=%s "
+            "(account=%s avgCost=%.4f); using ledger qty for trading",
+            ledger.path.name,
+            ledger.qty,
+            int(qty),
+            account,
+            float(avg_cost),
+        )
+    ledger.save()
+
+
 def default_config_path(script_file: str | Path) -> str:
     """Default JSON config path beside a bot script (``script.py`` → ``script.json``)."""
     return str(Path(script_file).with_suffix(".json"))

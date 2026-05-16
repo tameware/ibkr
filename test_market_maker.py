@@ -178,8 +178,11 @@ class TestNbboTickImprove(unittest.TestCase):
         )
         self._log_patcher.start()
         self.addCleanup(self._log_patcher.stop)
+        self._ledger_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._ledger_dir.cleanup)
         self.mm = MarketMaker(
             {
+                "ledgers_dir": self._ledger_dir.name,
                 "symbol": "FDX",
                 "sec_type": "STK",
                 "currency": "USD",
@@ -305,7 +308,10 @@ class TestMarketMakerCore(unittest.TestCase):
         self._log_patcher.start()
         self.addCleanup(self._log_patcher.stop)
 
+        self._ledger_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._ledger_dir.cleanup)
         self.base_config = {
+            "ledgers_dir": self._ledger_dir.name,
             "symbol": "FDX",
             "sec_type": "STK",
             "currency": "USD",
@@ -451,7 +457,7 @@ class TestMarketMakerCore(unittest.TestCase):
     def test_compute_desired_quotes_flat_position(self):
         self.mm.quote.bid = 100.0
         self.mm.quote.ask = 101.0
-        self.mm.position_qty = 0
+        self.mm.position_size = 0
         self.mm.avg_cost = 0.0
         buy_px, sell_px = self.mm.compute_desired_quotes()
         self.assertIsNotNone(buy_px)
@@ -459,7 +465,7 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertLess(buy_px, sell_px)
 
     def test_desired_sizes(self):
-        self.mm.position_qty = 50
+        self.mm.position_size = 50
         self.mm.base_qty = 100
         self.mm.max_position = 200
         b, s = self.mm.desired_sizes()
@@ -469,7 +475,7 @@ class TestMarketMakerCore(unittest.TestCase):
     def test_desired_sizes_caps_buy_by_max_buy_shares_per_run(self):
         self.mm.max_buy_shares_per_run = 30
         self.mm.buy_shares_filled = 25
-        self.mm.position_qty = 0
+        self.mm.position_size = 0
         b, _ = self.mm.desired_sizes()
         self.assertEqual(b, 5)
 
@@ -487,10 +493,10 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertFalse(self.mm.is_same_order(None, "BUY", 100, 10.0))
 
     def test_can_open_new_long(self):
-        self.mm.position_qty = 500
+        self.mm.position_size = 500
         self.mm.max_position = 500
         self.assertFalse(self.mm.can_open_new_long())
-        self.mm.position_qty = 100
+        self.mm.position_size = 100
         self.assertTrue(self.mm.can_open_new_long())
 
     def test_should_keep_order_prefers_remaining(self):
@@ -513,7 +519,7 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertTrue(self.mm._should_keep_order(inc, cand))
 
     def test_should_keep_sell_adoption_prefers_larger_working_size(self):
-        self.mm.position_qty = 200
+        self.mm.position_size = 200
         small = LiveOrder(
             order_id=1,
             side="SELL",
@@ -536,12 +542,12 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertFalse(self.mm._should_keep_sell_adoption(small, big))
 
     def test_needs_quote_despite_nbbo_throttle_no_sell_long(self):
-        self.mm.position_qty = 150
+        self.mm.position_size = 150
         self.mm.sell_order = None
         self.assertTrue(self.mm._needs_quote_despite_nbbo_throttle())
 
     def test_needs_quote_despite_nbbo_throttle_undersized_sell(self):
-        self.mm.position_qty = 200
+        self.mm.position_size = 200
         self.mm.sell_order = LiveOrder(
             order_id=3,
             side="SELL",
@@ -554,7 +560,7 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertTrue(self.mm._needs_quote_despite_nbbo_throttle())
 
     def test_needs_quote_despite_nbbo_throttle_ok_when_sell_covers_position(self):
-        self.mm.position_qty = 200
+        self.mm.position_size = 200
         self.mm.sell_order = LiveOrder(
             order_id=3,
             side="SELL",
@@ -571,7 +577,7 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.connected_flag = True
         self.mm.shutdown_flag = False
         self.mm.open_orders_snapshot_done = True
-        self.mm.position_qty = 200
+        self.mm.position_size = 200
         self.mm.avg_cost = 48.0
         self.mm.sell_order = None
         self.mm.quote.bid = 50.0
@@ -629,7 +635,7 @@ class TestMarketMakerCore(unittest.TestCase):
     def test_place_or_replace_sell_reuses_order_id_when_price_changes(self):
         """IB modifies a limit in place when placeOrder uses the same order id (no cancel/replace)."""
         self.mm.next_order_id = 500
-        self.mm.position_qty = 218
+        self.mm.position_size = 218
         self.mm.buy_order = None
         self.mm.sell_order = None
         self.mm.placeOrder = Mock()
@@ -726,7 +732,7 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.connected_flag = True
         self.mm.shutdown_flag = False
         self.mm.open_orders_snapshot_done = True
-        self.mm.position_qty = 218
+        self.mm.position_size = 218
         self.mm.avg_cost = 50.64
         self.mm.quote.bid = 50.0
         self.mm.quote.ask = 50.77
@@ -762,7 +768,7 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.quote.ask = 101.0
         now = 1_000_000.0
         self.mm.quote.last_update_ts = now
-        self.mm.position_qty = 0
+        self.mm.position_size = 0
         self.mm.last_quote_eval = 0.0
         with patch("market_maker.time.time", return_value=now), patch.object(
             self.mm, "place_or_replace_buy"

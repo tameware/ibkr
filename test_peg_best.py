@@ -152,7 +152,10 @@ class TestTrader(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures"""
+        self._ledger_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._ledger_tmp.cleanup)
         self.config = {
+            "ledgers_dir": self._ledger_tmp.name,
             "host": "127.0.0.1",
             "port": 7497,
             "symbol": "AAPL",
@@ -427,8 +430,9 @@ class TestTrader(unittest.TestCase):
         contract.secType = "STK"
         
         self.trader.position("account1", contract, 75, 150.25)
-        self.assertEqual(self.trader.position_size, 75)
-    
+        self.assertEqual(self.trader.ledger.ib_snapshot_qty, 75)
+        self.assertEqual(self.trader.position_size, 0)
+
     def test_position_ignores_other_symbols(self):
         """Test that positions for other symbols are ignored"""
         contract = MagicMock()

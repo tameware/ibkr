@@ -251,7 +251,9 @@ class TestAdjustedRelLimits(unittest.TestCase):
 
 class TestTrader(unittest.TestCase):
     def setUp(self):
-        self.cfg = _minimal_config()
+        self._ledger_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._ledger_tmp.cleanup)
+        self.cfg = _minimal_config(ledgers_dir=self._ledger_tmp.name)
         self.t = Trader(self.cfg)
         # NBBO so sync_orders / adjusted_rel_limits can run (mid 50.00, mid_delta 0.02 → 49.98 / 50.02)
         self.t._bid = 49.90
@@ -573,7 +575,9 @@ class TestTrader(unittest.TestCase):
 
 class TestExecutionLogging(unittest.TestCase):
     def setUp(self):
-        self.cfg = _minimal_config()
+        self._ledger_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._ledger_tmp.cleanup)
+        self.cfg = _minimal_config(ledgers_dir=self._ledger_tmp.name)
         self.t = Trader(self.cfg)
         self.t.trigger_resync = Mock()
 
@@ -682,10 +686,12 @@ class TestExecutionLogging(unittest.TestCase):
                                                execId="x-42-1", shares=25,
                                                price=49.97, exchange="ARCA",
                                                cumQty=25, avgPrice=49.97))
+        self.assertEqual(self.t.position_size, 25)
+        self.assertEqual(self.t.ledger.qty, 25)
         msgs = [_log_line(c) for c in tp.call_args_list]
-        self.assertEqual(len(msgs), 1)
-        m = msgs[0]
-        self.assertIn("Execution BUY", m)
+        self.assertGreaterEqual(len(msgs), 1)
+        self.assertTrue(any("Execution BUY" in m for m in msgs))
+        m = next(x for x in msgs if "Execution BUY" in x)
         self.assertIn("orderId=42", m)
         self.assertIn("execId=x-42-1", m)
         self.assertIn("shares=25", m)
@@ -697,7 +703,8 @@ class TestExecutionLogging(unittest.TestCase):
         with patch.object(self.t.logger, "info") as tp:
             self.t.execDetails(0, self._contract(),
                                self._execution(side="SLD"))
-        self.assertIn("Execution SELL", _log_line(tp.call_args_list[0]))
+        msgs = [_log_line(c) for c in tp.call_args_list]
+        self.assertTrue(any("Execution SELL" in m for m in msgs))
 
     def test_exec_details_filters_other_symbols(self):
         with patch.object(self.t.logger, "info") as tp:
@@ -773,7 +780,9 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
     so the working remaining matches the new desired size."""
 
     def setUp(self):
-        self.cfg = _minimal_config()
+        self._ledger_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._ledger_tmp.cleanup)
+        self.cfg = _minimal_config(ledgers_dir=self._ledger_tmp.name)
         self.t = Trader(self.cfg)
         self.t.ready_for_trading = True
         self.t.ref_price = 50.0

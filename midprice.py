@@ -15,16 +15,21 @@ from ibapi.ticktype import TickType
 from ibapi.wrapper import EWrapper
 
 from ibkr_app_support import (
+    PositionLedger,
     add_config_argument,
     add_ib_connection_arguments,
     add_session_hours_arguments,
     format_ib_error_message,
+    handle_ledger_execution,
+    handle_ledger_ib_position,
+    ib_client_id_from_config,
     load_merged_config,
     log_startup_timezones,
     make_stock_contract,
     regular_session_open,
     safe_cancel_order,
     should_suppress_ib_error,
+    sync_attrs_from_ledger,
 )
 
 HIST_REQ_ID = 1001
@@ -70,6 +75,10 @@ class Trader(EWrapper, EClient):
         self.sync_requested = False
         self.last_resync_request_ts = 0.0
         self.resync_debounce_seconds = float(self.config.get("resync_debounce_seconds", 0.35))
+
+        self.client_id = ib_client_id_from_config(config, default=1)
+        self.ledger = PositionLedger.open("midprice", config, client_id=self.client_id)
+        sync_attrs_from_ledger(self.ledger, self, qty_attr="position_size", avg_attr=None)
 
     def orderStatus(
         self,
@@ -197,9 +206,36 @@ class Trader(EWrapper, EClient):
             )
         )
 
+    def execDetails(self, reqId, contract, execution):
+        if (
+            contract.symbol != self.config["symbol"]
+            or contract.secType != self.config["sec_type"]
+        ):
+            return
+        if handle_ledger_execution(
+            self.ledger, execution, self.client_id, logger=None
+        ):
+            sync_attrs_from_ledger(
+                self.ledger, self, qty_attr="position_size", avg_attr=None
+            )
+            tprint(
+                f"Ledger {self.ledger.path.name} qty={self.ledger.qty} "
+                f"after fill execId={getattr(execution, 'execId', '')}"
+            )
+
     def position(self, account, contract, pos, avgCost):
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
-            self.position_size = int(pos)
+            handle_ledger_ib_position(
+                self.ledger, account, int(pos), float(avgCost), logger=None
+            )
+            sync_attrs_from_ledger(
+                self.ledger, self, qty_attr="position_size", avg_attr=None
+            )
+            if self.ledger.qty != int(pos):
+                tprint(
+                    f"Ledger {self.ledger.path.name} qty={self.ledger.qty} "
+                    f"(IB snapshot qty={int(pos)})"
+                )
 
     def positionEnd(self):
         self.position_snapshot_complete = True
@@ -262,7 +298,6 @@ class Trader(EWrapper, EClient):
 
     def request_positions_snapshot(self):
         self.position_snapshot_complete = False
-        self.position_size = 0
         self.reqPositions()
 
     def request_open_orders_snapshot(self):
@@ -396,8 +431,7 @@ def main() -> None:
     log_startup_timezones(config)
 
     app = Trader(config)
-    CLIENT_ID = 1
-    app.connect(config["host"], config["port"], CLIENT_ID)
+    app.connect(config["host"], config["port"], app.client_id)
 
     thread = threading.Thread(target=app.run, daemon=True)
     thread.start()
