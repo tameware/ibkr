@@ -53,6 +53,13 @@ class _StubBot(IbkrBotApp):
 
 
 class TestIbkrBotApp(unittest.TestCase):
+    def setUp(self):
+        self._log_patcher = patch(
+            "ibkr_bot_base.build_logger", return_value=MagicMock()
+        )
+        self._log_patcher.start()
+        self.addCleanup(self._log_patcher.stop)
+
     def test_next_valid_id_runs_startup(self):
         bot = _StubBot(
             {"symbol": "X", "sec_type": "STK", "currency": "USD", "exchange": "SMART"}
