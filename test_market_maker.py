@@ -114,6 +114,31 @@ class TestFlattenConfig(unittest.TestCase):
         out = flatten_config_sections(data)
         self.assertEqual(out, {"visible": 2})
 
+    def test_skips_slash_slash_comment_keys(self):
+        data = {
+            "ibkr": {"host": "127.0.0.1", "//": "paper port note"},
+            "strategy": {"max_pos": 100, "//": "strategy note"},
+        }
+        out = flatten_config_sections(data)
+        self.assertEqual(out, {"host": "127.0.0.1", "max_pos": 100})
+        self.assertNotIn("//", out)
+
+    def test_load_config_file_allows_repeated_slash_slash_keys(self):
+        raw = (
+            '{"strategy": {"max_pos": 10, "//": "first note", '
+            '"loop_seconds": 5, "//": "second note"}}'
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write(raw)
+            path = f.name
+        try:
+            out = load_config_file(path)
+        finally:
+            Path(path).unlink(missing_ok=True)
+        self.assertEqual(out["max_pos"], 10)
+        self.assertEqual(out["loop_seconds"], 5)
+        self.assertNotIn("//", out)
+
     def test_duplicate_nested_key_raises(self):
         data = {
             "a": {"port": 1},

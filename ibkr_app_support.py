@@ -24,28 +24,51 @@ def normalize_config_key(name: str) -> str:
     return name.replace("-", "_")
 
 
+def is_ignored_config_key(key: str) -> bool:
+    """True for comment/metadata keys omitted from the runtime config dict."""
+    nk = normalize_config_key(str(key))
+    return nk == "//" or nk.startswith("_")
+
+
+def _config_json_object_pairs_hook(
+    pairs: list[tuple[str, Any]],
+) -> Dict[str, Any]:
+    """Build a JSON object; allow repeated ``//`` comment keys (stdlib json cannot)."""
+    out: Dict[str, Any] = {}
+    seen: set[str] = set()
+    for key, value in pairs:
+        if is_ignored_config_key(key):
+            continue
+        nk = normalize_config_key(str(key))
+        if nk in seen:
+            raise ValueError(f"Duplicate config key {nk!r} in JSON object")
+        seen.add(nk)
+        out[key] = value
+    return out
+
+
 def flatten_config_sections(data: Dict[str, Any]) -> Dict[str, Any]:
     """Expand one level of nested dicts into flat keys.
 
     Top-level scalars and lists stay as-is. Nested dict values merge their snake_case keys
     into the result; top-level keys (except those starting with ``_``) override section values.
+    Keys named ``//`` are comments and are omitted from the flattened config.
     """
     section_flat: Dict[str, Any] = {}
     top_level: Dict[str, Any] = {}
     for key, value in data.items():
-        sk = normalize_config_key(str(key))
-        if sk.startswith("_"):
+        if is_ignored_config_key(str(key)):
             continue
         if isinstance(value, dict):
             for subkey, subval in value.items():
-                nk = normalize_config_key(str(subkey))
-                if nk.startswith("_"):
+                if is_ignored_config_key(str(subkey)):
                     continue
+                nk = normalize_config_key(str(subkey))
                 if nk in section_flat:
                     raise ValueError(f"Duplicate config key {nk!r} (from nested sections)")
                 section_flat[nk] = subval
         else:
-            top_level[sk] = value
+            top_level[normalize_config_key(str(key))] = value
     merged = dict(section_flat)
     merged.update(top_level)
     return merged
@@ -53,7 +76,7 @@ def flatten_config_sections(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def load_config_file(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        data = json.load(f, object_pairs_hook=_config_json_object_pairs_hook)
     if not isinstance(data, dict):
         raise ValueError("Config file must contain a JSON object at the top level")
     return flatten_config_sections(data)
