@@ -1,7 +1,7 @@
 {
   "host": "127.0.0.1",
   "port": 7496,
-  "_comment": "Paper trading port = 7497. REL pegging is not available in paper trading for some products — use live paper carefully or check IB order-type docs.",
+  "//": "Paper trading port = 7497. REL pegging is not available in paper trading for some products — use live paper carefully or check IB order-type docs.",
   "client_id": 1,
   "symbol": "Your stock's ticker here",
   "sec_type": "STK",
@@ -20,12 +20,12 @@
   "ignored_error_codes": [2103, 2104, 2106, 2108, 2158],
   "ignore_error_substrings": ["data farm connection is broken"],
   "offset_pct": 0.4,
-  "_comment": "Any offset_pct above 0.5 should have no effect",
+  "//": "Any offset_pct above 0.5 should have no effect",
   "min_order_size": 10,
   "resync_debounce_seconds": 0.35,
   "nbbo_coalesce_seconds": 4.0,
   "nbbo_coalesce_max_seconds": 10.0,
-  "_comment_nbbo_coalesce": "Commit pending NBBO after 4s quiet ticks, or at least every 10s if ticks never pause",
+  "//": "Commit pending NBBO after 4s quiet ticks, or at least every 10s if ticks never pause",
   "cancel_open_orders_on_shutdown": false,
 
   "log_dir": "logs",
