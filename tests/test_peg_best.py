@@ -182,9 +182,9 @@ class TestTrader(unittest.TestCase):
         self.assertEqual(contract.exchange, "SMART")
         self.assertEqual(contract.primaryExchange, "NASDAQ")
     
-    def test_make_pegbest_order_buy(self):
+    def test_make_quote_order_buy(self):
         """Test PEG BEST order creation for BUY"""
-        order = self.trader.make_pegbest_order("BUY", 50, 150.25)
+        order = self.trader.make_quote_order("BUY", 50, 150.25)
         
         self.assertEqual(order.action, "BUY")
         self.assertEqual(order.orderType, "PEG BEST")
@@ -521,7 +521,7 @@ class TestTrader(unittest.TestCase):
         self._seed(50)
         self.trader.buy_order_id = 999  # Has open BUY order but wants to SELL
         
-        with patch("peg_best.safe_cancel_order") as cancel:
+        with patch("single_side_quoter.safe_cancel_order") as cancel:
             self.trader.sync_orders()
             cancel.assert_called_once_with(self.trader, 999)
         self.assertEqual(self.trader.open_symbol_buys, 0)
@@ -533,7 +533,7 @@ class TestTrader(unittest.TestCase):
         self._seed(0)
         self.trader.sell_order_id = 999  # Has open SELL order but wants to BUY
         
-        with patch("peg_best.safe_cancel_order") as cancel:
+        with patch("single_side_quoter.safe_cancel_order") as cancel:
             self.trader.sync_orders()
             cancel.assert_called_once_with(self.trader, 999)
         self.assertEqual(self.trader.open_symbol_sells, 0)
