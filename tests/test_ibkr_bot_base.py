@@ -7,7 +7,12 @@ from tests.ibapi_mocks import install_ibapi_mocks
 
 install_ibapi_mocks(ticktype=False)
 
-from ibkr_bot_base import IbkrBotApp, SnapshotResyncMixin
+from ibkr_bot_base import (
+    HIST_REQ_ID,
+    IbkrBotApp,
+    OpenPriceBootstrapMixin,
+    SnapshotResyncMixin,
+)
 
 
 class _StubBot(IbkrBotApp):
@@ -54,6 +59,54 @@ class _ResyncStub(SnapshotResyncMixin, IbkrBotApp):
 
     def shutdown_quotes(self) -> None:
         pass
+
+
+class _OpenPriceStub(OpenPriceBootstrapMixin, IbkrBotApp):
+    def __init__(self):
+        super().__init__(
+            _RESYNC_CONFIG,
+            logger_name="open_price_stub",
+            default_log_file="open_price.log",
+        )
+        self._init_open_price_bootstrap()
+        self.ref_price = None
+        self.reqHistoricalData = MagicMock()
+
+    def startup(self) -> None:
+        pass
+
+    def shutdown_quotes(self) -> None:
+        pass
+
+
+class TestOpenPriceBootstrapMixin(unittest.TestCase):
+    def setUp(self):
+        self._log_patcher = patch(
+            "ibkr_bot_base.build_logger", return_value=MagicMock()
+        )
+        self._log_patcher.start()
+        self.addCleanup(self._log_patcher.stop)
+
+    def test_historical_data_end_sets_open_and_ref_price(self):
+        bot = _OpenPriceStub()
+        bar = MagicMock(open=150.0, close=151.0)
+        bot._bars = [bar]
+        bot.historicalDataEnd(HIST_REQ_ID, "", "")
+        self.assertEqual(bot.open_price, 150.0)
+        self.assertEqual(bot.ref_price, 150.0)
+
+    def test_historical_data_end_falls_back_to_close(self):
+        bot = _OpenPriceStub()
+        bar = MagicMock(open=0, close=145.5)
+        bot._bars = [bar]
+        bot.historicalDataEnd(HIST_REQ_ID, "", "")
+        self.assertEqual(bot.open_price, 145.5)
+
+    def test_historical_data_ignores_wrong_req_id(self):
+        bot = _OpenPriceStub()
+        bar = MagicMock(open=150.0)
+        bot.historicalData(9999, bar)
+        self.assertEqual(bot._bars, [])
 
 
 class TestSnapshotResyncMixin(unittest.TestCase):

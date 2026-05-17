@@ -32,9 +32,8 @@ from ibkr_app_support import (
     safe_cancel_order,
     sync_attrs_from_ledger,
 )
-from ibkr_bot_base import IbkrBotApp, SnapshotResyncMixin
+from ibkr_bot_base import IbkrBotApp, OpenPriceBootstrapMixin, SnapshotResyncMixin
 
-HIST_REQ_ID = 1001
 LAST_TRADE_REQ_ID = 2001
 MKTDATA_REQ_ID = 3001
 
@@ -62,7 +61,7 @@ _BASE_REQUIRED_FIELDS = [
 ]
 
 
-class TwoSidedMidTrader(SnapshotResyncMixin, IbkrBotApp):
+class TwoSidedMidTrader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
     def __init__(
         self,
         config: Dict[str, Any],
@@ -81,8 +80,7 @@ class TwoSidedMidTrader(SnapshotResyncMixin, IbkrBotApp):
         self.nextOrderId: int | None = None
 
         self.position_size = 0
-        self.open_price = None
-        self._bars: list[Any] = []
+        self._init_open_price_bootstrap()
 
         self.buy_order_id: int | None = None
         self.sell_order_id: int | None = None
@@ -279,47 +277,6 @@ class TwoSidedMidTrader(SnapshotResyncMixin, IbkrBotApp):
             sync_attrs_from_ledger(
                 self.ledger, self, qty_attr="position_size", avg_attr=None
             )
-
-    def request_today_open_or_prior_close(self):
-        self.logger.info("Requesting daily bars for open/prior close")
-        self._bars = []
-        self.reqHistoricalData(
-            HIST_REQ_ID,
-            self.contract,
-            "",
-            "2 D",
-            "1 day",
-            "TRADES",
-            1,
-            1,
-            False,
-            [],
-        )
-
-    def historicalData(self, reqId, bar):
-        if reqId != HIST_REQ_ID:
-            return
-        self._bars.append(bar)
-
-    def historicalDataEnd(self, reqId, start, end):
-        if reqId != HIST_REQ_ID:
-            return
-
-        if not self._bars:
-            self.logger.info("No historical bars returned; cannot set open_price")
-            return
-
-        last_bar = self._bars[-1]
-
-        if last_bar.open and last_bar.open > 0:
-            self.open_price = last_bar.open
-            self.logger.info(f"Today's open price: {self.open_price}")
-        else:
-            self.open_price = last_bar.close
-            self.logger.info(f"No valid open; using prior close: {self.open_price}")
-
-        if self.ref_price is None:
-            self.ref_price = self.open_price
 
     def us_regular_hours(self):
         return regular_session_open(self.config)

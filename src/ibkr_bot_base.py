@@ -17,6 +17,61 @@ from ibkr_app_support import (
     make_stock_contract,
 )
 
+HIST_REQ_ID = 1001
+
+
+class OpenPriceBootstrapMixin:
+    """Request daily bars at startup and set ``open_price`` / ``ref_price``."""
+
+    def _init_open_price_bootstrap(self) -> None:
+        self.open_price: float | None = None
+        self._bars: list[Any] = []
+
+    def request_today_open_or_prior_close(self) -> None:
+        self.logger.info("Requesting daily bars for open/prior close")
+        self._bars = []
+        self.reqHistoricalData(
+            HIST_REQ_ID,
+            self.contract,
+            "",
+            "2 D",
+            "1 day",
+            "TRADES",
+            1,
+            1,
+            False,
+            [],
+        )
+
+    def historicalData(self, reqId: Any, bar: Any) -> None:
+        if reqId != HIST_REQ_ID:
+            return
+        self._bars.append(bar)
+
+    def historicalDataEnd(self, reqId: Any, start: Any, end: Any) -> None:
+        if reqId != HIST_REQ_ID:
+            return
+
+        if not self._bars:
+            self.logger.info("No historical bars returned; cannot set open_price")
+            return
+
+        last_bar = self._bars[-1]
+
+        if last_bar.open and last_bar.open > 0:
+            self.open_price = float(last_bar.open)
+            self.logger.info("Today's open price: %s", self.open_price)
+        else:
+            self.open_price = float(last_bar.close)
+            self.logger.info("No valid open; using prior close: %s", self.open_price)
+
+        self.on_open_price_ready(self.open_price)
+
+    def on_open_price_ready(self, open_price: float) -> None:
+        """Default: seed ``ref_price`` when still unset."""
+        if getattr(self, "ref_price", None) is None:
+            self.ref_price = open_price
+
 
 class SnapshotResyncMixin:
     """Debounce ``reqPositions`` / ``reqOpenOrders`` before calling ``sync_orders``."""
