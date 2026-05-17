@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Sequence
 
@@ -15,6 +16,75 @@ from ibkr_app_support import (
     log_ib_error,
     make_stock_contract,
 )
+
+
+class SnapshotResyncMixin:
+    """Debounce ``reqPositions`` / ``reqOpenOrders`` before calling ``sync_orders``."""
+
+    def _init_snapshot_resync(self, config: Dict[str, Any]) -> None:
+        self.ready_for_trading = False
+        self.position_snapshot_complete = False
+        self.open_orders_snapshot_complete = False
+        self.sync_requested = False
+        self.last_resync_request_ts = 0.0
+        self.resync_debounce_seconds = float(
+            config.get("resync_debounce_seconds", 0.35)
+        )
+
+    def on_open_orders_snapshot_start(self) -> None:
+        """Reset per-symbol open-order counters before ``reqOpenOrders``."""
+        self.open_symbol_buys = 0
+        self.open_symbol_sells = 0
+
+    def request_positions_snapshot(self) -> None:
+        self.position_snapshot_complete = False
+        self.reqPositions()
+
+    def request_open_orders_snapshot(self) -> None:
+        self.open_orders_snapshot_complete = False
+        self.on_open_orders_snapshot_start()
+        self.reqOpenOrders()
+
+    def _update_ready_for_trading(self) -> None:
+        self.ready_for_trading = (
+            self.position_snapshot_complete and self.open_orders_snapshot_complete
+        )
+
+    def positionEnd(self) -> None:
+        self.position_snapshot_complete = True
+        self._update_ready_for_trading()
+        self.maybe_sync_orders()
+
+    def openOrderEnd(self) -> None:
+        self.on_open_orders_snapshot_end()
+
+    def on_open_orders_snapshot_end(self) -> None:
+        self.open_orders_snapshot_complete = True
+        self._update_ready_for_trading()
+        self.maybe_sync_orders()
+
+    def maybe_sync_orders(self) -> None:
+        if (
+            self.sync_requested
+            and self.position_snapshot_complete
+            and self.open_orders_snapshot_complete
+        ):
+            self.sync_requested = False
+            self.sync_orders()
+
+    def trigger_resync(self, *, force: bool = False) -> None:
+        if self.shutdown_flag or not self.isConnected():
+            return
+
+        now = time.monotonic()
+        if not force and now - self.last_resync_request_ts < self.resync_debounce_seconds:
+            return
+
+        self.last_resync_request_ts = now
+        self.sync_requested = True
+        self.request_positions_snapshot()
+        self.request_open_orders_snapshot()
+        self.maybe_sync_orders()
 
 
 class IbkrBotApp(EWrapper, EClient, ABC):

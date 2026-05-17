@@ -77,7 +77,7 @@ from ibkr_app_support import (
     safe_cancel_order,
     sync_attrs_from_ledger,
 )
-from ibkr_bot_base import IbkrBotApp
+from ibkr_bot_base import IbkrBotApp, SnapshotResyncMixin
 from ibapi.common import TickAttrib, TickerId
 from ibapi.order import Order
 from ibapi.ticktype import TickType
@@ -110,7 +110,7 @@ def make_rel_order(
     return o
 
 
-class Trader(IbkrBotApp):
+class Trader(SnapshotResyncMixin, IbkrBotApp):
     def __init__(self, config: Dict[str, Any]):
         super().__init__(
             config,
@@ -118,7 +118,6 @@ class Trader(IbkrBotApp):
             default_log_file="peg_primary.log",
         )
 
-        self.ready_for_trading = False
         self.nextOrderId: int | None = None
 
         self.position_size = 0
@@ -139,11 +138,7 @@ class Trader(IbkrBotApp):
         self.open_symbol_sells = 0
         self.pending_buy = False
         self.pending_sell = False
-        self.position_snapshot_complete = False
-        self.open_orders_snapshot_complete = False
-        self.sync_requested = False
-        self.last_resync_request_ts = 0.0
-        self.resync_debounce_seconds = float(self.config.get("resync_debounce_seconds", 0.35))
+        self._init_snapshot_resync(config)
         self.nbbo_sync_interval_seconds = float(self.config["loop_seconds"])
         self._nbbo_throttle = NbboThrottle(
             self.nbbo_sync_interval_seconds,
@@ -408,9 +403,13 @@ class Trader(IbkrBotApp):
                 self.sell_order_id = orderId
                 self.sell_order_qty = qty
 
-    def openOrderEnd(self):
-        self.open_orders_snapshot_complete = True
-        self.ready_for_trading = self.position_snapshot_complete and self.open_orders_snapshot_complete
+    def on_open_orders_snapshot_start(self) -> None:
+        super().on_open_orders_snapshot_start()
+        self._snapshot_open_order_lines = []
+        self.order_working_lmt.clear()
+        self.order_working_aux.clear()
+
+    def on_open_orders_snapshot_end(self) -> None:
         if not self._startup_open_orders_logged:
             sym = self.config["symbol"]
             if self._snapshot_open_order_lines:
@@ -425,7 +424,7 @@ class Trader(IbkrBotApp):
                     f"Open orders at startup for {sym} ({self.config['sec_type']}): none"
                 )
             self._startup_open_orders_logged = True
-        self.maybe_sync_orders()
+        super().on_open_orders_snapshot_end()
 
     def position(self, account, contract, pos, avgCost):
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
@@ -435,11 +434,6 @@ class Trader(IbkrBotApp):
             sync_attrs_from_ledger(
                 self.ledger, self, qty_attr="position_size", avg_attr=None
             )
-
-    def positionEnd(self):
-        self.position_snapshot_complete = True
-        self.ready_for_trading = self.position_snapshot_complete and self.open_orders_snapshot_complete
-        self.maybe_sync_orders()
 
     def request_today_open_or_prior_close(self):
         self.logger.info("Requesting daily bars for open/prior close")
@@ -504,24 +498,6 @@ class Trader(IbkrBotApp):
         return self_trade_limits_from_nbbo(
             float(self._bid), float(self._ask), self.config
         )
-
-    def request_positions_snapshot(self):
-        self.position_snapshot_complete = False
-        self.reqPositions()
-
-    def request_open_orders_snapshot(self):
-        self.open_orders_snapshot_complete = False
-        self.open_symbol_buys = 0
-        self.open_symbol_sells = 0
-        self._snapshot_open_order_lines = []
-        self.order_working_lmt.clear()
-        self.order_working_aux.clear()
-        self.reqOpenOrders()
-
-    def maybe_sync_orders(self):
-        if self.sync_requested and self.position_snapshot_complete and self.open_orders_snapshot_complete:
-            self.sync_requested = False
-            self.sync_orders()
 
     def maybe_sync_orders_from_nbbo(self, *, force: bool = False) -> None:
         """Re-peg working REL orders when NBBO moves (API callback thread)."""
@@ -666,20 +642,6 @@ class Trader(IbkrBotApp):
         self.placeOrder(oid, self.contract, new_order)
         self._note_order_cache(oid, new_order)
         return True
-
-    def trigger_resync(self, *, force: bool = False) -> None:
-        if self.shutdown_flag or not self.isConnected():
-            return
-
-        now = time.monotonic()
-        if not force and now - self.last_resync_request_ts < self.resync_debounce_seconds:
-            return
-
-        self.last_resync_request_ts = now
-        self.sync_requested = True
-        self.request_positions_snapshot()
-        self.request_open_orders_snapshot()
-        self.maybe_sync_orders()
 
     def sync_orders(self):
         if self.shutdown_flag or not self.ready_for_trading:

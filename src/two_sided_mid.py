@@ -32,7 +32,7 @@ from ibkr_app_support import (
     safe_cancel_order,
     sync_attrs_from_ledger,
 )
-from ibkr_bot_base import IbkrBotApp
+from ibkr_bot_base import IbkrBotApp, SnapshotResyncMixin
 
 HIST_REQ_ID = 1001
 LAST_TRADE_REQ_ID = 2001
@@ -62,7 +62,7 @@ _BASE_REQUIRED_FIELDS = [
 ]
 
 
-class TwoSidedMidTrader(IbkrBotApp):
+class TwoSidedMidTrader(SnapshotResyncMixin, IbkrBotApp):
     def __init__(
         self,
         config: Dict[str, Any],
@@ -78,7 +78,6 @@ class TwoSidedMidTrader(IbkrBotApp):
             default_log_file=default_log_file,
         )
 
-        self.ready_for_trading = False
         self.nextOrderId: int | None = None
 
         self.position_size = 0
@@ -96,13 +95,7 @@ class TwoSidedMidTrader(IbkrBotApp):
         self.open_symbol_sells = 0
         self.pending_buy = False
         self.pending_sell = False
-        self.position_snapshot_complete = False
-        self.open_orders_snapshot_complete = False
-        self.sync_requested = False
-        self.last_resync_request_ts = 0.0
-        self.resync_debounce_seconds = float(
-            self.config.get("resync_debounce_seconds", 0.35)
-        )
+        self._init_snapshot_resync(config)
 
         self.client_id = ib_client_id_from_config(
             config, default=default_client_id
@@ -261,13 +254,6 @@ class TwoSidedMidTrader(IbkrBotApp):
                 self.open_symbol_sells += 1
                 self.sell_order_id = orderId
 
-    def openOrderEnd(self):
-        self.open_orders_snapshot_complete = True
-        self.ready_for_trading = (
-            self.position_snapshot_complete and self.open_orders_snapshot_complete
-        )
-        self.maybe_sync_orders()
-
     def execDetails(self, reqId, contract, execution):
         if (
             contract.symbol != self.config["symbol"]
@@ -293,13 +279,6 @@ class TwoSidedMidTrader(IbkrBotApp):
             sync_attrs_from_ledger(
                 self.ledger, self, qty_attr="position_size", avg_attr=None
             )
-
-    def positionEnd(self):
-        self.position_snapshot_complete = True
-        self.ready_for_trading = (
-            self.position_snapshot_complete and self.open_orders_snapshot_complete
-        )
-        self.maybe_sync_orders()
 
     def request_today_open_or_prior_close(self):
         self.logger.info("Requesting daily bars for open/prior close")
@@ -344,39 +323,6 @@ class TwoSidedMidTrader(IbkrBotApp):
 
     def us_regular_hours(self):
         return regular_session_open(self.config)
-
-    def request_positions_snapshot(self):
-        self.position_snapshot_complete = False
-        self.reqPositions()
-
-    def request_open_orders_snapshot(self):
-        self.open_orders_snapshot_complete = False
-        self.open_symbol_buys = 0
-        self.open_symbol_sells = 0
-        self.reqOpenOrders()
-
-    def maybe_sync_orders(self):
-        if (
-            self.sync_requested
-            and self.position_snapshot_complete
-            and self.open_orders_snapshot_complete
-        ):
-            self.sync_requested = False
-            self.sync_orders()
-
-    def trigger_resync(self):
-        if not self.isConnected():
-            return
-
-        now = time.monotonic()
-        if now - self.last_resync_request_ts < self.resync_debounce_seconds:
-            return
-
-        self.last_resync_request_ts = now
-        self.sync_requested = True
-        self.request_positions_snapshot()
-        self.request_open_orders_snapshot()
-        self.maybe_sync_orders()
 
     def sync_orders(self):
         if not self.ready_for_trading:
@@ -464,10 +410,7 @@ class TwoSidedMidTrader(IbkrBotApp):
                 self.logger.info("Disconnected from IBKR; exiting run loop")
                 break
             if self.us_regular_hours():
-                self.sync_requested = True
-                self.request_positions_snapshot()
-                self.request_open_orders_snapshot()
-                self.maybe_sync_orders()
+                self.trigger_resync()
             time.sleep(self.config["loop_seconds"])
 
 

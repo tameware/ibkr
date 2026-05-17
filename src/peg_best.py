@@ -30,14 +30,14 @@ from ibkr_app_support import (
     safe_cancel_order,
     sync_attrs_from_ledger,
 )
-from ibkr_bot_base import IbkrBotApp
+from ibkr_bot_base import IbkrBotApp, SnapshotResyncMixin
 
 HIST_REQ_ID = 1001
 LAST_TRADE_REQ_ID = 2001
 MKTDATA_REQ_ID = 3001
 
 
-class Trader(IbkrBotApp):
+class Trader(SnapshotResyncMixin, IbkrBotApp):
     def __init__(self, config: Dict[str, Any]):
         super().__init__(
             config,
@@ -45,7 +45,6 @@ class Trader(IbkrBotApp):
             default_log_file="peg_best.log",
         )
 
-        self.ready_for_trading = False
         self.nextOrderId: int | None = None
 
         self.position_size = 0
@@ -66,13 +65,7 @@ class Trader(IbkrBotApp):
         self.open_symbol_sells = 0
         self.pending_buy = False
         self.pending_sell = False
-        self.position_snapshot_complete = False
-        self.open_orders_snapshot_complete = False
-        self.sync_requested = False
-        self.last_resync_request_ts = 0.0
-        self.resync_debounce_seconds = float(
-            self.config.get("resync_debounce_seconds", 0.35)
-        )
+        self._init_snapshot_resync(config)
 
         self.client_id = ib_client_id_from_config(config, default=4)
         self.ledger = PositionLedger.open(
@@ -209,16 +202,12 @@ class Trader(IbkrBotApp):
                 self.open_symbol_sells += 1
                 self.sell_order_id = orderId
 
-    def openOrderEnd(self):
-        self.open_orders_snapshot_complete = True
-        self.ready_for_trading = (
-            self.position_snapshot_complete and self.open_orders_snapshot_complete
-        )
+    def on_open_orders_snapshot_end(self) -> None:
         self.logger.info(
             f"Open {self.config['symbol']} orders: "
             f"buys={self.open_symbol_buys}, sells={self.open_symbol_sells}"
         )
-        self.maybe_sync_orders()
+        super().on_open_orders_snapshot_end()
 
     def execDetails(self, reqId, contract, execution):
         if (
@@ -245,46 +234,6 @@ class Trader(IbkrBotApp):
             sync_attrs_from_ledger(
                 self.ledger, self, qty_attr="position_size", avg_attr=None
             )
-
-    def positionEnd(self):
-        self.position_snapshot_complete = True
-        self.ready_for_trading = (
-            self.position_snapshot_complete and self.open_orders_snapshot_complete
-        )
-        self.maybe_sync_orders()
-
-    def request_positions_snapshot(self) -> None:
-        self.position_snapshot_complete = False
-        self.reqPositions()
-
-    def request_open_orders_snapshot(self) -> None:
-        self.open_orders_snapshot_complete = False
-        self.open_symbol_buys = 0
-        self.open_symbol_sells = 0
-        self.reqOpenOrders()
-
-    def maybe_sync_orders(self) -> None:
-        if (
-            self.sync_requested
-            and self.position_snapshot_complete
-            and self.open_orders_snapshot_complete
-        ):
-            self.sync_requested = False
-            self.sync_orders()
-
-    def trigger_resync(self, *, force: bool = False) -> None:
-        if self.shutdown_flag or not self.isConnected():
-            return
-
-        now = time.monotonic()
-        if not force and now - self.last_resync_request_ts < self.resync_debounce_seconds:
-            return
-
-        self.last_resync_request_ts = now
-        self.sync_requested = True
-        self.request_positions_snapshot()
-        self.request_open_orders_snapshot()
-        self.maybe_sync_orders()
 
     def request_today_open_or_prior_close(self):
         self.logger.info("Requesting daily bars for open/prior close")
