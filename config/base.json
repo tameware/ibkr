@@ -20,7 +20,10 @@
     "price_round_digits": 2,
     "loop_seconds": 10,
     "max_pos": 100,
-    "tif": "DAY"
+    "tif": "DAY",
+    "nbbo_coalesce_seconds": 4.0,
+    "nbbo_coalesce_max_seconds": 10.0,
+    "//": "Commit pending NBBO after quiet ticks, or at least every max interval if ticks never pause"
   },
 
   "risk": {

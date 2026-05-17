@@ -698,6 +698,7 @@ class TestMarketMakerCore(unittest.TestCase):
         with patch.object(self.mm, "maybe_manage_quotes"):
             self.mm.tickPrice(1001, 1, 50.25, Mock())
             self.mm.tickPrice(1001, 2, 50.75, Mock())
+            self.mm._nbbo.flush_commit()
         self.assertEqual(self.mm.quote.bid, 50.25)
         self.assertEqual(self.mm.quote.ask, 50.75)
 

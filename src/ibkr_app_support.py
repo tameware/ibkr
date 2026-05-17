@@ -481,8 +481,8 @@ def is_valid_quote_pair(
 def nbbo_coalesce_intervals_from_config(
     config: Dict[str, Any],
     *,
-    quiet_default: float = 0.35,
-    max_default: float = 1.0,
+    quiet_default: float = 4.0,
+    max_default: float = 10.0,
 ) -> Tuple[float, float]:
     """Return ``(quiet_seconds, max_interval_seconds)`` for :class:`NbboCoalescer`."""
     quiet = float(
@@ -936,6 +936,67 @@ class NbboCoalescer:
                 self._timer = None
             self._last_flush_ts = None
             self._anchor_ts = None
+
+
+class NbboCoalesceSink:
+    """Stage bid/ask ``tickPrice`` updates and commit via :class:`NbboCoalescer`."""
+
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        on_valid_nbbo: Callable[[float, float], None],
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        require_positive: bool = True,
+    ) -> None:
+        self.bid: Optional[float] = None
+        self.ask: Optional[float] = None
+        self._pending_bid: Optional[float] = None
+        self._pending_ask: Optional[float] = None
+        self._on_valid_nbbo = on_valid_nbbo
+        self._require_positive = require_positive
+        quiet, max_interval = nbbo_coalesce_intervals_from_config(config)
+        self._coalesce = NbboCoalescer(
+            quiet,
+            self._commit_pending,
+            max_interval_seconds=max_interval,
+            clock=clock,
+        )
+
+    def stage_tick_price(self, tick_type: int, price: float) -> None:
+        if tick_type == 1:
+            if self._require_positive and price <= 0:
+                return
+            self._pending_bid = float(price)
+        elif tick_type == 2:
+            if self._require_positive and price <= 0:
+                return
+            self._pending_ask = float(price)
+        else:
+            return
+        self._coalesce.schedule()
+
+    def flush_commit(self) -> None:
+        """Apply pending bid/ask immediately (used after coalesce timer or in tests)."""
+        self._commit_pending()
+
+    def reset(self) -> None:
+        self._pending_bid = None
+        self._pending_ask = None
+        self.bid = None
+        self.ask = None
+        self._coalesce.cancel()
+
+    def cancel(self) -> None:
+        self._coalesce.cancel()
+
+    def _commit_pending(self) -> None:
+        if self._pending_bid is not None:
+            self.bid = self._pending_bid
+        if self._pending_ask is not None:
+            self.ask = self._pending_ask
+        if has_valid_nbbo(self.bid, self.ask):
+            self._on_valid_nbbo(float(self.bid), float(self.ask))
 
 
 def cfg_bool(config: Dict[str, Any], key: str, default: bool) -> bool:

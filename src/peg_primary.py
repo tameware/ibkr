@@ -62,7 +62,7 @@ from ibkr_app_support import (
     clamp_sell_to_avoid_self_trade,
     load_merged_config,
     max_sell_shares,
-    NbboCoalescer,
+    NbboCoalesceSink,
     has_valid_nbbo,
     nbbo_coalesce_intervals_from_config,
     nbbo_mid_rounded,
@@ -131,13 +131,7 @@ class Trader(IbkrBotApp):
         self.sell_order_qty: int | None = None
 
         self.ref_price = None
-        self._bid = None
-        self._ask = None
-        self._pending_bid: float | None = None
-        self._pending_ask: float | None = None
-        self.nbbo_coalesce_seconds, self.nbbo_coalesce_max_seconds = (
-            nbbo_coalesce_intervals_from_config(self.config)
-        )
+        self._nbbo = NbboCoalesceSink(self.config, self._on_coalesced_nbbo)
 
         self.remaining_by_order: Dict[int, Any] = {}
         self.filled_by_order: Dict[int, float] = {}
@@ -153,12 +147,6 @@ class Trader(IbkrBotApp):
         self.nbbo_sync_interval_seconds = float(self.config["loop_seconds"])
         self._nbbo_throttle = NbboThrottle(
             self.nbbo_sync_interval_seconds,
-            clock=time.monotonic,
-        )
-        self._nbbo_coalesce = NbboCoalescer(
-            self.nbbo_coalesce_seconds,
-            self._flush_pending_nbbo,
-            max_interval_seconds=self.nbbo_coalesce_max_seconds,
             clock=time.monotonic,
         )
         self._prev_us_regular_hours: bool | None = None
@@ -186,13 +174,14 @@ class Trader(IbkrBotApp):
             self.ledger.qty,
         )
 
+        _coalesce_quiet, _coalesce_max = nbbo_coalesce_intervals_from_config(self.config)
         self.logger.info(
             "REL quoter initialized symbol=%s exchange=%s "
             "(NBBO coalesce quiet=%.2fs min_interval=%.2fs; ib_client_id=%s)",
             self.config["symbol"],
             self.config["exchange"],
-            self.nbbo_coalesce_seconds,
-            self.nbbo_coalesce_max_seconds,
+            _coalesce_quiet,
+            _coalesce_max,
             self.ib_client_id,
         )
 
@@ -203,7 +192,7 @@ class Trader(IbkrBotApp):
         self.nextOrderId = order_id
 
     def shutdown_quotes(self) -> None:
-        self._nbbo_coalesce.cancel()
+        self._nbbo.cancel()
         if self.cancel_open_orders_on_shutdown:
             for label, oid in (("BUY", self.buy_order_id), ("SELL", self.sell_order_id)):
                 if oid is None:
@@ -345,36 +334,39 @@ class Trader(IbkrBotApp):
             f"ledger_qty={self.ledger.qty}"
         )
 
+    @property
+    def _bid(self) -> float | None:
+        return self._nbbo.bid
+
+    @_bid.setter
+    def _bid(self, value: float | None) -> None:
+        self._nbbo.bid = None if value is None else float(value)
+
+    @property
+    def _ask(self) -> float | None:
+        return self._nbbo.ask
+
+    @_ask.setter
+    def _ask(self, value: float | None) -> None:
+        self._nbbo.ask = None if value is None else float(value)
+
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
         if reqId != MKTDATA_REQ_ID:
             return
+        self._nbbo.stage_tick_price(int(tickType), float(price))
 
-        if tickType == 1:
-            self._pending_bid = float(price)
-        elif tickType == 2:
-            self._pending_ask = float(price)
-        else:
-            return
-
-        self._nbbo_coalesce.schedule()
-
-    def _flush_pending_nbbo(self) -> None:
-        """Apply the latest pending bid/ask from the tick stream, then re-peg if valid."""
-        if self._pending_bid is not None:
-            self._bid = self._pending_bid
-        if self._pending_ask is not None:
-            self._ask = self._pending_ask
+    def _on_coalesced_nbbo(self, bid: float, ask: float) -> None:
         if self._has_valid_nbbo():
             self.maybe_sync_orders_from_nbbo()
+
+    def _flush_pending_nbbo(self) -> None:
+        """Apply staged bid/ask immediately (tests and manual flush)."""
+        self._nbbo.flush_commit()
 
     def startup(self) -> None:
         """Subscribe to market data and request startup snapshots (from ``nextValidId``)."""
         self._startup_open_orders_logged = False
-        self._pending_bid = None
-        self._pending_ask = None
-        self._bid = None
-        self._ask = None
-        self._nbbo_coalesce.cancel()
+        self._nbbo.reset()
         self.request_positions_snapshot()
         self.request_today_open_or_prior_close()
         self.reqMktData(MKTDATA_REQ_ID, self.contract, "", False, False, [])

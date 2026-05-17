@@ -20,6 +20,7 @@ from ibkr_app_support import (
     add_logging_arguments,
     add_session_hours_arguments,
     clamp_quote_prices_to_avoid_self_trade,
+    NbboCoalesceSink,
     handle_ledger_execution,
     handle_ledger_ib_position,
     ib_client_id_from_config,
@@ -88,8 +89,7 @@ class TwoSidedMidTrader(IbkrBotApp):
         self.sell_order_id: int | None = None
 
         self.ref_price = None
-        self._bid = None
-        self._ask = None
+        self._nbbo = NbboCoalesceSink(self.config, self._on_coalesced_nbbo)
 
         self.remaining_by_order: Dict[int, Any] = {}
         self.open_symbol_buys = 0
@@ -121,6 +121,7 @@ class TwoSidedMidTrader(IbkrBotApp):
         self.nextOrderId = order_id
 
     def shutdown_quotes(self) -> None:
+        self._nbbo.cancel()
         if self.cancel_open_orders_on_shutdown:
             for label, oid in (("BUY", self.buy_order_id), ("SELL", self.sell_order_id)):
                 if oid is None:
@@ -132,7 +133,32 @@ class TwoSidedMidTrader(IbkrBotApp):
         self.pending_buy = False
         self.pending_sell = False
 
+    @property
+    def _bid(self) -> float | None:
+        return self._nbbo.bid
+
+    @_bid.setter
+    def _bid(self, value: float | None) -> None:
+        self._nbbo.bid = None if value is None else float(value)
+
+    @property
+    def _ask(self) -> float | None:
+        return self._nbbo.ask
+
+    @_ask.setter
+    def _ask(self, value: float | None) -> None:
+        self._nbbo.ask = None if value is None else float(value)
+
+    def _on_coalesced_nbbo(self, bid: float, ask: float) -> None:
+        mid = (bid + ask) / 2.0
+        if mid != self.ref_price:
+            self.logger.info(
+                f"ref_price updated: bid={bid} ask={ask} mid={mid}"
+            )
+            self.ref_price = mid
+
     def startup(self) -> None:
+        self._nbbo.reset()
         self.request_positions_snapshot()
         self.request_today_open_or_prior_close()
         self.reqMktData(MKTDATA_REQ_ID, self.contract, "", False, False, [])
@@ -224,19 +250,7 @@ class TwoSidedMidTrader(IbkrBotApp):
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
         if reqId != MKTDATA_REQ_ID:
             return
-
-        if tickType == 1:
-            self._bid = price
-        elif tickType == 2:
-            self._ask = price
-
-        if self._bid is not None and self._ask is not None and self._bid > 0 and self._ask > 0:
-            mid = (self._bid + self._ask) / 2.0
-            if mid != self.ref_price:
-                self.logger.info(
-                    f"ref_price updated: bid={self._bid} ask={self._ask} mid={mid}"
-                )
-                self.ref_price = mid
+        self._nbbo.stage_tick_price(int(tickType), float(price))
 
     def openOrder(self, orderId, contract, order, orderState):
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:

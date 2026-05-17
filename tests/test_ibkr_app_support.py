@@ -41,6 +41,7 @@ from ibkr_app_support import (
     load_merged_config,
     log_ib_error,
     log_startup_timezones,
+    NbboCoalesceSink,
     NbboCoalescer,
     NbboThrottle,
     make_stock_contract,
@@ -116,8 +117,20 @@ class TestQuotingPrimitives(unittest.TestCase):
             nbbo_coalesce_intervals_from_config(
                 {"resync_debounce_seconds": 0.35}
             ),
-            (0.35, 1.0),
+            (0.35, 10.0),
         )
+
+    def test_nbbo_coalesce_sink_stages_until_flush(self):
+        seen: list[tuple[float, float]] = []
+        sink = NbboCoalesceSink(
+            {"nbbo_coalesce_seconds": 1.0, "nbbo_coalesce_max_seconds": 0.0},
+            lambda b, a: seen.append((b, a)),
+        )
+        sink.stage_tick_price(1, 50.0)
+        sink.stage_tick_price(2, 50.2)
+        self.assertEqual(seen, [])
+        sink.flush_commit()
+        self.assertEqual(seen, [(50.0, 50.2)])
 
     def test_plan_working_order_reconcile(self):
         noop = plan_working_order_reconcile(

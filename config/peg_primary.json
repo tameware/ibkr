@@ -13,10 +13,7 @@
     "offset_pct": 0.4,
     "//": "Any offset_pct above 0.5 should have no effect",
     "min_order_size": 10,
-    "resync_debounce_seconds": 0.35,
-    "nbbo_coalesce_seconds": 4.0,
-    "nbbo_coalesce_max_seconds": 10.0,
-    "//": "Commit pending NBBO after 4s quiet ticks, or at least every 10s if ticks never pause"
+    "resync_debounce_seconds": 0.35
   },
 
   "logging": {

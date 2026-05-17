@@ -333,7 +333,7 @@ class TestTrader(unittest.TestCase):
         self.trader.ref_price = 150.00
 
         self.trader.tickPrice(3001, 2, 152.00, Mock())
-        # peg_best does not log tick mid updates
+        self.trader._nbbo.flush_commit()
         self.assertEqual(self.trader.ref_price, 151.00)
     
     def test_open_order_tracking(self):

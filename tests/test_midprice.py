@@ -378,6 +378,7 @@ class TestTrader(unittest.TestCase):
         self.trader.ref_price = 150.00
 
         self.trader.tickPrice(3001, 2, 152.00, Mock())
+        self.trader._nbbo.flush_commit()
         self.assertEqual(self.trader.ref_price, 151.00)
         self.trader.logger.info.assert_called_once()
     

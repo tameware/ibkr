@@ -29,6 +29,7 @@ from ibkr_app_support import (
     has_valid_nbbo,
     handle_ledger_ib_position,
     is_valid_quote_pair,
+    NbboCoalesceSink,
     ib_client_id_from_config,
     idle_until_shutdown,
     clamp_buy_to_avoid_self_trade,
@@ -179,6 +180,7 @@ class MarketMaker(IbkrBotApp):
         self.contract_details_req_id: int = 2001
 
         self.quote = QuoteState()
+        self._nbbo = NbboCoalesceSink(self.config, self._on_coalesced_nbbo)
         self.position_size = 0
         self.avg_cost = 0.0
         self.account = None
@@ -267,6 +269,7 @@ class MarketMaker(IbkrBotApp):
             self.shutdown_flag = True
 
     def shutdown_quotes(self) -> None:
+        self._nbbo.cancel()
         if self.cancel_open_orders_on_shutdown:
             if self.buy_order:
                 self.cancel_live_order(self.buy_order)
@@ -284,12 +287,13 @@ class MarketMaker(IbkrBotApp):
             self.logger.warning("Live data required, but market data type is %s", marketDataType)
 
     def startup(self):
+        self._nbbo.reset()
         with self.lock:
             self.open_orders_snapshot_done = False
             self.adoption_phase = True
             self.buy_order = None
             self.sell_order = None
-    
+
         self.reqMarketDataType(1)
         self.reqContractDetails(self.contract_details_req_id, self.contract)
         self.reqPositions()
@@ -390,45 +394,27 @@ class MarketMaker(IbkrBotApp):
                 e,
             )
 
+    def _on_coalesced_nbbo(self, bid: float, ask: float) -> None:
+        log_msg = None
+        with self.lock:
+            self.quote.bid = bid
+            self.quote.ask = ask
+            now = time.time()
+            self.quote.last_update_ts = now
+            self.last_nbbo_ok_ts = now
+            if self.log_bid_ask_ticks:
+                log_msg = (
+                    f"NBBO coalesced bid={bid:.2f} ask={ask:.2f} "
+                    f"bid_sz={self.quote.bid_size} ask_sz={self.quote.ask_size}"
+                )
+        if log_msg:
+            self.logger.info(log_msg)
+        self.maybe_manage_quotes()
+
     def tickPrice(self, reqId, tickType, price, attrib):
         if reqId != self.market_data_req_id:
             return
-
-        updated = False
-        log_msg = None
-
-        with self.lock:
-            if tickType == 1 and price > 0:
-                self.quote.bid = float(price)
-                self.quote.last_update_ts = time.time()
-                updated = True
-                if self.log_bid_ask_ticks:
-                    log_msg = (
-                        f"BID tick bid={self.quote.bid:.2f} ask={self.quote.ask} "
-                        f"bid_sz={self.quote.bid_size} ask_sz={self.quote.ask_size}"
-                    )
-            elif tickType == 2 and price > 0:
-                self.quote.ask = float(price)
-                self.quote.last_update_ts = time.time()
-                updated = True
-                if self.log_bid_ask_ticks:
-                    log_msg = (
-                        f"ASK tick bid={self.quote.bid} ask={self.quote.ask:.2f} "
-                        f"bid_sz={self.quote.bid_size} ask_sz={self.quote.ask_size}"
-                    )
-
-            if (
-                self.quote.bid is not None
-                and self.quote.ask is not None
-                and self.quote.bid < self.quote.ask
-            ):
-                self.last_nbbo_ok_ts = time.time()
-
-        if log_msg:
-            self.logger.info(log_msg)
-
-        if updated:
-            self.maybe_manage_quotes()
+        self._nbbo.stage_tick_price(int(tickType), float(price))
 
     def tickSize(self, reqId, tickType, size):
         if reqId != self.market_data_req_id:
