@@ -13,8 +13,7 @@
     "buy_delta": -0.10,
     "sell_delta": -0.10,
     "peg_mid_offset_whole": 0.00,
-    "peg_mid_offset_half": 0.005,
-    "resync_debounce_seconds": 0.35
+    "peg_mid_offset_half": 0.005
   },
 
   "logging": {

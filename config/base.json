@@ -23,7 +23,9 @@
     "tif": "DAY",
     "nbbo_coalesce_seconds": 4.0,
     "nbbo_coalesce_max_seconds": 10.0,
-    "//": "Commit pending NBBO after quiet ticks, or at least every max interval if ticks never pause"
+    "//": "Commit pending NBBO after quiet ticks, or at least every max interval if ticks never pause",
+    "resync_debounce_seconds": 0.35,
+    "//": "Min interval between full position/open-order snapshots and sync_orders"
   },
 
   "risk": {

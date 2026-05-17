@@ -370,6 +370,7 @@ class TestTrader(unittest.TestCase):
     
     def test_open_order_end(self):
         """Test openOrderEnd callback"""
+        self.trader.position_snapshot_complete = True
         self.trader.openOrderEnd()
         self.assertTrue(self.trader.ready_for_trading)
     
@@ -596,45 +597,53 @@ class TestTrader(unittest.TestCase):
     @patch('time.sleep')
     def test_run_until_shutdown_market_hours(self, mock_sleep):
         """Test main loop during market hours"""
-        # First iteration: market open, then disconnect to break loop
         call_count = 0
-        
+
         def is_connected_mock():
             nonlocal call_count
             call_count += 1
-            return call_count < 3  # True for first two calls, then False
-        
+            return call_count < 3
+
         self.trader.isConnected = Mock(side_effect=is_connected_mock)
         self.trader.us_regular_hours = Mock(return_value=True)
-        
-        # Reset the mock call counts and set sync_orders as a Mock
-        self.trader.reqPositions.reset_mock()
-        self.trader.sync_orders = Mock()
-        
-        self.trader.run_until_shutdown()
-        
-        # Should have called reqPositions at least once
-        self.trader.reqPositions.assert_called()
-        # Should have called sync_orders
-        self.trader.sync_orders.assert_called()
+
+        with patch.object(self.trader, "trigger_resync") as mock_resync:
+            self.trader.run_until_shutdown()
+            mock_resync.assert_called()
+
+    def test_trigger_resync_debounce(self):
+        """Rapid trigger_resync calls are debounced."""
+        self.trader.isConnected = Mock(return_value=True)
+        self.trader.request_positions_snapshot = Mock()
+        self.trader.request_open_orders_snapshot = Mock()
+        self.trader.maybe_sync_orders = Mock()
+        self.trader.resync_debounce_seconds = 10.0
+
+        self.trader.trigger_resync()
+        self.assertTrue(self.trader.sync_requested)
+        self.trader.request_positions_snapshot.assert_called_once()
+        self.trader.request_open_orders_snapshot.assert_called_once()
+
+        self.trader.request_positions_snapshot.reset_mock()
+        self.trader.request_open_orders_snapshot.reset_mock()
+        self.trader.trigger_resync()
+        self.trader.request_positions_snapshot.assert_not_called()
+        self.trader.request_open_orders_snapshot.assert_not_called()
+
+        self.trader.sync_requested = False
+        self.trader.trigger_resync(force=True)
+        self.assertTrue(self.trader.sync_requested)
+        self.trader.request_positions_snapshot.assert_called_once()
     
     @patch('time.sleep')
     def test_run_until_shutdown_outside_market_hours(self, mock_sleep):
         """Test main loop outside market hours"""
-        # Mock connection to return True once then False
         self.trader.isConnected = Mock(side_effect=[True, False])
         self.trader.us_regular_hours = Mock(return_value=False)
-        
-        # Reset mocks and set sync_orders as a Mock
-        self.trader.reqPositions = Mock()
-        self.trader.sync_orders = Mock()
-        
-        self.trader.run_until_shutdown()
-        
-        # Should NOT call reqPositions outside market hours
-        self.trader.reqPositions.assert_not_called()
-        # Should NOT call sync_orders outside market hours
-        self.trader.sync_orders.assert_not_called()
+
+        with patch.object(self.trader, "trigger_resync") as mock_resync:
+            self.trader.run_until_shutdown()
+            mock_resync.assert_not_called()
 
 
 class TestArgParser(unittest.TestCase):

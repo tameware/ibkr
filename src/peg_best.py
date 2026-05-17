@@ -66,6 +66,13 @@ class Trader(IbkrBotApp):
         self.open_symbol_sells = 0
         self.pending_buy = False
         self.pending_sell = False
+        self.position_snapshot_complete = False
+        self.open_orders_snapshot_complete = False
+        self.sync_requested = False
+        self.last_resync_request_ts = 0.0
+        self.resync_debounce_seconds = float(
+            self.config.get("resync_debounce_seconds", 0.35)
+        )
 
         self.client_id = ib_client_id_from_config(config, default=4)
         self.ledger = PositionLedger.open(
@@ -119,13 +126,10 @@ class Trader(IbkrBotApp):
         TICK_BY_TICK_TYPE = "Last"
 
         self._nbbo.reset()
-        self.reqPositions()
+        self.request_positions_snapshot()
         self.request_today_open_or_prior_close()
         self.reqMktData(MKTDATA_REQ_ID, self.contract, GENERIC_TICKS, False, False, [])
-
-        self.open_symbol_buys = 0
-        self.open_symbol_sells = 0
-        self.reqOpenOrders()
+        self.request_open_orders_snapshot()
 
         self.reqTickByTickData(
             LAST_TRADE_REQ_ID,
@@ -149,21 +153,26 @@ class Trader(IbkrBotApp):
         whyHeld,
         mktCapPrice,
     ):
-        if status in ("Filled", "Cancelled"):
+        tracked = orderId in (self.buy_order_id, self.sell_order_id)
+
+        if status in ("Filled", "Cancelled", "Inactive", "ApiCancelled"):
             if orderId == self.buy_order_id:
                 self.logger.info(f"BUY {orderId} {status} @ {avgFillPrice}")
                 self.pending_buy = False
                 self.buy_order_id = None
-                self.open_symbol_buys = 0
-                self.open_symbol_sells = 0
-                self.reqOpenOrders()
             elif orderId == self.sell_order_id:
                 self.logger.info(f"SELL {orderId} {status} @ {avgFillPrice}")
                 self.pending_sell = False
                 self.sell_order_id = None
-                self.open_symbol_buys = 0
-                self.open_symbol_sells = 0
-                self.reqOpenOrders()
+            if tracked:
+                self.remaining_by_order.pop(orderId, None)
+                self.trigger_resync()
+        elif status == "PartiallyFilled" and tracked:
+            self.logger.info(
+                f"Order {orderId} partially filled: filled={filled} "
+                f"remaining={remaining} avgFillPrice={avgFillPrice}"
+            )
+            self.trigger_resync()
 
     def tickByTickAllLast(
         self,
@@ -201,8 +210,15 @@ class Trader(IbkrBotApp):
                 self.sell_order_id = orderId
 
     def openOrderEnd(self):
-        self.ready_for_trading = True
-        self.logger.info(f"Open {self.config['symbol']} orders: buys={self.open_symbol_buys}, sells={self.open_symbol_sells}")
+        self.open_orders_snapshot_complete = True
+        self.ready_for_trading = (
+            self.position_snapshot_complete and self.open_orders_snapshot_complete
+        )
+        self.logger.info(
+            f"Open {self.config['symbol']} orders: "
+            f"buys={self.open_symbol_buys}, sells={self.open_symbol_sells}"
+        )
+        self.maybe_sync_orders()
 
     def execDetails(self, reqId, contract, execution):
         if (
@@ -231,7 +247,44 @@ class Trader(IbkrBotApp):
             )
 
     def positionEnd(self):
-        return
+        self.position_snapshot_complete = True
+        self.ready_for_trading = (
+            self.position_snapshot_complete and self.open_orders_snapshot_complete
+        )
+        self.maybe_sync_orders()
+
+    def request_positions_snapshot(self) -> None:
+        self.position_snapshot_complete = False
+        self.reqPositions()
+
+    def request_open_orders_snapshot(self) -> None:
+        self.open_orders_snapshot_complete = False
+        self.open_symbol_buys = 0
+        self.open_symbol_sells = 0
+        self.reqOpenOrders()
+
+    def maybe_sync_orders(self) -> None:
+        if (
+            self.sync_requested
+            and self.position_snapshot_complete
+            and self.open_orders_snapshot_complete
+        ):
+            self.sync_requested = False
+            self.sync_orders()
+
+    def trigger_resync(self, *, force: bool = False) -> None:
+        if self.shutdown_flag or not self.isConnected():
+            return
+
+        now = time.monotonic()
+        if not force and now - self.last_resync_request_ts < self.resync_debounce_seconds:
+            return
+
+        self.last_resync_request_ts = now
+        self.sync_requested = True
+        self.request_positions_snapshot()
+        self.request_open_orders_snapshot()
+        self.maybe_sync_orders()
 
     def request_today_open_or_prior_close(self):
         self.logger.info("Requesting daily bars for open/prior close")
@@ -379,8 +432,7 @@ class Trader(IbkrBotApp):
                 self.logger.info("Disconnected from IBKR; exiting run loop")
                 break
             if self.us_regular_hours():
-                self.reqPositions()
-                self.sync_orders()
+                self.trigger_resync()
             time.sleep(self.config["loop_seconds"])
 
 
@@ -391,6 +443,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--max_pos", type=int)
     parser.add_argument("--loop_seconds", type=float)
+    parser.add_argument("--resync_debounce_seconds", type=float)
     parser.add_argument("--buy_limit_multiplier", type=float)
     parser.add_argument("--sell_limit_multiplier", type=float)
     parser.add_argument("--min_compete_size", type=int)

@@ -12,8 +12,7 @@
     "mid_delta": 0.01,
     "offset_pct": 0.4,
     "//": "Any offset_pct above 0.5 should have no effect",
-    "min_order_size": 10,
-    "resync_debounce_seconds": 0.35
+    "min_order_size": 10
   },
 
   "logging": {
