@@ -46,7 +46,7 @@ from ibkr_app_support import (
     safe_cancel_order,
     sync_attrs_from_ledger,
 )
-from ibkr_bot_base import IbkrBotApp
+from ibkr_bot_base import ContractResolutionMixin, IbkrBotApp
 
 
 @dataclass
@@ -110,7 +110,7 @@ class QuotePipelineInvalidPair:
     sell_px: Optional[float]
 
 
-class MarketMaker(IbkrBotApp):
+class MarketMaker(ContractResolutionMixin, IbkrBotApp):
     """Two-sided limit quoter with NBBO tick-improve and inventory skew."""
 
     def __init__(self, config: Dict[str, Any]):
@@ -181,6 +181,10 @@ class MarketMaker(IbkrBotApp):
         self.next_order_id: Optional[int] = None
         self.market_data_req_id: TickerId = 1001
         self.contract_details_req_id: int = 2001
+        self._init_contract_resolution(
+            config,
+            contract_details_req_id=self.contract_details_req_id,
+        )
 
         self.quote = QuoteState()
         self._nbbo = NbboCoalesceSink(self.config, self._on_coalesced_nbbo)
@@ -299,32 +303,28 @@ class MarketMaker(IbkrBotApp):
     def startup(self):
         """Subscribe to market data and request startup snapshots."""
         self._nbbo.reset()
+        self._market_data_subscribed = False
         with self.lock:
             self.open_orders_snapshot_done = False
             self.adoption_phase = True
             self.buy_order = None
             self.sell_order = None
 
-        self.reqMarketDataType(1)
-        self.reqContractDetails(self.contract_details_req_id, self.contract)
+        self.request_contract_details()
         self.reqPositions()
-    
+
         if self.client_id == 0:
             self.reqOpenOrders()          # binds currently open manual/TWS orders
             self.reqAutoOpenOrders(True)  # binds future manual/TWS orders
         else:
             self.reqAllOpenOrders()       # visibility only, not cancelable if id=0
-    
-        self.reqMktData(self.market_data_req_id, self.contract, "", False, False, [])
+
         self.logger.info(
             "Requested contract details, positions, open orders, and live market data."
         )
 
-    def contractDetails(self, reqId, contractDetails):
-        """IB callback: log contract details."""
-        if reqId != self.contract_details_req_id:
-            return
-
+    def on_contract_resolved(self, contractDetails) -> None:
+        """Record min tick and target conId after IB resolves the contract."""
         summary = contractDetails.contract
         mt = getattr(contractDetails, "minTick", None)
         new_min_tick: Optional[float] = None
@@ -352,11 +352,6 @@ class MarketMaker(IbkrBotApp):
             getattr(summary, "currency", None),
             getattr(contractDetails, "minTick", None),
         )
-
-    def contractDetailsEnd(self, reqId):
-        """IB callback: end of contract details stream."""
-        if reqId == self.contract_details_req_id:
-            self.logger.info("Contract details request complete for reqId=%s", reqId)
 
     def _is_target_contract(self, contract) -> bool:
         """True if contract matches configured symbol/secType."""
@@ -432,12 +427,14 @@ class MarketMaker(IbkrBotApp):
         """IB callback: stage bid/ask ticks for NBBO coalescing."""
         if reqId != self.market_data_req_id:
             return
+        self.note_market_data_tick()
         self._nbbo.stage_tick_price(int(tickType), float(price))
 
     def tickSize(self, reqId, tickType, size):
         """IB callback: update bid/ask size from market data."""
         if reqId != self.market_data_req_id:
             return
+        self.note_market_data_tick()
 
         log_msg: Optional[str] = None
         updated = False
@@ -1426,6 +1423,7 @@ class MarketMaker(IbkrBotApp):
                             market_data_type,
                         )
                         self.last_watchdog_log_ts = now
+                    self.maybe_recover_stalled_market_data()
                 else:
                     age_ok = now - last_nbbo_ok_ts
                     if (

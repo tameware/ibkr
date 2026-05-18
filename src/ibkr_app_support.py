@@ -19,6 +19,8 @@ from zoneinfo import ZoneInfo
 DaemonThreadSpec = Union[Callable[[], None], Tuple[str, Callable[[], None]]]
 
 _IB_STATUS_INFO_CODES_DEFAULT = frozenset({2104, 2106, 2158})
+IB_ERROR_CONNECTIVITY_LOST = 1100
+IB_ERROR_CONNECTIVITY_RESTORED = 1102
 
 
 def normalize_config_key(name: str) -> str:
@@ -1000,11 +1002,12 @@ class NbboCoalesceSink:
 
     def stage_tick_price(self, tick_type: int, price: float) -> None:
         """Stage a bid or ask ``tickPrice`` update for coalescing."""
-        if tick_type == 1:
+        tt = int(tick_type)
+        if tt in _NBBO_BID_TICK_TYPES:
             if self._require_positive and price <= 0:
                 return
             self._pending_bid = float(price)
-        elif tick_type == 2:
+        elif tt in _NBBO_ASK_TICK_TYPES:
             if self._require_positive and price <= 0:
                 return
             self._pending_ask = float(price)
@@ -1218,6 +1221,99 @@ def log_session_transition(
             mch,
             tz_name,
         )
+
+
+def ib_error_is_connectivity_restored(error_code: Any) -> bool:
+    """True for IB error 1102 (TWS/Gateway connectivity restored)."""
+    try:
+        return int(error_code) == IB_ERROR_CONNECTIVITY_RESTORED
+    except (TypeError, ValueError):
+        return str(error_code) == str(IB_ERROR_CONNECTIVITY_RESTORED)
+
+
+_NBBO_BID_TICK_TYPES = frozenset({1, 66})
+_NBBO_ASK_TICK_TYPES = frozenset({2, 67})
+
+
+def apply_resolved_stock_contract(template: Any, resolved: Any) -> None:
+    """Copy ``conId`` and routing fields from a ``contractDetails`` contract onto ``template``."""
+    con_id = getattr(resolved, "conId", None)
+    if con_id:
+        template.conId = int(con_id)
+    for attr in ("localSymbol", "exchange", "primaryExchange", "tradingClass"):
+        value = getattr(resolved, attr, None)
+        if value not in (None, ""):
+            setattr(template, attr, value)
+
+
+def stock_contract_from_details(contract_details: Any) -> Any:
+    """Build a market-data ``Contract`` from an IB ``contractDetails`` callback."""
+    from ibapi.contract import Contract
+
+    resolved = contract_details.contract
+    contract = Contract()
+    contract.conId = int(getattr(resolved, "conId", 0) or 0)
+    contract.symbol = str(getattr(resolved, "symbol", "") or "")
+    contract.secType = str(getattr(resolved, "secType", "STK") or "STK")
+    contract.currency = str(getattr(resolved, "currency", "USD") or "USD")
+    contract.exchange = str(getattr(resolved, "exchange", "SMART") or "SMART")
+    contract.primaryExchange = str(
+        getattr(resolved, "primaryExchange", "") or ""
+    )
+    contract.localSymbol = str(
+        getattr(resolved, "localSymbol", "") or contract.symbol
+    )
+    trading_class = getattr(resolved, "tradingClass", None)
+    if trading_class:
+        contract.tradingClass = str(trading_class)
+    return contract
+
+
+def stock_contract_on_primary_exchange(contract: Any) -> Any:
+    """Copy ``contract`` but route market data to ``primaryExchange``."""
+    from ibapi.contract import Contract
+
+    primary = str(getattr(contract, "primaryExchange", "") or "").strip()
+    if not primary:
+        return contract
+    routed = Contract()
+    routed.conId = int(getattr(contract, "conId", 0) or 0)
+    routed.symbol = str(getattr(contract, "symbol", "") or "")
+    routed.secType = str(getattr(contract, "secType", "STK") or "STK")
+    routed.currency = str(getattr(contract, "currency", "USD") or "USD")
+    routed.exchange = primary
+    routed.primaryExchange = primary
+    routed.localSymbol = str(
+        getattr(contract, "localSymbol", "") or routed.symbol
+    )
+    trading_class = getattr(contract, "tradingClass", None)
+    if trading_class:
+        routed.tradingClass = str(trading_class)
+    return routed
+
+
+def subscribe_stock_nbbo_market_data(
+    client: Any,
+    req_id: int,
+    contract: Any,
+    *,
+    live: bool = True,
+    cancel_first: bool = False,
+) -> None:
+    """Subscribe to streaming NBBO (``reqMktData``), optionally requesting live quotes."""
+    if (
+        cancel_first
+        and hasattr(client, "cancelMktData")
+        and client.isConnected()
+        and client.serverVersion() is not None
+    ):
+        try:
+            client.cancelMktData(req_id)
+        except Exception:
+            pass
+    if live and hasattr(client, "reqMarketDataType"):
+        client.reqMarketDataType(1)
+    client.reqMktData(req_id, contract, "", False, False, [])
 
 
 def should_suppress_ib_error(

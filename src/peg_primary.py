@@ -77,7 +77,12 @@ from ibkr_app_support import (
     safe_cancel_order,
     sync_attrs_from_ledger,
 )
-from ibkr_bot_base import IbkrBotApp, OpenPriceBootstrapMixin, SnapshotResyncMixin
+from ibkr_bot_base import (
+    ContractResolutionMixin,
+    IbkrBotApp,
+    OpenPriceBootstrapMixin,
+    SnapshotResyncMixin,
+)
 from ibapi.common import TickAttrib, TickerId
 from ibapi.order import Order
 from ibapi.ticktype import TickType
@@ -110,7 +115,12 @@ def make_rel_order(
     return o
 
 
-class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
+class Trader(
+    ContractResolutionMixin,
+    OpenPriceBootstrapMixin,
+    SnapshotResyncMixin,
+    IbkrBotApp,
+):
     """Pegged-to-Primary (REL) quoter with NBBO-driven limit and size sync."""
 
     def __init__(self, config: Dict[str, Any]):
@@ -141,6 +151,7 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
         self.pending_buy = False
         self.pending_sell = False
         self._init_snapshot_resync(config)
+        self._init_contract_resolution(self.config)
         self.nbbo_sync_interval_seconds = float(self.config["loop_seconds"])
         self._nbbo_throttle = NbboThrottle(
             self.nbbo_sync_interval_seconds,
@@ -356,7 +367,14 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
         """IB callback: stage bid/ask ticks for NBBO coalescing."""
         if reqId != MKTDATA_REQ_ID:
             return
+        self.note_market_data_tick()
         self._nbbo.stage_tick_price(int(tickType), float(price))
+
+    def tickSize(self, reqId: TickerId, tickType: TickType, size: Decimal) -> None:
+        """IB callback: count size ticks for market-data stall recovery."""
+        if reqId != MKTDATA_REQ_ID:
+            return
+        self.note_market_data_tick()
 
     def _on_coalesced_nbbo(self, bid: float, ask: float) -> None:
         """Update ``ref_price`` from coalesced bid/ask mid."""
@@ -371,9 +389,10 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
         """Subscribe to market data and request startup snapshots (from ``nextValidId``)."""
         self._startup_open_orders_logged = False
         self._nbbo.reset()
+        self._market_data_subscribed = False
         self.request_positions_snapshot()
         self.request_today_open_or_prior_close()
-        self.reqMktData(MKTDATA_REQ_ID, self.contract, "", False, False, [])
+        self.request_contract_details()
         self.request_open_orders_snapshot()
         self.logger.info(
             "Startup: requested positions, daily bars, market data, and open orders."
@@ -852,6 +871,7 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
                 last_periodic = now
                 self.trigger_resync()
 
+            self.maybe_recover_stalled_market_data()
             time.sleep(1.0)
 
 

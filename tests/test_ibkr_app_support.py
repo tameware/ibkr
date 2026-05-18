@@ -39,7 +39,10 @@ from ibkr_app_support import (
     ledger_path_for_strategy,
     load_config_file,
     load_merged_config,
+    ib_error_is_connectivity_restored,
     log_ib_error,
+    apply_resolved_stock_contract,
+    subscribe_stock_nbbo_market_data,
     log_startup_timezones,
     NbboCoalesceSink,
     NbboCoalescer,
@@ -772,6 +775,42 @@ class TestIbClientOwnership(unittest.TestCase):
         self.assertFalse(order_status_clients_match(0, 901))
         self.assertFalse(order_status_clients_match("x", 1))
 
+
+class TestMarketDataHelpers(unittest.TestCase):
+    def test_ib_error_is_connectivity_restored(self):
+        self.assertTrue(ib_error_is_connectivity_restored(1102))
+        self.assertFalse(ib_error_is_connectivity_restored(1100))
+
+    def test_subscribe_stock_nbbo_market_data(self):
+        client = MagicMock()
+        contract = MagicMock()
+        client.isConnected.return_value = True
+        client.serverVersion.return_value = 157
+        subscribe_stock_nbbo_market_data(client, 3001, contract, live=True)
+        client.reqMarketDataType.assert_called_once_with(1)
+        client.reqMktData.assert_called_once_with(3001, contract, "", False, False, [])
+
+    def test_subscribe_stock_nbbo_market_data_cancel_first(self):
+        client = MagicMock()
+        contract = MagicMock()
+        client.isConnected.return_value = True
+        client.serverVersion.return_value = 157
+        subscribe_stock_nbbo_market_data(
+            client, 3001, contract, live=True, cancel_first=True
+        )
+        client.cancelMktData.assert_called_once_with(3001)
+
+    def test_apply_resolved_stock_contract_sets_con_id(self):
+        template = MagicMock()
+        resolved = MagicMock(
+            conId=516097295,
+            localSymbol="OZ",
+            exchange="SMART",
+            primaryExchange="AMEX",
+        )
+        apply_resolved_stock_contract(template, resolved)
+        self.assertEqual(template.conId, 516097295)
+        template.primaryExchange = "AMEX"
 
 class TestWaitForIbReady(unittest.TestCase):
     def test_returns_true_when_ready_immediately(self):

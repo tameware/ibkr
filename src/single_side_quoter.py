@@ -31,7 +31,12 @@ from ibkr_app_support import (
     safe_cancel_order,
     sync_attrs_from_ledger,
 )
-from ibkr_bot_base import IbkrBotApp, OpenPriceBootstrapMixin, SnapshotResyncMixin
+from ibkr_bot_base import (
+    ContractResolutionMixin,
+    IbkrBotApp,
+    OpenPriceBootstrapMixin,
+    SnapshotResyncMixin,
+)
 
 LAST_TRADE_REQ_ID = 2001
 MKTDATA_REQ_ID = 3001
@@ -58,7 +63,12 @@ _BASE_REQUIRED_FIELDS = [
 ]
 
 
-class SingleSideQuoter(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
+class SingleSideQuoter(
+    ContractResolutionMixin,
+    OpenPriceBootstrapMixin,
+    SnapshotResyncMixin,
+    IbkrBotApp,
+):
     """Flat: buy up to ``max_pos``; long: sell inventory only (mutually exclusive sides)."""
 
     def __init__(
@@ -92,6 +102,7 @@ class SingleSideQuoter(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp)
         self.pending_buy = False
         self.pending_sell = False
         self._init_snapshot_resync(config)
+        self._init_contract_resolution(config)
 
         self.client_id = ib_client_id_from_config(
             config, default=default_client_id
@@ -150,9 +161,10 @@ class SingleSideQuoter(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp)
     def startup(self) -> None:
         """Subscribe to market data and request startup snapshots."""
         self._nbbo.reset()
+        self._market_data_subscribed = False
         self.request_positions_snapshot()
         self.request_today_open_or_prior_close()
-        self.reqMktData(MKTDATA_REQ_ID, self.contract, "", False, False, [])
+        self.request_contract_details()
         self.request_open_orders_snapshot()
         self.reqTickByTickData(
             LAST_TRADE_REQ_ID,
@@ -237,6 +249,7 @@ class SingleSideQuoter(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp)
         """IB callback: stage bid/ask ticks for NBBO coalescing."""
         if reqId != MKTDATA_REQ_ID:
             return
+        self.note_market_data_tick()
         self._nbbo.stage_tick_price(int(tickType), float(price))
 
     def openOrder(self, orderId, contract, order, orderState):

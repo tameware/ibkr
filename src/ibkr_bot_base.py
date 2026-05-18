@@ -10,14 +10,20 @@ from ibapi.client import EClient
 from ibapi.wrapper import EWrapper
 
 from ibkr_app_support import (
+    IB_ERROR_CONNECTIVITY_RESTORED,
     build_logger,
     cfg_bool,
     disconnect_cleanly,
+    ib_error_is_connectivity_restored,
     log_ib_error,
     make_stock_contract,
+    stock_contract_from_details,
+    stock_contract_on_primary_exchange,
+    subscribe_stock_nbbo_market_data,
 )
 
 HIST_REQ_ID = 1001
+CONTRACT_DETAILS_REQ_ID = 2001
 
 
 class OpenPriceBootstrapMixin:
@@ -155,6 +161,143 @@ class SnapshotResyncMixin:
         self.maybe_sync_orders()
 
 
+class ContractResolutionMixin:
+    """Resolve ``contract`` via ``reqContractDetails`` before ``reqMktData``."""
+
+    def _init_contract_resolution(
+        self,
+        config: Dict[str, Any],
+        *,
+        contract_details_req_id: int = CONTRACT_DETAILS_REQ_ID,
+    ) -> None:
+        """Initialize contract-resolution state."""
+        self.contract_details_req_id = contract_details_req_id
+        self._market_data_subscribed = False
+        self._market_data_contract: Any | None = None
+        self._market_data_subscribed_ts = 0.0
+        self._market_data_last_tick_ts = 0.0
+        self._market_data_fallback_attempted = False
+        self.market_data_stall_seconds = float(
+            config.get("market_data_stall_seconds", 15.0)
+        )
+
+    def request_contract_details(self) -> None:
+        """Request IB contract details for :attr:`contract`."""
+        self._market_data_subscribed = False
+        self.reqContractDetails(self.contract_details_req_id, self.contract)
+
+    def contractDetails(self, reqId: Any, contractDetails: Any) -> None:
+        """IB callback: replace :attr:`contract` with IB's resolved definition."""
+        if int(reqId) != int(self.contract_details_req_id):
+            return
+        self.contract = stock_contract_from_details(contractDetails)
+        self._market_data_contract = self.contract
+        self.on_contract_resolved(contractDetails)
+
+    def on_contract_resolved(self, contractDetails: Any) -> None:
+        """Hook after :attr:`contract` is updated from ``contractDetails``."""
+
+    def contractDetailsEnd(self, reqId: Any) -> None:
+        """IB callback: subscribe to NBBO after the contract is resolved."""
+        if int(reqId) != int(self.contract_details_req_id):
+            return
+        self.logger.info(
+            "Contract details complete reqId=%s conId=%s symbol=%s exchange=%s primaryExchange=%s",
+            reqId,
+            getattr(self.contract, "conId", None),
+            getattr(self.contract, "symbol", None),
+            getattr(self.contract, "exchange", None),
+            getattr(self.contract, "primaryExchange", None),
+        )
+        self.ensure_market_data_subscription(reason="contract_resolved")
+
+    def market_data_contract(self) -> Any:
+        """Contract used for ``reqMktData`` (resolved from ``contractDetails``).
+
+        When ``primaryExchange`` differs from ``exchange`` (e.g. SMART vs AMEX),
+        subscribe on the primary listing — IB often delivers no bid/ask ticks on
+        SMART for some symbols (OZ) even when TWS shows a live quote.
+        """
+        base = self._market_data_contract or self.contract
+        primary = str(getattr(base, "primaryExchange", "") or "").strip()
+        current = str(getattr(base, "exchange", "") or "").strip()
+        if primary and primary != current:
+            return stock_contract_on_primary_exchange(base)
+        return base
+
+    def note_market_data_tick(self) -> None:
+        """Record that a market data callback arrived (for stall recovery)."""
+        self._market_data_last_tick_ts = time.monotonic()
+
+    def maybe_recover_stalled_market_data(self) -> None:
+        """Re-subscribe on the primary exchange if no ticks arrive after subscribe."""
+        if (
+            self.shutdown_flag
+            or not self.isConnected()
+            or not self._market_data_subscribed
+            or self._market_data_fallback_attempted
+        ):
+            return
+        now = time.monotonic()
+        if now - self._market_data_subscribed_ts < self.market_data_stall_seconds:
+            return
+        if self._market_data_last_tick_ts > self._market_data_subscribed_ts:
+            return
+        primary = str(getattr(self.contract, "primaryExchange", "") or "").strip()
+        current_exchange = str(getattr(self.market_data_contract(), "exchange", "") or "")
+        if not primary or primary == current_exchange:
+            return
+        self._market_data_fallback_attempted = True
+        self._market_data_contract = stock_contract_on_primary_exchange(self.contract)
+        self.logger.warning(
+            "No market data ticks after %.0fs; re-subscribing on primary exchange %s (conId=%s)",
+            self.market_data_stall_seconds,
+            primary,
+            getattr(self.contract, "conId", None),
+        )
+        self.ensure_market_data_subscription(
+            reason="primary_exchange_fallback",
+            force=True,
+        )
+
+    def ensure_market_data_subscription(
+        self,
+        *,
+        reason: str,
+        force: bool = False,
+    ) -> None:
+        """Subscribe or refresh NBBO using the resolved market-data contract."""
+        if self.shutdown_flag or not self.isConnected():
+            return
+        req_ids = list(self.market_data_req_ids())
+        if not req_ids:
+            return
+        contract = self.market_data_contract()
+        cancel_first = self._market_data_subscribed
+        for req_id in req_ids:
+            subscribe_stock_nbbo_market_data(
+                self,
+                int(req_id),
+                contract,
+                live=True,
+                cancel_first=cancel_first,
+            )
+        self._market_data_subscribed = True
+        self._market_data_subscribed_ts = time.monotonic()
+        if not force:
+            self._market_data_fallback_attempted = False
+        self.logger.info(
+            "NBBO market data subscribed (%s) reqIds=%s conId=%s",
+            reason,
+            req_ids,
+            getattr(contract, "conId", None),
+        )
+
+    def subscribe_market_data(self) -> None:
+        """Subscribe or refresh streaming NBBO (after resolve or on reconnect)."""
+        self.ensure_market_data_subscription(reason="subscribe_market_data")
+
+
 class IbkrBotApp(EWrapper, EClient, ABC):
     """Shared IBKR bot shell: config, contract, logging, errors, connect/teardown.
 
@@ -182,6 +325,10 @@ class IbkrBotApp(EWrapper, EClient, ABC):
         self._api_ready = False
         self.cancel_open_orders_on_shutdown = cfg_bool(
             config, "cancel_open_orders_on_shutdown", False
+        )
+        self._last_market_data_resubscribe_ts = 0.0
+        self.market_data_resubscribe_debounce_seconds = float(
+            config.get("market_data_resubscribe_debounce_seconds", 1.0)
         )
 
     @property
@@ -211,6 +358,28 @@ class IbkrBotApp(EWrapper, EClient, ABC):
     @abstractmethod
     def startup(self) -> None:
         """Subscribe to market data and request startup snapshots."""
+
+    def on_ib_connectivity_restored(self) -> None:
+        """Re-subscribe to market data after TWS/Gateway error 1102."""
+        if self.shutdown_flag or not self.isConnected():
+            return
+        if not self.market_data_req_ids():
+            return
+
+        now = time.monotonic()
+        debounce = self.market_data_resubscribe_debounce_seconds
+        if now - self._last_market_data_resubscribe_ts < debounce:
+            return
+        self._last_market_data_resubscribe_ts = now
+
+        self.logger.info(
+            "TWS connectivity restored (error %s); re-subscribing to market data",
+            IB_ERROR_CONNECTIVITY_RESTORED,
+        )
+        nbbo = getattr(self, "_nbbo", None)
+        if nbbo is not None:
+            nbbo.reset()
+        self.subscribe_market_data()
 
     def assign_next_order_id(self, order_id: int) -> None:
         """Store the next usable order id from IB."""
@@ -256,6 +425,14 @@ class IbkrBotApp(EWrapper, EClient, ABC):
             error_string=errorString,
             advanced_order_reject=advancedOrderReject,
         )
+        if ib_error_is_connectivity_restored(errorCode):
+            try:
+                self.on_ib_connectivity_restored()
+            except Exception as e:
+                self.logger.warning(
+                    "Market data re-subscribe after connectivity restore failed: %s",
+                    e,
+                )
 
     def stop(self) -> None:
         """Cancel quotes, disconnect, and cancel market data subscriptions."""

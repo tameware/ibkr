@@ -139,6 +139,8 @@ class TestTrader(unittest.TestCase):
         self.trader.placeOrder = Mock()
         self.trader.cancelOrder = Mock()
         self.trader.reqMktData = Mock()
+        self.trader.reqContractDetails = Mock()
+        self.trader.reqMarketDataType = Mock()
         self.trader.reqTickByTickData = Mock()
         self.trader.reqHistoricalData = Mock()
         
@@ -220,6 +222,8 @@ class TestTrader(unittest.TestCase):
     
     def test_next_valid_id(self):
         """Test nextValidId callback"""
+        from ibkr_bot_base import CONTRACT_DETAILS_REQ_ID
+
         with patch.object(self.trader, 'request_positions_snapshot') as mock_req_pos, \
              patch.object(self.trader, 'request_today_open_or_prior_close') as mock_req_hist, \
              patch.object(self.trader, 'reqMktData') as mock_mkt_data, \
@@ -231,9 +235,19 @@ class TestTrader(unittest.TestCase):
             self.assertEqual(self.trader.nextOrderId, 1000)
             mock_req_pos.assert_called_once()
             mock_req_hist.assert_called_once()
-            mock_mkt_data.assert_called_once()
+            self.trader.reqContractDetails.assert_called_once()
+            mock_mkt_data.assert_not_called()
             mock_req_open.assert_called_once()
             mock_req_ticks.assert_called_once()
+
+            details = MagicMock()
+            details.contract.conId = 1
+            details.contract.localSymbol = "AAPL"
+            details.contract.exchange = "SMART"
+            details.contract.primaryExchange = "NASDAQ"
+            self.trader.contractDetails(CONTRACT_DETAILS_REQ_ID, details)
+            self.trader.contractDetailsEnd(CONTRACT_DETAILS_REQ_ID)
+            mock_mkt_data.assert_called_once()
     
     def test_order_status_submitted_buy(self):
         """Test order status for submitted BUY order"""
@@ -380,7 +394,9 @@ class TestTrader(unittest.TestCase):
         self.trader.tickPrice(3001, 2, 152.00, Mock())
         self.trader._nbbo.flush_commit()
         self.assertEqual(self.trader.ref_price, 151.00)
-        self.trader.logger.info.assert_called_once()
+        self.trader.logger.info.assert_any_call(
+            "ref_price updated: bid=150.0 ask=152.0 mid=151.0"
+        )
     
     def test_open_order_tracking(self):
         """Test tracking of open orders"""

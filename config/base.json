@@ -41,5 +41,10 @@
     "max_bytes": 5000000,
     "backup_count": 10,
     "console": true
+  },
+
+  "diagnostics": {
+    "market_data_resubscribe_debounce_seconds": 1.0,
+    "market_data_stall_seconds": 15.0
   }
 }

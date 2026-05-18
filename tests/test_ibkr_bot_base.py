@@ -8,7 +8,9 @@ from tests.ibapi_mocks import install_ibapi_mocks
 install_ibapi_mocks(ticktype=False)
 
 from ibkr_bot_base import (
+    CONTRACT_DETAILS_REQ_ID,
     HIST_REQ_ID,
+    ContractResolutionMixin,
     IbkrBotApp,
     OpenPriceBootstrapMixin,
     SnapshotResyncMixin,
@@ -20,6 +22,7 @@ class _StubBot(IbkrBotApp):
         super().__init__(config, logger_name="stub", default_log_file="stub.log")
         self.startup_called = False
         self.shutdown_quotes_called = False
+        self.subscribe_market_data = MagicMock()
 
     def startup(self) -> None:
         self.startup_called = True
@@ -143,6 +146,71 @@ class TestSnapshotResyncMixin(unittest.TestCase):
         self.assertFalse(bot.sync_requested)
 
 
+class _MktDataStub(ContractResolutionMixin, IbkrBotApp):
+    def __init__(self, config):
+        super().__init__(config, logger_name="mkt_stub", default_log_file="mkt.log")
+        self._init_contract_resolution(config)
+        self.reqContractDetails = MagicMock()
+        self.reqMktData = MagicMock()
+        self.reqMarketDataType = MagicMock()
+        self.isConnected = MagicMock(return_value=True)
+        self.serverVersion = MagicMock(return_value=157)
+
+    def startup(self) -> None:
+        pass
+
+    def shutdown_quotes(self) -> None:
+        pass
+
+    def market_data_req_ids(self):
+        return (3001,)
+
+
+class TestContractResolutionMixin(unittest.TestCase):
+    def setUp(self):
+        self._log_patcher = patch(
+            "ibkr_bot_base.build_logger", return_value=MagicMock()
+        )
+        self._log_patcher.start()
+        self.addCleanup(self._log_patcher.stop)
+
+    def test_contract_details_end_subscribes_after_resolve(self):
+        bot = _MktDataStub(
+            {"symbol": "OZ", "sec_type": "STK", "currency": "USD", "exchange": "SMART"}
+        )
+        details = MagicMock()
+        details.contract.conId = 516097295
+        details.contract.symbol = "OZ"
+        details.contract.secType = "STK"
+        details.contract.currency = "USD"
+        details.contract.localSymbol = "OZ"
+        details.contract.exchange = "SMART"
+        details.contract.primaryExchange = "AMEX"
+        bot.contractDetails(CONTRACT_DETAILS_REQ_ID, details)
+        bot.contractDetailsEnd(CONTRACT_DETAILS_REQ_ID)
+        bot.reqMktData.assert_called_once()
+        self.assertEqual(bot.contract.conId, 516097295)
+        mkt_contract = bot.reqMktData.call_args[0][1]
+        self.assertEqual(mkt_contract.exchange, "AMEX")
+
+    def test_market_data_contract_uses_primary_exchange(self):
+        bot = _MktDataStub(
+            {"symbol": "OZ", "sec_type": "STK", "currency": "USD", "exchange": "SMART"}
+        )
+        from ibapi.contract import Contract
+
+        bot.contract = Contract()
+        bot.contract.conId = 1
+        bot.contract.symbol = "OZ"
+        bot.contract.secType = "STK"
+        bot.contract.currency = "USD"
+        bot.contract.exchange = "SMART"
+        bot.contract.primaryExchange = "AMEX"
+        bot._market_data_contract = bot.contract
+        routed = bot.market_data_contract()
+        self.assertEqual(routed.exchange, "AMEX")
+
+
 class TestIbkrBotApp(unittest.TestCase):
     def setUp(self):
         self._log_patcher = patch(
@@ -178,6 +246,36 @@ class TestIbkrBotApp(unittest.TestCase):
             dc.assert_called_once()
         self.assertTrue(bot.shutdown_quotes_called)
         self.assertTrue(bot._stop_called)
+
+    def test_error_1102_resubscribes_market_data(self):
+        bot = _StubBot(
+            {
+                "symbol": "X",
+                "sec_type": "STK",
+                "currency": "USD",
+                "exchange": "SMART",
+                "market_data_resubscribe_debounce_seconds": 0.0,
+            }
+        )
+        bot.isConnected = MagicMock(return_value=True)
+        bot.error(-1, 0, 1102, "Connectivity restored", "")
+        bot.subscribe_market_data.assert_called_once()
+
+    def test_error_1102_debounced(self):
+        bot = _StubBot(
+            {
+                "symbol": "X",
+                "sec_type": "STK",
+                "currency": "USD",
+                "exchange": "SMART",
+                "market_data_resubscribe_debounce_seconds": 60.0,
+            }
+        )
+        bot.isConnected = MagicMock(return_value=True)
+        with patch("ibkr_bot_base.time.monotonic", side_effect=[100.0, 101.0]):
+            bot.error(-1, 0, 1102, "Connectivity restored", "")
+            bot.error(-1, 0, 1102, "Connectivity restored", "")
+        bot.subscribe_market_data.assert_called_once()
 
 
 if __name__ == "__main__":

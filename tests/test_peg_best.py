@@ -142,6 +142,8 @@ class TestTrader(unittest.TestCase):
         self.trader.placeOrder = Mock()
         self.trader.cancelOrder = Mock()
         self.trader.reqMktData = Mock()
+        self.trader.reqContractDetails = Mock()
+        self.trader.reqMarketDataType = Mock()
         self.trader.reqTickByTickData = Mock()
         self.trader.reqHistoricalData = Mock()
         
@@ -197,11 +199,12 @@ class TestTrader(unittest.TestCase):
     
     def test_next_valid_id(self):
         """Test nextValidId callback"""
-        # Mock the methods that get called in nextValidId
-        with patch.object(self.trader, 'reqPositions') as mock_req_pos, \
+        from ibkr_bot_base import CONTRACT_DETAILS_REQ_ID
+
+        with patch.object(self.trader, 'request_positions_snapshot') as mock_req_pos, \
              patch.object(self.trader, 'request_today_open_or_prior_close') as mock_req_hist, \
              patch.object(self.trader, 'reqMktData') as mock_mkt_data, \
-             patch.object(self.trader, 'reqOpenOrders') as mock_req_open, \
+             patch.object(self.trader, 'request_open_orders_snapshot') as mock_req_open, \
              patch.object(self.trader, 'reqTickByTickData') as mock_req_ticks:
             
             self.trader.nextValidId(1000)
@@ -209,9 +212,19 @@ class TestTrader(unittest.TestCase):
             self.assertEqual(self.trader.nextOrderId, 1000)
             mock_req_pos.assert_called_once()
             mock_req_hist.assert_called_once()
-            mock_mkt_data.assert_called_once()
+            self.trader.reqContractDetails.assert_called_once()
+            mock_mkt_data.assert_not_called()
             mock_req_open.assert_called_once()
             mock_req_ticks.assert_called_once()
+
+            details = MagicMock()
+            details.contract.conId = 1
+            details.contract.localSymbol = "AAPL"
+            details.contract.exchange = "SMART"
+            details.contract.primaryExchange = "NASDAQ"
+            self.trader.contractDetails(CONTRACT_DETAILS_REQ_ID, details)
+            self.trader.contractDetailsEnd(CONTRACT_DETAILS_REQ_ID)
+            mock_mkt_data.assert_called_once()
     
     def test_order_status_filled_buy(self):
         """Test order status for filled BUY order"""
