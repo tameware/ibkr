@@ -204,25 +204,39 @@ def _sanitize_ledger_token(value: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(value))
 
 
+def _read_avg_cost_per_share(data: Dict[str, Any]) -> float:
+    """Read average cost per share from ledger JSON (supports legacy ``avg_cost``)."""
+    if "avg_cost_per_share" in data:
+        return float(data["avg_cost_per_share"])
+    return float(data.get("avg_cost", 0.0))
+
+
+def _write_avg_cost_per_share(data: Dict[str, Any], value: float) -> None:
+    """Write average cost per share to ledger JSON."""
+    data["avg_cost_per_share"] = float(value)
+    data.pop("avg_cost", None)
+
+
+def _normalize_ledger_data(data: Dict[str, Any]) -> None:
+    """Migrate legacy ``avg_cost`` to ``avg_cost_per_share``."""
+    _write_avg_cost_per_share(data, _read_avg_cost_per_share(data))
+
+
 def ledger_path_for_strategy(
     strategy: str,
     config: Dict[str, Any],
     *,
-    client_id: Optional[int] = None,
     ledgers_dir: Optional[Path] = None,
 ) -> Path:
     """Path to this strategy's JSON ledger file under ``ledgers/`` (or ``ledgers_dir``)."""
     symbol = _sanitize_ledger_token(str(config.get("symbol", "UNKNOWN")))
-    cid = int(
-        client_id if client_id is not None else ib_client_id_from_config(config)
-    )
     strategy_token = _sanitize_ledger_token(strategy)
     base = ledgers_dir if ledgers_dir is not None else ledgers_dir_from_config(config)
-    return base / f"{strategy_token}_{symbol}_{cid}.json"
+    return base / f"{strategy_token}_{symbol}.json"
 
 
 class PositionLedger:
-    """Per-strategy position ledger persisted for parallel bot runs (keyed by client_id)."""
+    """Per-strategy position ledger persisted for parallel bot runs (one file per symbol)."""
 
     def __init__(self, path: Path, data: Dict[str, Any]) -> None:
         """Initialize :class:`PositionLedger`."""
@@ -239,7 +253,7 @@ class PositionLedger:
         account: Optional[str] = None,
     ) -> PositionLedger:
         """Open or create the ledger JSON file."""
-        path = ledger_path_for_strategy(strategy, config, client_id=client_id)
+        path = ledger_path_for_strategy(strategy, config)
         cid = int(
             client_id if client_id is not None else ib_client_id_from_config(config)
         )
@@ -261,7 +275,7 @@ class PositionLedger:
                 "client_id": cid,
                 "account": acct,
                 "qty": 0,
-                "avg_cost": 0.0,
+                "avg_cost_per_share": 0.0,
                 "updated_at": None,
                 "last_exec_id": None,
                 "ib_snapshot_qty": None,
@@ -278,6 +292,7 @@ class PositionLedger:
         ledger._data["client_id"] = cid
         if acct:
             ledger._data["account"] = acct
+        _normalize_ledger_data(ledger._data)
         return ledger
 
     @property
@@ -292,8 +307,13 @@ class PositionLedger:
 
     @property
     def avg_cost(self) -> float:
-        """Volume-weighted average cost for the open position."""
-        return float(self._data.get("avg_cost", 0.0))
+        """Volume-weighted average cost per share for the open position."""
+        return _read_avg_cost_per_share(self._data)
+
+    @property
+    def avg_cost_per_share(self) -> float:
+        """Average cost per share (same as :attr:`avg_cost`)."""
+        return self.avg_cost
 
     @property
     def ib_snapshot_qty(self) -> Optional[int]:
@@ -342,9 +362,10 @@ class PositionLedger:
                 avg = 0.0 if qty == 0 else price
 
         self._data["qty"] = int(qty)
-        self._data["avg_cost"] = float(avg)
+        _write_avg_cost_per_share(self._data, avg)
         if exec_id:
             self._data["last_exec_id"] = str(exec_id)
+        self.save()
         return True
 
     def record_ib_snapshot(
@@ -359,9 +380,16 @@ class PositionLedger:
         self._data["ib_snapshot_qty"] = int(qty)
         self._data["ib_snapshot_avg_cost"] = float(avg_cost)
         self._data["ib_snapshot_at"] = now
+        q = int(qty)
+        ac = float(avg_cost)
+        if q > 0 and self.qty == q:
+            _write_avg_cost_per_share(self._data, ac)
+        elif q == 0 and self.qty == 0:
+            _write_avg_cost_per_share(self._data, 0.0)
 
     def save(self) -> None:
         """Persist ledger state to disk."""
+        _normalize_ledger_data(self._data)
         self._data["updated_at"] = datetime.datetime.now(
             datetime.timezone.utc
         ).isoformat()
@@ -409,8 +437,9 @@ def seed_ledger_position(
     q = max(0, int(qty)) if clamp_qty_nonneg else int(qty)
     ac = float(avg_cost) if q > 0 else 0.0
     ledger._data["qty"] = q
-    ledger._data["avg_cost"] = ac
+    _write_avg_cost_per_share(ledger._data, ac)
     ledger.record_ib_snapshot(account, q, ac)
+    ledger.save()
     setattr(target, qty_attr, q)
     if avg_attr is not None and hasattr(target, avg_attr):
         setattr(target, avg_attr, ac)

@@ -134,6 +134,7 @@ class Trader(
         self.nextOrderId: int | None = None
 
         self.position_size = 0
+        self.avg_cost = 0.0
         self._init_open_price_bootstrap()
 
         self.buy_order_id: int | None = None
@@ -174,12 +175,13 @@ class Trader(
             "peg_primary", config, client_id=self.ib_client_id
         )
         sync_attrs_from_ledger(
-            self.ledger, self, qty_attr="position_size", avg_attr=None
+            self.ledger, self, qty_attr="position_size", avg_attr="avg_cost"
         )
         self.logger.info(
-            "Position ledger %s qty=%s",
+            "Position ledger %s qty=%s avg_cost_per_share=%.4f",
             self.ledger.path,
             self.ledger.qty,
+            self.ledger.avg_cost_per_share,
         )
 
         _coalesce_quiet, _coalesce_max = nbbo_coalesce_intervals_from_config(self.config)
@@ -334,7 +336,7 @@ class Trader(
             self.ledger, execution, self.ib_client_id, logger=self.logger
         ):
             sync_attrs_from_ledger(
-                self.ledger, self, qty_attr="position_size", avg_attr=None
+                self.ledger, self, qty_attr="position_size", avg_attr="avg_cost"
             )
 
         raw_side = getattr(execution, "side", "")
@@ -464,7 +466,7 @@ class Trader(
                 self.ledger, account, int(pos), float(avgCost), logger=self.logger
             )
             sync_attrs_from_ledger(
-                self.ledger, self, qty_attr="position_size", avg_attr=None
+                self.ledger, self, qty_attr="position_size", avg_attr="avg_cost"
             )
 
     def us_regular_hours(self) -> bool:

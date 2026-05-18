@@ -877,12 +877,14 @@ class TestTrader(unittest.TestCase):
     
     def test_error_filtering_ignores_codes(self):
         """Test that error codes in ignored list are suppressed"""
+        self.trader.logger.info.reset_mock()
         self.trader.error(0, "", 2104, "Market data farm connection is OK", "")
         self.trader.logger.warning.assert_not_called()
         self.trader.logger.info.assert_not_called()
 
     def test_error_filtering_ignores_substrings(self):
         """Test that error messages with ignored substrings are suppressed"""
+        self.trader.logger.info.reset_mock()
         self.trader.error(0, "", 10000, "Error: HMDS connection issue", "")
         self.trader.logger.warning.assert_not_called()
         self.trader.logger.info.assert_not_called()

@@ -239,10 +239,10 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             clamp_qty_nonneg=True,
         )
         self.logger.info(
-            "Position ledger %s qty=%s avg_cost=%.4f",
+            "Position ledger %s qty=%s avg_cost_per_share=%.4f",
             self.ledger.path,
             self.ledger.qty,
-            self.ledger.avg_cost,
+            self.ledger.avg_cost_per_share,
         )
 
         self.logger.info(

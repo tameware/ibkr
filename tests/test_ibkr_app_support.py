@@ -178,7 +178,7 @@ class TestPositionLedger(unittest.TestCase):
     def test_ledger_path_in_ledgers_dir(self):
         path = ledger_path_for_strategy("peg_primary", self.config)
         self.assertEqual(path.parent, Path(self.ledgers_dir))
-        self.assertTrue(path.name.startswith("peg_primary_FDX_7"))
+        self.assertEqual(path.name, "peg_primary_FDX.json")
 
     def test_apply_fill_buy_and_sell(self):
         ledger = PositionLedger.open("market_maker", self.config)
@@ -198,10 +198,35 @@ class TestPositionLedger(unittest.TestCase):
     def test_save_and_reload(self):
         ledger = PositionLedger.open("midprice", self.config)
         ledger.apply_fill("BUY", 25, 99.5, exec_id="x1")
-        ledger.save()
         reloaded = PositionLedger.open("midprice", self.config)
         self.assertEqual(reloaded.qty, 25)
         self.assertAlmostEqual(reloaded.avg_cost, 99.5)
+        self.assertAlmostEqual(reloaded.avg_cost_per_share, 99.5)
+        payload = json.loads(reloaded.path.read_text(encoding="utf-8"))
+        self.assertAlmostEqual(payload["avg_cost_per_share"], 99.5)
+        self.assertNotIn("avg_cost", payload)
+
+    def test_migrates_legacy_avg_cost_key(self):
+        path = ledger_path_for_strategy("peg_mid", self.config)
+        path.write_text(
+            json.dumps(
+                {
+                    "strategy": "peg_mid",
+                    "symbol": "FDX",
+                    "sec_type": "STK",
+                    "client_id": 7,
+                    "qty": 50,
+                    "avg_cost": 42.5,
+                }
+            ),
+            encoding="utf-8",
+        )
+        ledger = PositionLedger.open("peg_mid", self.config)
+        self.assertAlmostEqual(ledger.avg_cost_per_share, 42.5)
+        ledger.save()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        self.assertAlmostEqual(payload["avg_cost_per_share"], 42.5)
+        self.assertNotIn("avg_cost", payload)
 
     def test_handle_ledger_execution_filters_client(self):
         ledger = PositionLedger.open("peg_best", self.config)
