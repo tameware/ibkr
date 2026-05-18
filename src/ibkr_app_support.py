@@ -424,7 +424,7 @@ def price_tick_from_config(config: Dict[str, Any]) -> float:
     return 10.0 ** (-price_digits_from_config(config))
 
 
-def mid_delta_for_config(config: Dict[str, Any], *, default: float = 0.02) -> float:
+def mid_delta_for_config(config: Dict[str, Any], *, default: float = 0.10) -> float:
     """Minimum half-spread vs mid for self-trade guards (``mid_delta`` or legacy deltas)."""
     tick = price_tick_from_config(config)
     if "mid_delta" in config:

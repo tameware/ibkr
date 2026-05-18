@@ -8,7 +8,7 @@ when flat or capped; both sides may rest when partially filled.
 Protective REL ``lmtPrice`` values use the NBBO **mid** only (``(bid+ask)/2``
 rounded like ``ref_price`` in :meth:`tickPrice`): buy ceiling ``mid - d`` and
 sell floor ``mid + d`` where ``d = max(mid_delta, one_tick)``. ``mid_delta``
-defaults to ``0.02``; raising ``d`` to at least one price tick
+defaults to ``0.10`` (``config/base.json``); raising ``d`` to at least one price tick
 (``10 ** -price_round_digits``) keeps the rounded buy cap strictly below mid
 and the sell floor strictly above mid.
 

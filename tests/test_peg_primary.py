@@ -164,15 +164,15 @@ class TestAdjustedRelLimits(unittest.TestCase):
         self.assertEqual(sell_l, 10.15)
 
     def test_mid_delta_default_from_config_get(self):
-        """Omit mid_delta in file → code uses default 0.02."""
+        """Omit mid_delta in file → code uses default 0.10."""
         cfg = _minimal_config()
         cfg.pop("mid_delta", None)
         t = Trader(cfg)
         t._bid = 49.90
         t._ask = 50.10
         buy_l, sell_l = t.adjusted_rel_limits()
-        self.assertEqual(buy_l, 49.98)
-        self.assertEqual(sell_l, 50.02)
+        self.assertEqual(buy_l, 49.90)
+        self.assertEqual(sell_l, 50.10)
 
     def test_mid_delta_clamped_to_at_least_one_tick(self):
         """Configured mid_delta below one tick is treated as one tick."""

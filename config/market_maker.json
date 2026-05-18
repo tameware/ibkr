@@ -20,8 +20,7 @@
     "target_roundtrip_capture": 0.3,
     "quote_refresh_seconds": 3.0,
     "max_market_stale_seconds": 1200,
-    "min_quote_spread_cents": 50,
-    "mid_delta": 0.01
+    "min_quote_spread_cents": 50
   },
 
   "risk": {

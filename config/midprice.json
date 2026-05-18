@@ -9,7 +9,6 @@
 
   "strategy": {
     "last_trade_min_size": 100.0,
-    "mid_delta": 0.04,
     "buy_delta": 0.04,
     "sell_delta": 0.04
   },
