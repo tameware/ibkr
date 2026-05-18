@@ -97,3 +97,11 @@ def install_ibapi_mocks(
         sys.modules["pytz"] = mock_pytz
 
     return mock_ibapi
+
+
+def seed_valid_nbbo(trader: object, mid: float, spread: float = 0.2) -> None:
+    """Set bid/ask/ref_price on a trader for tests that call sync_orders."""
+    half = spread / 2.0
+    trader._bid = mid - half  # type: ignore[attr-defined]
+    trader._ask = mid + half  # type: ignore[attr-defined]
+    trader.ref_price = mid  # type: ignore[attr-defined]

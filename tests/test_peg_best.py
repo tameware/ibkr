@@ -12,7 +12,7 @@ import datetime
 from argparse import Namespace
 from zoneinfo import ZoneInfo
 
-from tests.ibapi_mocks import install_ibapi_mocks
+from tests.ibapi_mocks import install_ibapi_mocks, seed_valid_nbbo
 
 install_ibapi_mocks(pytz=True, peg_best_constants=True)
 
@@ -274,8 +274,8 @@ class TestTrader(unittest.TestCase):
         # reqOpenOrders should NOT be called for unmatched order IDs
         self.trader.reqOpenOrders.assert_not_called()
     
-    def test_tick_by_tick_all_last_updates_ref_price(self):
-        """Test that last trade updates ref_price when size meets threshold"""
+    def test_tick_by_tick_all_last_does_not_update_ref_price(self):
+        """Last trades do not update ref_price; only coalesced NBBO does."""
         self.trader.ref_price = 150.00
         mock_attrib = Mock()
         
@@ -290,7 +290,7 @@ class TestTrader(unittest.TestCase):
             specialConditions=""
         )
         
-        self.assertEqual(self.trader.ref_price, 151.50)
+        self.assertEqual(self.trader.ref_price, 150.00)
     
     def test_tick_by_tick_all_last_ignores_small_size(self):
         """Test that last trade with small size does not update ref_price"""
@@ -484,7 +484,7 @@ class TestTrader(unittest.TestCase):
     
     def test_sync_orders_buy_when_no_position(self):
         """Test sync_orders when no position - should place BUY order"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(0)
         
         # Capture the order that gets passed to placeOrder
@@ -507,7 +507,7 @@ class TestTrader(unittest.TestCase):
     
     def test_sync_orders_sell_when_has_position(self):
         """Test sync_orders when has position - should place SELL order"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(50)
         
         # Capture the order that gets passed to placeOrder
@@ -530,7 +530,7 @@ class TestTrader(unittest.TestCase):
     
     def test_sync_orders_cancels_opposite_buy_order(self):
         """Test that sync_orders cancels opposite BUY order when wanting to sell"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(50)
         self.trader.buy_order_id = 999  # Has open BUY order but wants to SELL
         
@@ -542,7 +542,7 @@ class TestTrader(unittest.TestCase):
     
     def test_sync_orders_cancels_opposite_sell_order(self):
         """Test that sync_orders cancels opposite SELL order when wanting to buy"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(0)
         self.trader.sell_order_id = 999  # Has open SELL order but wants to BUY
         
@@ -565,15 +565,28 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_does_not_place_when_no_ref_price(self):
         """Test sync_orders does nothing when no ref_price"""
         self.trader.ref_price = None
+        self.trader._bid = 149.90
+        self.trader._ask = 150.10
         self._seed(0)
         
         self.trader.sync_orders()
         
         self.trader.placeOrder.assert_not_called()
+
+    def test_sync_orders_skips_when_no_nbbo(self):
+        """Test sync_orders does not place orders without valid bid/ask"""
+        self.trader.ref_price = 150.00
+        self.trader._bid = None
+        self.trader._ask = None
+        self._seed(0)
+
+        self.trader.sync_orders()
+
+        self.trader.placeOrder.assert_not_called()
     
     def test_sync_orders_respects_existing_orders(self):
         """Test sync_orders does not place new order when one already exists"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(0)
         self.trader.open_symbol_buys = 1  # Already has a buy order
         

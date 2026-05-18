@@ -90,13 +90,13 @@ class TestOpenPriceBootstrapMixin(unittest.TestCase):
         self._log_patcher.start()
         self.addCleanup(self._log_patcher.stop)
 
-    def test_historical_data_end_sets_open_and_ref_price(self):
+    def test_historical_data_end_sets_open_only(self):
         bot = _OpenPriceStub()
         bar = MagicMock(open=150.0, close=151.0)
         bot._bars = [bar]
         bot.historicalDataEnd(HIST_REQ_ID, "", "")
         self.assertEqual(bot.open_price, 150.0)
-        self.assertEqual(bot.ref_price, 150.0)
+        self.assertIsNone(bot.ref_price)
 
     def test_historical_data_end_falls_back_to_close(self):
         bot = _OpenPriceStub()

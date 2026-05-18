@@ -19,6 +19,7 @@ from ibkr_app_support import (
     add_ib_connection_arguments,
     add_logging_arguments,
     add_session_hours_arguments,
+    has_valid_nbbo,
     NbboCoalesceSink,
     handle_ledger_execution,
     handle_ledger_ib_position,
@@ -144,6 +145,9 @@ class SingleSideQuoter(
         if mid != self.ref_price:
             self.ref_price = mid
 
+    def _has_valid_nbbo(self) -> bool:
+        return has_valid_nbbo(self._bid, self._ask)
+
     def shutdown_quotes(self) -> None:
         """Cancel working quotes and clear local order tracking."""
         self._nbbo.cancel()
@@ -236,14 +240,8 @@ class SingleSideQuoter(
         exchange: str,
         specialConditions: str,
     ):
-        """IB callback: update ``ref_price`` from large last trades."""
-        if reqId != LAST_TRADE_REQ_ID:
-            return
-        if size is None:
-            return
-        if float(size) >= float(self.config["last_trade_min_size"]):
-            if self.ref_price != price:
-                self.ref_price = price
+        """IB callback: last-trade ticks (``ref_price`` comes from NBBO only)."""
+        return
 
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
         """IB callback: stage bid/ask ticks for NBBO coalescing."""
@@ -306,7 +304,9 @@ class SingleSideQuoter(
         """Place, cancel, or amend quotes to match position and limits."""
         if not self.ready_for_trading:
             return
-        if self.ref_price is None or self.nextOrderId is None:
+        if self.nextOrderId is None or not self._has_valid_nbbo():
+            return
+        if self.ref_price is None:
             return
 
         buy_limit, sell_limit = self.compute_order_limits()

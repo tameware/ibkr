@@ -27,7 +27,7 @@ CONTRACT_DETAILS_REQ_ID = 2001
 
 
 class OpenPriceBootstrapMixin:
-    """Request daily bars at startup and set ``open_price`` / ``ref_price``."""
+    """Request daily bars at startup and set ``open_price`` (not ``ref_price``)."""
 
     def _init_open_price_bootstrap(self) -> None:
         """Initialize ``open_price`` and historical bar buffer."""
@@ -78,9 +78,7 @@ class OpenPriceBootstrapMixin:
         self.on_open_price_ready(self.open_price)
 
     def on_open_price_ready(self, open_price: float) -> None:
-        """Default: seed ``ref_price`` when still unset."""
-        if getattr(self, "ref_price", None) is None:
-            self.ref_price = open_price
+        """Hook after ``open_price`` is set; subclasses may extend."""
 
 
 class SnapshotResyncMixin:

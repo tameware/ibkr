@@ -12,7 +12,7 @@ import datetime
 from argparse import Namespace
 from zoneinfo import ZoneInfo
 
-from tests.ibapi_mocks import install_ibapi_mocks
+from tests.ibapi_mocks import install_ibapi_mocks, seed_valid_nbbo
 
 install_ibapi_mocks()
 
@@ -321,8 +321,8 @@ class TestTrader(unittest.TestCase):
         # The method should still refresh the snapshot for any terminal state
         self.trader.request_open_orders_snapshot.assert_called_once()
     
-    def test_tick_by_tick_all_last_updates_ref_price(self):
-        """Test that last trade updates ref_price when size meets threshold"""
+    def test_tick_by_tick_all_last_does_not_update_ref_price(self):
+        """Last trades do not update ref_price; only coalesced NBBO does."""
         self.trader.ref_price = 150.00
         mock_attrib = Mock()
         
@@ -337,7 +337,7 @@ class TestTrader(unittest.TestCase):
             specialConditions=""
         )
         
-        self.assertEqual(self.trader.ref_price, 151.50)
+        self.assertEqual(self.trader.ref_price, 150.00)
     
     def test_tick_by_tick_all_last_ignores_small_size(self):
         """Test that last trade with small size does not update ref_price"""
@@ -492,8 +492,8 @@ class TestTrader(unittest.TestCase):
         self.trader.historicalDataEnd(1001, "", "")
         self.assertEqual(self.trader.open_price, 145.50)
     
-    def test_historical_data_sets_ref_price(self):
-        """Test that historical data sets ref_price if None"""
+    def test_historical_data_does_not_set_ref_price(self):
+        """Historical open is recorded but does not seed ref_price."""
         self.trader.ref_price = None
         bar = MagicMock()
         bar.open = 150.00
@@ -502,7 +502,8 @@ class TestTrader(unittest.TestCase):
         self.trader._bars = [bar]
         self.trader.historicalDataEnd(1001, "", "")
         
-        self.assertEqual(self.trader.ref_price, 150.00)
+        self.assertEqual(self.trader.open_price, 150.00)
+        self.assertIsNone(self.trader.ref_price)
     
     def test_historical_data_ignores_wrong_req_id(self):
         """Test historical data with wrong request ID is ignored"""
@@ -557,7 +558,7 @@ class TestTrader(unittest.TestCase):
     
     def test_sync_orders_places_both_buy_and_sell_when_position_below_max(self):
         """Test sync_orders places both BUY and SELL orders when position is between 0 and max"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(30)
         
         captured_orders = []
@@ -594,7 +595,7 @@ class TestTrader(unittest.TestCase):
     
     def test_sync_orders_places_only_buy_when_no_position(self):
         """Test sync_orders places only BUY order when position is 0"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(0)
         
         captured_orders = []
@@ -619,7 +620,7 @@ class TestTrader(unittest.TestCase):
     
     def test_sync_orders_places_only_sell_when_at_max_position(self):
         """Test sync_orders places only SELL order when position is at max"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(100)
         
         captured_orders = []
@@ -644,7 +645,7 @@ class TestTrader(unittest.TestCase):
     
     def test_sync_orders_cancels_existing_orders_when_position_changes(self):
         """Test sync_orders cancels existing orders when they're no longer needed"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(50)
         # Set existing orders
         self.trader.buy_order_id = 500
@@ -663,7 +664,7 @@ class TestTrader(unittest.TestCase):
     
     def test_sync_orders_cancels_buy_when_at_max(self):
         """Test sync_orders cancels BUY order when position at max"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(100)
         self.trader.buy_order_id = 500
         self.trader.sell_order_id = None
@@ -680,7 +681,7 @@ class TestTrader(unittest.TestCase):
     
     def test_sync_orders_cancels_sell_when_no_position(self):
         """Test sync_orders cancels SELL order when position is 0"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(0)
         self.trader.sell_order_id = 501
         self.trader.buy_order_id = None
@@ -697,7 +698,7 @@ class TestTrader(unittest.TestCase):
     
     def test_sync_orders_respects_existing_buy_order_count(self):
         """Test sync_orders does not place new BUY when open_symbol_buys > 0"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(30)
         self.trader.open_symbol_buys = 1  # Already has a buy order
         self.trader.buy_order_id = 500
@@ -711,7 +712,7 @@ class TestTrader(unittest.TestCase):
     
     def test_sync_orders_respects_existing_sell_order_count(self):
         """Test sync_orders does not place new SELL when open_symbol_sells > 0"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(50)
         self.trader.open_symbol_sells = 1  # Already has a sell order
         self.trader.sell_order_id = 501
@@ -725,7 +726,7 @@ class TestTrader(unittest.TestCase):
     
     def test_sync_orders_respects_pending_buy_flag(self):
         """Test sync_orders does not place new BUY when pending_buy is True"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(30)
         self.trader.pending_buy = True
         self.trader.open_symbol_buys = 0
@@ -739,7 +740,7 @@ class TestTrader(unittest.TestCase):
     
     def test_sync_orders_respects_pending_sell_flag(self):
         """Test sync_orders does not place new SELL when pending_sell is True"""
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(50)
         self.trader.pending_sell = True
         self.trader.open_symbol_sells = 0
@@ -754,7 +755,7 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_does_nothing_when_not_ready(self):
         """Test sync_orders does nothing when not ready"""
         self.trader.ready_for_trading = False
-        self.trader.ref_price = 150.00
+        seed_valid_nbbo(self.trader, 150.00)
         self._seed(30)
         
         self.trader.sync_orders()
@@ -765,10 +766,24 @@ class TestTrader(unittest.TestCase):
     def test_sync_orders_does_nothing_when_no_ref_price(self):
         """Test sync_orders does nothing when no ref_price"""
         self.trader.ref_price = None
+        self.trader._bid = 149.90
+        self.trader._ask = 150.10
         self._seed(30)
         
         self.trader.sync_orders()
         
+        self.trader.placeOrder.assert_not_called()
+        self.trader.cancelOrder.assert_not_called()
+
+    def test_sync_orders_skips_when_no_nbbo(self):
+        """Test sync_orders does not place orders without valid bid/ask"""
+        self.trader.ref_price = 150.00
+        self.trader._bid = None
+        self.trader._ask = None
+        self._seed(30)
+
+        self.trader.sync_orders()
+
         self.trader.placeOrder.assert_not_called()
         self.trader.cancelOrder.assert_not_called()
     

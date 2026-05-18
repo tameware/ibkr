@@ -20,6 +20,7 @@ from ibkr_app_support import (
     add_logging_arguments,
     add_session_hours_arguments,
     clamp_quote_prices_to_avoid_self_trade,
+    has_valid_nbbo,
     NbboCoalesceSink,
     handle_ledger_execution,
     handle_ledger_ib_position,
@@ -166,6 +167,9 @@ class TwoSidedMidTrader(
             )
             self.ref_price = mid
 
+    def _has_valid_nbbo(self) -> bool:
+        return has_valid_nbbo(self._bid, self._ask)
+
     def startup(self) -> None:
         """Subscribe to market data and request startup snapshots."""
         self._nbbo.reset()
@@ -248,17 +252,8 @@ class TwoSidedMidTrader(
         exchange: str,
         specialConditions: str,
     ):
-        """IB callback: update ``ref_price`` from large last trades."""
-        if reqId != LAST_TRADE_REQ_ID:
-            return
-
-        if size is None:
-            return
-
-        if float(size) >= float(self.config["last_trade_min_size"]):
-            if self.ref_price != price:
-                self.ref_price = price
-                self.logger.info(f"New ref_price from last trade: {price} size={size}")
+        """IB callback: last-trade ticks (``ref_price`` comes from NBBO only)."""
+        return
 
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
         """IB callback: stage bid/ask ticks for NBBO coalescing."""
@@ -314,7 +309,10 @@ class TwoSidedMidTrader(
         if not self.ready_for_trading:
             return
 
-        if self.ref_price is None or self.nextOrderId is None:
+        if self.nextOrderId is None or not self._has_valid_nbbo():
+            return
+
+        if self.ref_price is None:
             return
 
         pos = self.position_size

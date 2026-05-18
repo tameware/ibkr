@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import sys
 import time
 
-from tests.ibapi_mocks import install_ibapi_mocks
+from tests.ibapi_mocks import install_ibapi_mocks, seed_valid_nbbo
 
 install_ibapi_mocks()
 
@@ -374,8 +374,8 @@ class TestTrader(unittest.TestCase):
         
         self.assertEqual(self.trader.remaining_by_order[500], 10)
     
-    def test_tick_by_tick_all_last_updates_ref_price(self):
-        """Test that last trade updates ref_price when size meets threshold"""
+    def test_tick_by_tick_all_last_does_not_update_ref_price(self):
+        """Last trades do not update ref_price; only coalesced NBBO does."""
         self.trader.ref_price = 150.00
         mock_attrib = Mock()
         
@@ -390,7 +390,7 @@ class TestTrader(unittest.TestCase):
             specialConditions=""
         )
         
-        self.assertEqual(self.trader.ref_price, 151.50)
+        self.assertEqual(self.trader.ref_price, 150.00)
     
     def test_tick_by_tick_all_last_ignores_small_size(self):
         """Test that last trade with small size does not update ref_price"""
@@ -518,8 +518,8 @@ class TestTrader(unittest.TestCase):
         self.trader.historicalDataEnd(1001, "", "")
         self.assertEqual(self.trader.open_price, 145.50)
     
-    def test_historical_data_sets_ref_price(self):
-        """Test that historical data sets ref_price if None"""
+    def test_historical_data_does_not_set_ref_price(self):
+        """Historical open is recorded but does not seed ref_price."""
         self.trader.ref_price = None
         bar = MagicMock()
         bar.open = 150.00
@@ -528,7 +528,8 @@ class TestTrader(unittest.TestCase):
         self.trader._bars = [bar]
         self.trader.historicalDataEnd(1001, "", "")
         
-        self.assertEqual(self.trader.ref_price, 150.00)
+        self.assertEqual(self.trader.open_price, 150.00)
+        self.assertIsNone(self.trader.ref_price)
     
     def test_historical_data_ignores_wrong_req_id(self):
         """Test historical data with wrong request ID is ignored"""
@@ -772,6 +773,18 @@ class TestTrader(unittest.TestCase):
         
         self.trader.sync_orders()
         
+        self.trader.placeOrder.assert_not_called()
+        self.trader.cancelOrder.assert_not_called()
+
+    def test_sync_orders_skips_when_no_nbbo(self):
+        """Test sync_orders does not place orders without valid bid/ask"""
+        self.trader.ref_price = 150.00
+        self.trader._bid = None
+        self.trader._ask = None
+        self._seed(30)
+
+        self.trader.sync_orders()
+
         self.trader.placeOrder.assert_not_called()
         self.trader.cancelOrder.assert_not_called()
     
