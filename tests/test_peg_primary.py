@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, Mock, patch
 from zoneinfo import ZoneInfo
 
 from tests.ibapi_mocks import MockContract, MockOrder, install_ibapi_mocks
+from tests.ledger_test_helpers import init_test_ledgers_dir
 
 install_ibapi_mocks(pytz=True)
 
@@ -139,10 +140,15 @@ class TestHelpers(unittest.TestCase):
 
 
 class TestAdjustedRelLimits(unittest.TestCase):
+    def setUp(self) -> None:
+        self.ledgers_dir = init_test_ledgers_dir(self)
+
+    def _cfg(self, **overrides):
+        return _minimal_config(ledgers_dir=self.ledgers_dir, **overrides)
+
     def test_mid_delta_symmetric_limits(self):
         """Buy/sell caps are mid ± mid_delta (NBBO mid rounded)."""
-        cfg = _minimal_config(mid_delta=0.02)
-        t = Trader(cfg)
+        t = Trader(self._cfg(mid_delta=0.02))
         t.ref_price = 999.0
         t._bid = 99.9
         t._ask = 100.1
@@ -155,8 +161,7 @@ class TestAdjustedRelLimits(unittest.TestCase):
         self.assertGreater(sell_l, buy_l)
 
     def test_mid_delta_custom(self):
-        cfg = _minimal_config(mid_delta=0.05)
-        t = Trader(cfg)
+        t = Trader(self._cfg(mid_delta=0.05))
         t._bid = 10.0
         t._ask = 10.2
         buy_l, sell_l = t.adjusted_rel_limits()
@@ -165,7 +170,7 @@ class TestAdjustedRelLimits(unittest.TestCase):
 
     def test_mid_delta_default_from_config_get(self):
         """Omit mid_delta in file → code uses default 0.10."""
-        cfg = _minimal_config()
+        cfg = self._cfg()
         cfg.pop("mid_delta", None)
         t = Trader(cfg)
         t._bid = 49.90
@@ -176,8 +181,7 @@ class TestAdjustedRelLimits(unittest.TestCase):
 
     def test_mid_delta_clamped_to_at_least_one_tick(self):
         """Configured mid_delta below one tick is treated as one tick."""
-        cfg = _minimal_config(mid_delta=0.001, price_round_digits=2)
-        t = Trader(cfg)
+        t = Trader(self._cfg(mid_delta=0.001, price_round_digits=2))
         t._bid = 49.90
         t._ask = 50.10
         buy_l, sell_l = t.adjusted_rel_limits()
@@ -189,8 +193,7 @@ class TestAdjustedRelLimits(unittest.TestCase):
 
     def test_limits_strictly_split_across_nbbo_mid(self):
         """Buy cap < mid and sell floor > mid on the price grid."""
-        cfg = _minimal_config(mid_delta=0.02, price_round_digits=2)
-        t = Trader(cfg)
+        t = Trader(self._cfg(mid_delta=0.02, price_round_digits=2))
         t._bid = 100.0
         t._ask = 101.0
         buy_l, sell_l = t.adjusted_rel_limits()
@@ -202,9 +205,8 @@ class TestAdjustedRelLimits(unittest.TestCase):
 
 class TestTrader(unittest.TestCase):
     def setUp(self):
-        self._ledger_tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._ledger_tmp.cleanup)
-        self.cfg = _minimal_config(ledgers_dir=self._ledger_tmp.name)
+        self.ledgers_dir = init_test_ledgers_dir(self)
+        self.cfg = _minimal_config(ledgers_dir=self.ledgers_dir)
         self.t = Trader(self.cfg)
         # NBBO so sync_orders / adjusted_rel_limits can run (mid 50.00, mid_delta 0.02 → 49.98 / 50.02)
         self.t._bid = 49.90
@@ -302,7 +304,7 @@ class TestTrader(unittest.TestCase):
         self.assertEqual(self.t.nextOrderId, 202)
 
     def test_default_min_order_size_is_ten(self):
-        cfg = _minimal_config()
+        cfg = dict(self.cfg)
         cfg.pop("min_order_size", None)
         t = Trader(cfg)
         self.assertEqual(t.min_order_size, 10)
@@ -520,9 +522,8 @@ class TestTrader(unittest.TestCase):
 
 class TestExecutionLogging(unittest.TestCase):
     def setUp(self):
-        self._ledger_tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._ledger_tmp.cleanup)
-        self.cfg = _minimal_config(ledgers_dir=self._ledger_tmp.name)
+        self.ledgers_dir = init_test_ledgers_dir(self)
+        self.cfg = _minimal_config(ledgers_dir=self.ledgers_dir)
         self.t = Trader(self.cfg)
         self.t.trigger_resync = Mock()
 
@@ -725,9 +726,8 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
     so the working remaining matches the new desired size."""
 
     def setUp(self):
-        self._ledger_tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._ledger_tmp.cleanup)
-        self.cfg = _minimal_config(ledgers_dir=self._ledger_tmp.name)
+        self.ledgers_dir = init_test_ledgers_dir(self)
+        self.cfg = _minimal_config(ledgers_dir=self.ledgers_dir)
         self.t = Trader(self.cfg)
         self.t.ready_for_trading = True
         self.t.ref_price = 50.0
@@ -919,8 +919,11 @@ class TestBuildArgParser(unittest.TestCase):
 
 
 class TestStartupOpenOrders(unittest.TestCase):
+    def setUp(self) -> None:
+        self.ledgers_dir = init_test_ledgers_dir(self)
+
     def test_open_order_end_logs_snapshot_once(self):
-        cfg = _minimal_config()
+        cfg = _minimal_config(ledgers_dir=self.ledgers_dir)
         t = Trader(cfg)
         t._startup_open_orders_logged = False
         contract = MockContract()

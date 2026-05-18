@@ -16,6 +16,7 @@ import sys
 import time
 
 from tests.ibapi_mocks import install_ibapi_mocks, seed_valid_nbbo
+from tests.ledger_test_helpers import init_test_ledgers_dir
 
 install_ibapi_mocks()
 
@@ -101,10 +102,9 @@ class TestTrader(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures"""
-        self._ledger_tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._ledger_tmp.cleanup)
+        self.ledgers_dir = init_test_ledgers_dir(self)
         self.config = {
-            "ledgers_dir": self._ledger_tmp.name,
+            "ledgers_dir": self.ledgers_dir,
             "host": "127.0.0.1",
             "port": 7497,
             "symbol": "AAPL",

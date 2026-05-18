@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, Mock, patch
 from zoneinfo import ZoneInfo
 
 from tests.ibapi_mocks import install_ibapi_mocks
+from tests.ledger_test_helpers import init_test_ledgers_dir
 
 install_ibapi_mocks(ticktype=False, order_cancel=True)
 
@@ -213,11 +214,10 @@ class TestNbboTickImprove(unittest.TestCase):
         )
         self._log_patcher.start()
         self.addCleanup(self._log_patcher.stop)
-        self._ledger_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self._ledger_dir.cleanup)
+        self.ledgers_dir = init_test_ledgers_dir(self)
         self.mm = MarketMaker(
             {
-                "ledgers_dir": self._ledger_dir.name,
+                "ledgers_dir": self.ledgers_dir,
                 "symbol": "FDX",
                 "sec_type": "STK",
                 "currency": "USD",
@@ -343,10 +343,9 @@ class TestMarketMakerCore(unittest.TestCase):
         self._log_patcher.start()
         self.addCleanup(self._log_patcher.stop)
 
-        self._ledger_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self._ledger_dir.cleanup)
+        self.ledgers_dir = init_test_ledgers_dir(self)
         self.base_config = {
-            "ledgers_dir": self._ledger_dir.name,
+            "ledgers_dir": self.ledgers_dir,
             "symbol": "FDX",
             "sec_type": "STK",
             "currency": "USD",

@@ -12,6 +12,8 @@ import threading
 import types
 from pathlib import Path
 
+from tests.ledger_test_helpers import init_test_ledgers_dir
+
 from ibkr_app_support import (
     PositionLedger,
     add_config_argument,
@@ -165,20 +167,17 @@ class TestQuotingPrimitives(unittest.TestCase):
 
 class TestPositionLedger(unittest.TestCase):
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
+        self.ledgers_dir = init_test_ledgers_dir(self)
         self.config = {
             "symbol": "FDX",
             "sec_type": "STK",
             "client_id": 7,
-            "ledgers_dir": self._tmp.name,
+            "ledgers_dir": self.ledgers_dir,
         }
-
-    def tearDown(self):
-        self._tmp.cleanup()
 
     def test_ledger_path_in_ledgers_dir(self):
         path = ledger_path_for_strategy("peg_primary", self.config)
-        self.assertEqual(path.parent, Path(self._tmp.name))
+        self.assertEqual(path.parent, Path(self.ledgers_dir))
         self.assertTrue(path.name.startswith("peg_primary_FDX_7"))
 
     def test_apply_fill_buy_and_sell(self):
