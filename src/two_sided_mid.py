@@ -62,6 +62,8 @@ _BASE_REQUIRED_FIELDS = [
 
 
 class TwoSidedMidTrader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
+    """Two-sided mid-reference quoter; subclasses supply order type (PEG MID, MIDPRICE)."""
+
     def __init__(
         self,
         config: Dict[str, Any],
@@ -71,6 +73,7 @@ class TwoSidedMidTrader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp
         ledger_name: str,
         default_client_id: int,
     ) -> None:
+        """Initialize :class:`TwoSidedMidTrader`."""
         super().__init__(
             config,
             logger_name=logger_name,
@@ -106,12 +109,15 @@ class TwoSidedMidTrader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp
         )
 
     def market_data_req_ids(self) -> Sequence[int]:
+        """Market data request ids to cancel on shutdown."""
         return (MKTDATA_REQ_ID,)
 
     def assign_next_order_id(self, order_id: int) -> None:
+        """Store the next usable order id from IB."""
         self.nextOrderId = order_id
 
     def shutdown_quotes(self) -> None:
+        """Cancel working quotes and clear local order tracking."""
         self._nbbo.cancel()
         if self.cancel_open_orders_on_shutdown:
             for label, oid in (("BUY", self.buy_order_id), ("SELL", self.sell_order_id)):
@@ -141,6 +147,7 @@ class TwoSidedMidTrader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp
         self._nbbo.ask = None if value is None else float(value)
 
     def _on_coalesced_nbbo(self, bid: float, ask: float) -> None:
+        """Update ``ref_price`` from coalesced bid/ask mid."""
         mid = (bid + ask) / 2.0
         if mid != self.ref_price:
             self.logger.info(
@@ -149,6 +156,7 @@ class TwoSidedMidTrader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp
             self.ref_price = mid
 
     def startup(self) -> None:
+        """Subscribe to market data and request startup snapshots."""
         self._nbbo.reset()
         self.request_positions_snapshot()
         self.request_today_open_or_prior_close()
@@ -190,6 +198,7 @@ class TwoSidedMidTrader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp
         whyHeld,
         mktCapPrice,
     ):
+        """IB callback: track fills and trigger resync on terminal status."""
         self.remaining_by_order[orderId] = remaining
 
         if status in ("Submitted", "PreSubmitted", "ApiPending", "PendingSubmit"):
@@ -227,6 +236,7 @@ class TwoSidedMidTrader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp
         exchange: str,
         specialConditions: str,
     ):
+        """IB callback: update ``ref_price`` from large last trades."""
         if reqId != LAST_TRADE_REQ_ID:
             return
 
@@ -239,11 +249,13 @@ class TwoSidedMidTrader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp
                 self.logger.info(f"New ref_price from last trade: {price} size={size}")
 
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
+        """IB callback: stage bid/ask ticks for NBBO coalescing."""
         if reqId != MKTDATA_REQ_ID:
             return
         self._nbbo.stage_tick_price(int(tickType), float(price))
 
     def openOrder(self, orderId, contract, order, orderState):
+        """IB callback: track working orders for this symbol."""
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
             if order.action == "BUY":
                 self.open_symbol_buys += 1
@@ -253,6 +265,7 @@ class TwoSidedMidTrader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp
                 self.sell_order_id = orderId
 
     def execDetails(self, reqId, contract, execution):
+        """IB callback: apply fills to the position ledger."""
         if (
             contract.symbol != self.config["symbol"]
             or contract.secType != self.config["sec_type"]
@@ -270,6 +283,7 @@ class TwoSidedMidTrader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp
             )
 
     def position(self, account, contract, pos, avgCost):
+        """IB callback: reconcile IB position snapshot with ledger."""
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
             handle_ledger_ib_position(
                 self.ledger, account, int(pos), float(avgCost), logger=self.logger
@@ -279,9 +293,11 @@ class TwoSidedMidTrader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp
             )
 
     def us_regular_hours(self):
+        """True during configured regular session hours."""
         return regular_session_open(self.config)
 
     def sync_orders(self):
+        """Place, cancel, or amend quotes to match position and limits."""
         if not self.ready_for_trading:
             return
 
@@ -362,6 +378,7 @@ class TwoSidedMidTrader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp
                 self.pending_sell = False
 
     def run_until_shutdown(self) -> None:
+        """Main loop: periodic resync while connected and in session."""
         while not self.shutdown_flag:
             if not self.isConnected():
                 self.logger.info("Disconnected from IBKR; exiting run loop")
@@ -372,6 +389,7 @@ class TwoSidedMidTrader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp
 
 
 def add_two_sided_mid_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add CLI flags shared by two-sided mid quoter bots."""
     parser.add_argument("--max_pos", type=int)
     parser.add_argument("--loop_seconds", type=float)
     parser.add_argument("--buy_delta", type=float)
@@ -396,6 +414,7 @@ def run_two_sided_mid_main(
     extra_required: Sequence[str] = (),
     configure_parser: Optional[Callable[[argparse.ArgumentParser], None]] = None,
 ) -> None:
+    """Parse config, construct trader, and run ``run_bot``."""
     parser = argparse.ArgumentParser(description=description)
     add_config_argument(parser, script_file)
     add_ib_connection_arguments(parser, include_client_id=False)

@@ -12,7 +12,10 @@ _PEG_MID_REQUIRED = ["peg_mid_offset_whole", "peg_mid_offset_half"]
 
 
 class Trader(TwoSidedMidTrader):
+    """PEG MID two-sided quoter with whole/half-cent offsets."""
+
     def __init__(self, config: Dict[str, Any]):
+        """Initialize :class:`Trader`."""
         super().__init__(
             config,
             logger_name="peg_mid",
@@ -22,15 +25,18 @@ class Trader(TwoSidedMidTrader):
         )
 
     def make_quote_order(self, action: str, qty: int, limit_price: float) -> Order:
+        """Build a BUY or SELL quote order for this strategy variant."""
         return self.make_peg_mid_order(action, qty, limit_price)
 
     def midpoint_is_half_penny(self) -> bool:
+        """True when NBBO mid falls on a half-cent."""
         if self._bid is None or self._ask is None:
             return False
         midpoint_half_cents = int(round((self._bid + self._ask) * 100))
         return midpoint_half_cents % 2 == 1
 
     def current_peg_mid_offset(self) -> float:
+        """PEG MID offset for whole- vs half-penny mid."""
         if self.midpoint_is_half_penny():
             return float(
                 self.config.get(
@@ -41,6 +47,7 @@ class Trader(TwoSidedMidTrader):
         return float(self.config.get("peg_mid_offset_whole", 0.0))
 
     def make_peg_mid_order(self, action: str, qty: int, limit_price: float) -> Order:
+        """Build a PEG MID order with whole/half offsets."""
         o = Order()
         o.action = action
         o.orderType = "PEG MID"
@@ -56,6 +63,7 @@ class Trader(TwoSidedMidTrader):
     def format_place_order_log(
         self, *, side: str, qty: int, limit: float, order: Order, order_id: int
     ) -> str:
+        """Human-readable log line for a new order submission."""
         cap_floor = "cap" if side == "BUY" else "floor"
         return (
             f"Placing PEG MID {side} {qty} {cap_floor}={limit} "
@@ -64,11 +72,13 @@ class Trader(TwoSidedMidTrader):
 
 
 def _configure_parser(parser: argparse.ArgumentParser) -> None:
+    """Add strategy-specific CLI flags to the parser."""
     parser.add_argument("--peg_mid_offset_whole", type=float)
     parser.add_argument("--peg_mid_offset_half", type=float)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for this bot script."""
     parser = argparse.ArgumentParser(
         description="Parameterized IBKR ATS Pegged-to-Midpoint two-sided trader"
     )
@@ -80,6 +90,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """CLI entry point."""
     run_two_sided_mid_main(
         description="Parameterized IBKR ATS Pegged-to-Midpoint two-sided trader",
         script_file=__file__,

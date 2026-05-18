@@ -22,6 +22,7 @@ _IB_STATUS_INFO_CODES_DEFAULT = frozenset({2104, 2106, 2158})
 
 
 def normalize_config_key(name: str) -> str:
+    """Convert hyphenated CLI keys to snake_case for config lookup."""
     return name.replace("-", "_")
 
 
@@ -58,6 +59,7 @@ def config_base_path(for_config_path: str | Path) -> Path:
 
 
 def _read_config_json(path: Path) -> Dict[str, Any]:
+    """Load a JSON config object from disk with comment-key support."""
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f, object_pairs_hook=_config_json_object_pairs_hook)
     if not isinstance(data, dict):
@@ -134,6 +136,7 @@ def cli_to_config(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 def merge_config(file_config: Dict[str, Any], cli_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge file config with CLI overrides (CLI wins)."""
     merged = dict(file_config)
     merged.update(cli_config)
     return merged
@@ -180,6 +183,7 @@ def order_status_clients_match(wrapper_client_id: Any, our_client_id: int) -> bo
 
 
 def require_fields(config: Dict[str, Any], required_fields: list[str]) -> None:
+    """Raise ``ValueError`` if any required config keys are absent."""
     missing = [field for field in required_fields if field not in config]
     if missing:
         raise ValueError(f"Missing required configuration fields: {', '.join(missing)}")
@@ -189,10 +193,12 @@ LEDGERS_DIR_NAME = "ledgers"
 
 
 def ledgers_dir_from_config(config: Dict[str, Any]) -> Path:
+    """Resolve the ledgers directory path from config."""
     return Path(str(config.get("ledgers_dir", LEDGERS_DIR_NAME)))
 
 
 def _sanitize_ledger_token(value: str) -> str:
+    """Make a string safe for ledger filenames."""
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(value))
 
 
@@ -217,6 +223,7 @@ class PositionLedger:
     """Per-strategy position ledger persisted for parallel bot runs (keyed by client_id)."""
 
     def __init__(self, path: Path, data: Dict[str, Any]) -> None:
+        """Initialize :class:`PositionLedger`."""
         self._path = path
         self._data = data
 
@@ -229,6 +236,7 @@ class PositionLedger:
         client_id: Optional[int] = None,
         account: Optional[str] = None,
     ) -> PositionLedger:
+        """Open or create the ledger JSON file."""
         path = ledger_path_for_strategy(strategy, config, client_id=client_id)
         cid = int(
             client_id if client_id is not None else ib_client_id_from_config(config)
@@ -272,18 +280,22 @@ class PositionLedger:
 
     @property
     def path(self) -> Path:
+        """Path to the ledger JSON file."""
         return self._path
 
     @property
     def qty(self) -> int:
+        """Signed position quantity from the ledger."""
         return int(self._data.get("qty", 0))
 
     @property
     def avg_cost(self) -> float:
+        """Volume-weighted average cost for the open position."""
         return float(self._data.get("avg_cost", 0.0))
 
     @property
     def ib_snapshot_qty(self) -> Optional[int]:
+        """Last IB ``position`` snapshot quantity, if any."""
         raw = self._data.get("ib_snapshot_qty")
         return None if raw is None else int(raw)
 
@@ -347,6 +359,7 @@ class PositionLedger:
         self._data["ib_snapshot_at"] = now
 
     def save(self) -> None:
+        """Persist ledger state to disk."""
         self._data["updated_at"] = datetime.datetime.now(
             datetime.timezone.utc
         ).isoformat()
@@ -402,10 +415,12 @@ def seed_ledger_position(
 
 
 def price_digits_from_config(config: Dict[str, Any]) -> int:
+    """Decimal places for rounding prices from config."""
     return int(config.get("price_round_digits", 2))
 
 
 def price_tick_from_config(config: Dict[str, Any]) -> float:
+    """Minimum price increment from ``price_round_digits``."""
     return 10.0 ** (-price_digits_from_config(config))
 
 
@@ -420,6 +435,7 @@ def mid_delta_for_config(config: Dict[str, Any], *, default: float = 0.02) -> fl
 
 
 def nbbo_mid_rounded(bid: float, ask: float, config: Dict[str, Any]) -> float:
+    """NBBO mid rounded per ``price_round_digits``."""
     digits = price_digits_from_config(config)
     return round((float(bid) + float(ask)) / 2.0, digits)
 
@@ -455,6 +471,7 @@ def has_valid_nbbo(
     bid: Optional[float],
     ask: Optional[float],
 ) -> bool:
+    """True when bid/ask are positive and ask > bid."""
     if bid is None or ask is None:
         return False
     try:
@@ -506,6 +523,7 @@ class WorkingOrderReconcilePlan:
 
 
 def parse_order_remaining(remaining_raw: Any) -> Optional[int]:
+    """Parse IB ``remaining`` field to int, or None if invalid."""
     if remaining_raw is None:
         return None
     try:
@@ -600,6 +618,7 @@ def clamp_quote_prices_to_avoid_self_trade(
 
 
 def _normalize_fill_side(side: str) -> Optional[str]:
+    """Map IB execution side strings to BUY or SELL."""
     raw = str(side or "").upper()
     if raw in ("BOT", "BUY"):
         return "BUY"
@@ -631,6 +650,7 @@ def sync_attrs_from_ledger(
     avg_attr: Optional[str] = "avg_cost",
     clamp_qty_nonneg: bool = False,
 ) -> None:
+    """Copy ledger qty (and optional avg) onto a bot instance."""
     qty = ledger.qty
     if clamp_qty_nonneg:
         qty = max(0, qty)
@@ -704,6 +724,7 @@ def add_config_argument(
     parser: argparse.ArgumentParser,
     script_file: str | Path,
 ) -> None:
+    """Add ``--config`` with default ``config/<script>.json``."""
     parser.add_argument(
         "--config",
         default=default_config_path(script_file),
@@ -712,6 +733,7 @@ def add_config_argument(
 
 
 def add_logging_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add shared logging-related CLI flags."""
     parser.add_argument("--log_dir")
     parser.add_argument("--log_file")
     parser.add_argument("--level")
@@ -724,6 +746,7 @@ def add_logging_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def add_session_hours_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add market session hour/minute CLI flags."""
     parser.add_argument("--market_timezone")
     parser.add_argument("--market_open_hour", type=int)
     parser.add_argument("--market_open_minute", type=int)
@@ -799,6 +822,7 @@ class NbboThrottle:
         *,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        """Initialize :class:`NbboThrottle`."""
         self.interval_seconds = float(interval_seconds)
         self._clock = clock
         self._last_run_ts = 0.0
@@ -806,10 +830,12 @@ class NbboThrottle:
 
     @property
     def last_key(self) -> Any:
+        """Last throttle key passed to ``mark_ran``."""
         return self._last_key
 
     @property
     def last_run_ts(self) -> float:
+        """Monotonic timestamp of the last ``mark_ran``."""
         return self._last_run_ts
 
     def should_run(
@@ -819,6 +845,7 @@ class NbboThrottle:
         force: bool = False,
         bypass_if: Optional[Callable[[], bool]] = None,
     ) -> bool:
+        """True if throttle interval elapsed or bypass applies."""
         if force:
             return True
         if bypass_if is not None and bypass_if():
@@ -833,10 +860,12 @@ class NbboThrottle:
         return True
 
     def mark_ran(self, nbbo_key: Any) -> None:
+        """Record that a throttled action ran for ``key``."""
         self._last_run_ts = self._clock()
         self._last_key = nbbo_key
 
     def reset(self) -> None:
+        """Clear staged NBBO and cancel coalesce timers."""
         self._last_run_ts = 0.0
         self._last_key = None
 
@@ -859,6 +888,7 @@ class NbboCoalescer:
         max_interval_seconds: float = 0.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        """Initialize :class:`NbboCoalescer`."""
         self.interval_seconds = max(0.0, float(interval_seconds))
         self.max_interval_seconds = max(0.0, float(max_interval_seconds))
         self._on_flush = on_flush
@@ -869,11 +899,13 @@ class NbboCoalescer:
         self._anchor_ts: Optional[float] = None
 
     def _max_deadline_elapsed(self, now: float) -> bool:
+        """True when max coalesce interval has passed."""
         if self.max_interval_seconds <= 0 or self._anchor_ts is None:
             return False
         return (now - self._anchor_ts) >= self.max_interval_seconds
 
     def _arm_quiet_timer_locked(self, delay: float) -> None:
+        """Schedule a flush after the quiet interval."""
         if self._timer is not None:
             self._timer.cancel()
         self._timer = threading.Timer(delay, self._fire)
@@ -881,6 +913,7 @@ class NbboCoalescer:
         self._timer.start()
 
     def _do_flush(self) -> None:
+        """Run the coalescer flush callback once."""
         now = self._clock()
         self._last_flush_ts = now
         self._anchor_ts = now
@@ -930,6 +963,7 @@ class NbboCoalescer:
         self._do_flush()
 
     def cancel(self) -> None:
+        """Cancel pending coalesce timers without applying ticks."""
         with self._lock:
             if self._timer is not None:
                 self._timer.cancel()
@@ -949,6 +983,7 @@ class NbboCoalesceSink:
         clock: Callable[[], float] = time.monotonic,
         require_positive: bool = True,
     ) -> None:
+        """Initialize :class:`NbboCoalesceSink`."""
         self.bid: Optional[float] = None
         self.ask: Optional[float] = None
         self._pending_bid: Optional[float] = None
@@ -964,6 +999,7 @@ class NbboCoalesceSink:
         )
 
     def stage_tick_price(self, tick_type: int, price: float) -> None:
+        """Stage a bid or ask ``tickPrice`` update for coalescing."""
         if tick_type == 1:
             if self._require_positive and price <= 0:
                 return
@@ -981,6 +1017,7 @@ class NbboCoalesceSink:
         self._commit_pending()
 
     def reset(self) -> None:
+        """Clear staged NBBO and cancel coalesce timers."""
         self._pending_bid = None
         self._pending_ask = None
         self.bid = None
@@ -988,9 +1025,11 @@ class NbboCoalesceSink:
         self._coalesce.cancel()
 
     def cancel(self) -> None:
+        """Cancel pending coalesce timers without applying ticks."""
         self._coalesce.cancel()
 
     def _commit_pending(self) -> None:
+        """Apply pending bid/ask and invoke the coalesced callback."""
         if self._pending_bid is not None:
             self.bid = self._pending_bid
         if self._pending_ask is not None:
@@ -1000,6 +1039,7 @@ class NbboCoalesceSink:
 
 
 def cfg_bool(config: Dict[str, Any], key: str, default: bool) -> bool:
+    """Parse a config bool (accepts true/false strings)."""
     if key not in config:
         return default
     v = config[key]
@@ -1085,6 +1125,7 @@ def log_startup_timezones(
     )
 
     def emit(fmt: str, *args: object) -> None:
+        """Invoke the coalescer flush callback."""
         if logger is not None:
             logger.info(fmt, *args)
         else:
@@ -1226,6 +1267,7 @@ def format_ib_error_message(
     error_string: Any,
     advanced_order_reject: str = "",
 ) -> str:
+    """Format IB API error callback fields for logging."""
     return (
         f"Error reqId={req_id} errorTime={error_time} errorCode={error_code} "
         f"errorString={error_string} advancedOrderRejectJson={advanced_order_reject}"
@@ -1422,6 +1464,7 @@ def run_bot(
         return 1
 
     def handle_sig(*_args: object) -> None:
+        """Signal handler that requests graceful shutdown."""
         if logger is not None:
             logger.info("Stopping...")
         app.stop()

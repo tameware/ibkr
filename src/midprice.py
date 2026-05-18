@@ -10,7 +10,10 @@ from two_sided_mid import TwoSidedMidTrader, add_two_sided_mid_arguments, run_tw
 
 
 class Trader(TwoSidedMidTrader):
+    """MIDPRICE two-sided quoter."""
+
     def __init__(self, config: Dict[str, Any]):
+        """Initialize :class:`Trader`."""
         super().__init__(
             config,
             logger_name="midprice",
@@ -20,9 +23,11 @@ class Trader(TwoSidedMidTrader):
         )
 
     def make_quote_order(self, action: str, qty: int, limit_price: float) -> Order:
+        """Build a BUY or SELL quote order for this strategy variant."""
         return self.make_midprice_order(action, qty, limit_price)
 
     def make_midprice_order(self, action: str, qty: int, limit_price: float) -> Order:
+        """Build a MIDPRICE order at the limit."""
         o = Order()
         o.action = action
         o.orderType = "MIDPRICE"
@@ -34,6 +39,7 @@ class Trader(TwoSidedMidTrader):
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for this bot script."""
     parser = argparse.ArgumentParser(
         description="Parameterized IBKR MidPrice two-sided trader"
     )
@@ -44,6 +50,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """CLI entry point."""
     run_two_sided_mid_main(
         description="Parameterized IBKR MidPrice two-sided trader",
         script_file=__file__,

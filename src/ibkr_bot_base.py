@@ -24,10 +24,12 @@ class OpenPriceBootstrapMixin:
     """Request daily bars at startup and set ``open_price`` / ``ref_price``."""
 
     def _init_open_price_bootstrap(self) -> None:
+        """Initialize ``open_price`` and historical bar buffer."""
         self.open_price: float | None = None
         self._bars: list[Any] = []
 
     def request_today_open_or_prior_close(self) -> None:
+        """Request daily bars to seed ``open_price``."""
         self.logger.info("Requesting daily bars for open/prior close")
         self._bars = []
         self.reqHistoricalData(
@@ -44,11 +46,13 @@ class OpenPriceBootstrapMixin:
         )
 
     def historicalData(self, reqId: Any, bar: Any) -> None:
+        """IB callback: accumulate daily bar rows."""
         if reqId != HIST_REQ_ID:
             return
         self._bars.append(bar)
 
     def historicalDataEnd(self, reqId: Any, start: Any, end: Any) -> None:
+        """IB callback: set ``open_price`` from the latest bar."""
         if reqId != HIST_REQ_ID:
             return
 
@@ -77,6 +81,7 @@ class SnapshotResyncMixin:
     """Debounce ``reqPositions`` / ``reqOpenOrders`` before calling ``sync_orders``."""
 
     def _init_snapshot_resync(self, config: Dict[str, Any]) -> None:
+        """Initialize snapshot flags and resync debounce interval."""
         self.ready_for_trading = False
         self.position_snapshot_complete = False
         self.open_orders_snapshot_complete = False
@@ -92,33 +97,40 @@ class SnapshotResyncMixin:
         self.open_symbol_sells = 0
 
     def request_positions_snapshot(self) -> None:
+        """Request a fresh ``reqPositions`` snapshot."""
         self.position_snapshot_complete = False
         self.reqPositions()
 
     def request_open_orders_snapshot(self) -> None:
+        """Request a fresh ``reqOpenOrders`` snapshot."""
         self.open_orders_snapshot_complete = False
         self.on_open_orders_snapshot_start()
         self.reqOpenOrders()
 
     def _update_ready_for_trading(self) -> None:
+        """Set ``ready_for_trading`` when both snapshots are done."""
         self.ready_for_trading = (
             self.position_snapshot_complete and self.open_orders_snapshot_complete
         )
 
     def positionEnd(self) -> None:
+        """IB callback: position snapshot complete."""
         self.position_snapshot_complete = True
         self._update_ready_for_trading()
         self.maybe_sync_orders()
 
     def openOrderEnd(self) -> None:
+        """IB callback: open-order snapshot complete."""
         self.on_open_orders_snapshot_end()
 
     def on_open_orders_snapshot_end(self) -> None:
+        """Mark open orders snapshot done and maybe sync."""
         self.open_orders_snapshot_complete = True
         self._update_ready_for_trading()
         self.maybe_sync_orders()
 
     def maybe_sync_orders(self) -> None:
+        """Run ``sync_orders`` after both snapshots if resync was requested."""
         if (
             self.sync_requested
             and self.position_snapshot_complete
@@ -128,6 +140,7 @@ class SnapshotResyncMixin:
             self.sync_orders()
 
     def trigger_resync(self, *, force: bool = False) -> None:
+        """Debounced refresh of positions, open orders, then ``sync_orders``."""
         if self.shutdown_flag or not self.isConnected():
             return
 
@@ -155,6 +168,7 @@ class IbkrBotApp(EWrapper, EClient, ABC):
         logger_name: str,
         default_log_file: str,
     ) -> None:
+        """Initialize :class:`IbkrBotApp`."""
         EClient.__init__(self, self)
         self.config = config
         self.contract = make_stock_contract(config)
@@ -172,6 +186,7 @@ class IbkrBotApp(EWrapper, EClient, ABC):
 
     @property
     def api_ready(self) -> bool:
+        """True after ``nextValidId`` (socket API ready to trade)."""
         return self._api_ready
 
     @api_ready.setter
@@ -202,18 +217,22 @@ class IbkrBotApp(EWrapper, EClient, ABC):
         self.next_order_id = order_id
 
     def _mark_shutdown(self) -> None:
+        """Set ``shutdown_flag`` for the main loop."""
         self.shutdown_flag = True
 
     def connectAck(self) -> None:
+        """IB callback: connection acknowledged."""
         self.logger.info("IBKR connectAck received")
 
     def connectionClosed(self) -> None:
+        """IB callback: mark disconnected and run teardown hook."""
         self._api_ready = False
         self.shutdown_flag = True
         self.logger.warning("IBKR connection closed (connectionClosed callback)")
         self.on_connection_closed()
 
     def nextValidId(self, orderId: int) -> None:
+        """IB callback: API ready; assign order id and run ``startup``."""
         self.logger.info("nextValidId: %s", orderId)
         self._api_ready = True
         self.assign_next_order_id(orderId)
@@ -227,6 +246,7 @@ class IbkrBotApp(EWrapper, EClient, ABC):
         errorString: Any,
         advancedOrderReject: str = "",
     ) -> None:
+        """IB callback: log errors via shared filter rules."""
         log_ib_error(
             self.logger,
             self.config,
@@ -238,6 +258,7 @@ class IbkrBotApp(EWrapper, EClient, ABC):
         )
 
     def stop(self) -> None:
+        """Cancel quotes, disconnect, and cancel market data subscriptions."""
         if self._stop_called:
             return
         self._stop_called = True

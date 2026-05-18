@@ -95,6 +95,7 @@ def make_rel_order(
     tif: str,
     price_round_digits: int,
 ) -> Order:
+    """Build a Pegged-to-Primary (REL) order with protective limit and aux offset."""
     o = Order()
     o.action = action
     o.orderType = "REL"
@@ -110,7 +111,10 @@ def make_rel_order(
 
 
 class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
+    """Pegged-to-Primary (REL) quoter with NBBO-driven limit and size sync."""
+
     def __init__(self, config: Dict[str, Any]):
+        """Initialize :class:`Trader`."""
         super().__init__(
             config,
             logger_name="peg_primary",
@@ -179,12 +183,15 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
         )
 
     def market_data_req_ids(self):
+        """Market data request ids to cancel on shutdown."""
         return (MKTDATA_REQ_ID,)
 
     def assign_next_order_id(self, order_id: int) -> None:
+        """Store the next usable order id from IB."""
         self.nextOrderId = order_id
 
     def shutdown_quotes(self) -> None:
+        """Cancel working quotes and clear local order tracking."""
         self._nbbo.cancel()
         if self.cancel_open_orders_on_shutdown:
             for label, oid in (("BUY", self.buy_order_id), ("SELL", self.sell_order_id)):
@@ -242,6 +249,7 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
         whyHeld,
         mktCapPrice,
     ):
+        """IB callback: track fills and trigger resync on terminal status."""
         if not order_status_clients_match(clientId, self.ib_client_id):
             return
         self.remaining_by_order[orderId] = remaining
@@ -302,6 +310,7 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
             self.trigger_resync()
 
     def execDetails(self, reqId, contract, execution):
+        """IB callback: apply fills to the position ledger."""
         if (
             contract.symbol != self.config["symbol"]
             or contract.secType != self.config["sec_type"]
@@ -344,11 +353,13 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
         self._nbbo.ask = None if value is None else float(value)
 
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
+        """IB callback: stage bid/ask ticks for NBBO coalescing."""
         if reqId != MKTDATA_REQ_ID:
             return
         self._nbbo.stage_tick_price(int(tickType), float(price))
 
     def _on_coalesced_nbbo(self, bid: float, ask: float) -> None:
+        """Update ``ref_price`` from coalesced bid/ask mid."""
         if self._has_valid_nbbo():
             self.maybe_sync_orders_from_nbbo()
 
@@ -369,6 +380,7 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
         )
 
     def openOrder(self, orderId, contract, order, orderState):
+        """IB callback: track working orders for this symbol."""
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
             if not open_order_belongs_to_client(order, self.ib_client_id):
                 return
@@ -402,12 +414,14 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
                 self.sell_order_qty = qty
 
     def on_open_orders_snapshot_start(self) -> None:
+        """Reset open-order counters and peg_primary caches."""
         super().on_open_orders_snapshot_start()
         self._snapshot_open_order_lines = []
         self.order_working_lmt.clear()
         self.order_working_aux.clear()
 
     def on_open_orders_snapshot_end(self) -> None:
+        """Mark open orders snapshot done and maybe sync."""
         if not self._startup_open_orders_logged:
             sym = self.config["symbol"]
             if self._snapshot_open_order_lines:
@@ -425,6 +439,7 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
         super().on_open_orders_snapshot_end()
 
     def position(self, account, contract, pos, avgCost):
+        """IB callback: reconcile IB position snapshot with ledger."""
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
             handle_ledger_ib_position(
                 self.ledger, account, int(pos), float(avgCost), logger=self.logger
@@ -434,9 +449,11 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
             )
 
     def us_regular_hours(self) -> bool:
+        """True during configured regular session hours."""
         return regular_session_open(self.config)
 
     def _has_valid_nbbo(self) -> bool:
+        """True when staged bid/ask form a valid NBBO."""
         return has_valid_nbbo(self._bid, self._ask)
 
     def _nbbo_mid_rounded(self) -> float:
@@ -484,6 +501,7 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
         self.sync_orders()
 
     def _clear_order_state(self, action: str) -> None:
+        """Clear cached ids and counts for one order side."""
         if action == "BUY":
             oid = self.buy_order_id
             self.pending_buy = False
@@ -554,6 +572,7 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
         return True
 
     def _note_order_cache(self, oid: int, order: Order) -> None:
+        """Remember working lmt/aux for amend detection."""
         try:
             self.order_working_lmt[oid] = float(order.lmtPrice)
             self.order_working_aux[oid] = float(getattr(order, "auxPrice", 0.0) or 0.0)
@@ -601,6 +620,7 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
         return True
 
     def sync_orders(self):
+        """Place, cancel, or amend quotes to match position and limits."""
         if self.shutdown_flag or not self.ready_for_trading:
             return
 
@@ -836,6 +856,7 @@ class Trader(OpenPriceBootstrapMixin, SnapshotResyncMixin, IbkrBotApp):
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for this bot script."""
     parser = argparse.ArgumentParser(
         description="IBKR Pegged-to-Primary (REL) quoter — NBBO pegging is exchange-side"
     )
@@ -880,6 +901,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """CLI entry point."""
     parser = build_arg_parser()
     args = parser.parse_args()
 

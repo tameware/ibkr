@@ -28,7 +28,10 @@ _PEG_BEST_REQUIRED = [
 
 
 class Trader(SingleSideQuoter):
+    """PEG BEST single-side quoter (multiplier limits from ``ref_price``)."""
+
     def __init__(self, config: Dict[str, Any]):
+        """Initialize :class:`Trader`."""
         super().__init__(
             config,
             logger_name="peg_best",
@@ -38,6 +41,7 @@ class Trader(SingleSideQuoter):
         )
 
     def compute_order_limits(self) -> tuple[float, float]:
+        """Return protective ``(buy_limit, sell_limit)`` from ``ref_price``."""
         digits = int(self.config["price_round_digits"])
         buy_limit = round(
             self.ref_price * float(self.config["buy_limit_multiplier"]), digits
@@ -54,6 +58,7 @@ class Trader(SingleSideQuoter):
         return buy_limit, sell_limit
 
     def make_quote_order(self, action: str, qty: int, limit_price: float) -> Order:
+        """Build a BUY or SELL quote order for this strategy variant."""
         o = Order()
         o.action = action
         o.orderType = "PEG BEST"
@@ -71,6 +76,7 @@ class Trader(SingleSideQuoter):
 
 
 def _configure_parser(parser: argparse.ArgumentParser) -> None:
+    """Add strategy-specific CLI flags to the parser."""
     parser.add_argument("--buy_limit_multiplier", type=float)
     parser.add_argument("--sell_limit_multiplier", type=float)
     parser.add_argument("--min_compete_size", type=int)
@@ -80,6 +86,7 @@ def _configure_parser(parser: argparse.ArgumentParser) -> None:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for this bot script."""
     parser = argparse.ArgumentParser(
         description="Parameterized IBKR PEG BEST single-side trader"
     )
@@ -91,6 +98,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """CLI entry point."""
     run_single_side_main(
         description="Parameterized IBKR PEG BEST single-side trader",
         script_file=__file__,

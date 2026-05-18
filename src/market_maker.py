@@ -111,7 +111,10 @@ class QuotePipelineInvalidPair:
 
 
 class MarketMaker(IbkrBotApp):
+    """Two-sided limit quoter with NBBO tick-improve and inventory skew."""
+
     def __init__(self, config: Dict[str, Any]):
+        """Initialize :class:`MarketMaker`."""
         super().__init__(
             config,
             logger_name="market_maker",
@@ -246,13 +249,16 @@ class MarketMaker(IbkrBotApp):
         )
 
     def market_data_req_ids(self):
+        """Market data request ids to cancel on shutdown."""
         return (self.market_data_req_id,)
 
     def assign_next_order_id(self, order_id: int) -> None:
+        """Store the next usable order id from IB."""
         with self.lock:
             self.next_order_id = order_id
 
     def on_api_ready(self, order_id: int) -> None:
+        """Mark connected and run ``startup`` on first ``nextValidId``."""
         with self.lock:
             self.connected_flag = True
         self.logger.info("Connected to IBKR. nextValidId=%s", order_id)
@@ -261,14 +267,17 @@ class MarketMaker(IbkrBotApp):
             self.startup()
 
     def on_connection_closed(self) -> None:
+        """Clear ``connected_flag`` when IB closes the socket."""
         with self.lock:
             self.connected_flag = False
 
     def _mark_shutdown(self) -> None:
+        """Set ``shutdown_flag`` for the main loop."""
         with self.lock:
             self.shutdown_flag = True
 
     def shutdown_quotes(self) -> None:
+        """Cancel working quotes and clear local order tracking."""
         self._nbbo.cancel()
         if self.cancel_open_orders_on_shutdown:
             if self.buy_order:
@@ -281,12 +290,14 @@ class MarketMaker(IbkrBotApp):
             )
 
     def marketDataType(self, reqId, marketDataType):
+        """IB callback: record live/delayed data type."""
         self.market_data_type = marketDataType
         self.logger.info("Market data type update reqId=%s type=%s", reqId, marketDataType)
         if self.require_live_data and marketDataType != 1:
             self.logger.warning("Live data required, but market data type is %s", marketDataType)
 
     def startup(self):
+        """Subscribe to market data and request startup snapshots."""
         self._nbbo.reset()
         with self.lock:
             self.open_orders_snapshot_done = False
@@ -310,6 +321,7 @@ class MarketMaker(IbkrBotApp):
         )
 
     def contractDetails(self, reqId, contractDetails):
+        """IB callback: log contract details."""
         if reqId != self.contract_details_req_id:
             return
 
@@ -342,10 +354,12 @@ class MarketMaker(IbkrBotApp):
         )
 
     def contractDetailsEnd(self, reqId):
+        """IB callback: end of contract details stream."""
         if reqId == self.contract_details_req_id:
             self.logger.info("Contract details request complete for reqId=%s", reqId)
 
     def _is_target_contract(self, contract) -> bool:
+        """True if contract matches configured symbol/secType."""
         if getattr(contract, "secType", None) != self.contract.secType:
             return False
         if getattr(contract, "currency", None) != self.contract.currency:
@@ -360,6 +374,7 @@ class MarketMaker(IbkrBotApp):
         )
 
     def _should_keep_order(self, incumbent: LiveOrder, candidate: LiveOrder) -> bool:
+        """True if open order should be adopted by this bot."""
         if incumbent.remaining > 0 and candidate.remaining <= 0:
             return True
         if candidate.remaining > 0 and incumbent.remaining <= 0:
@@ -376,6 +391,7 @@ class MarketMaker(IbkrBotApp):
         return incumbent.order_id < candidate.order_id
 
     def _cancel_adopted_extra(self, live: LiveOrder):
+        """Cancel a duplicate adopted order that lost the adoption tie-break."""
         try:
             safe_cancel_order(self, live.order_id)
             self.logger.warning(
@@ -395,6 +411,7 @@ class MarketMaker(IbkrBotApp):
             )
 
     def _on_coalesced_nbbo(self, bid: float, ask: float) -> None:
+        """Update ``ref_price`` from coalesced bid/ask mid."""
         log_msg = None
         with self.lock:
             self.quote.bid = bid
@@ -412,11 +429,13 @@ class MarketMaker(IbkrBotApp):
         self.maybe_manage_quotes()
 
     def tickPrice(self, reqId, tickType, price, attrib):
+        """IB callback: stage bid/ask ticks for NBBO coalescing."""
         if reqId != self.market_data_req_id:
             return
         self._nbbo.stage_tick_price(int(tickType), float(price))
 
     def tickSize(self, reqId, tickType, size):
+        """IB callback: update bid/ask size from market data."""
         if reqId != self.market_data_req_id:
             return
 
@@ -470,6 +489,7 @@ class MarketMaker(IbkrBotApp):
             self.maybe_manage_quotes()
 
     def position(self, account, contract, position, avgCost):
+        """IB callback: reconcile IB position snapshot with ledger."""
         if contract.symbol != self.contract.symbol or contract.secType != self.contract.secType:
             return
         if self.account_filter and account != self.account_filter:
@@ -499,9 +519,11 @@ class MarketMaker(IbkrBotApp):
         )
 
     def positionEnd(self):
+        """IB callback: position snapshot complete."""
         self.logger.info("Initial position snapshot complete.")
 
     def openOrder(self, orderId, contract, order, orderState):
+        """IB callback: track working orders for this symbol."""
         if not self._is_target_contract(contract):
             return
         if not open_order_belongs_to_client(order, self.client_id):
@@ -591,6 +613,7 @@ class MarketMaker(IbkrBotApp):
             self._cancel_adopted_extra(extra_to_cancel)
 
     def openOrderEnd(self):
+        """IB callback: open-order snapshot complete."""
         with self.lock:
             self.open_orders_snapshot_done = True
             self.adoption_phase = False
@@ -614,6 +637,7 @@ class MarketMaker(IbkrBotApp):
         whyHeld,
         mktCapPrice,
     ):
+        """IB callback: track fills and trigger resync on terminal status."""
         if not order_status_clients_match(clientId, self.client_id):
             return
         with self.lock:
@@ -649,6 +673,7 @@ class MarketMaker(IbkrBotApp):
         )
 
     def execDetails(self, reqId, contract, execution):
+        """IB callback: apply fills to the position ledger."""
         if not self._is_target_contract(contract):
             return
         if not execution_belongs_to_client(execution, self.client_id):
@@ -694,6 +719,7 @@ class MarketMaker(IbkrBotApp):
         self.maybe_manage_quotes(force=True)
 
     def next_id(self) -> int:
+        """Allocate and return the next order id (thread-safe)."""
         with self.lock:
             if self.next_order_id is None:
                 raise RuntimeError("next_order_id not initialized")
@@ -703,18 +729,22 @@ class MarketMaker(IbkrBotApp):
 
     @staticmethod
     def round_down_cent(x: float) -> float:
+        """Round a price down to the nearest cent."""
         return math.floor(x * 100.0) / 100.0
 
     @staticmethod
     def round_up_cent(x: float) -> float:
+        """Round a price up to the nearest cent."""
         return math.ceil(x * 100.0) / 100.0
 
     def _effective_min_tick(self) -> float:
+        """Minimum price increment from contract details (fallback 0.01)."""
         with self.lock:
             t = float(self.min_tick)
             return t if t > 0 else 0.01
 
     def _quantize_to_tick(self, x: float) -> float:
+        """Round ``x`` to the nearest valid tick increment."""
         t = self._effective_min_tick()
         n = round(x / t)
         return round(n * t, 10)
@@ -798,6 +828,7 @@ class MarketMaker(IbkrBotApp):
         )
 
     def build_lmt_order(self, action: str, qty: int, px: float) -> Order:
+        """Build a DAY limit order at ``px``."""
         o = Order()
         o.action = action
         o.orderType = "LMT"
@@ -808,6 +839,7 @@ class MarketMaker(IbkrBotApp):
         return o
 
     def can_open_new_long(self) -> bool:
+        """True if position/gross/per-run buy caps allow another buy."""
         with self.lock:
             if self.position_size >= self.max_position:
                 return False
@@ -819,6 +851,7 @@ class MarketMaker(IbkrBotApp):
             return True
 
     def max_sellable_qty(self) -> int:
+        """Shares available to sell per ledger (non-negative qty)."""
         return max_sell_shares(self.ledger)
 
     def _market_invalid_reason_for_nbbo(
@@ -827,6 +860,7 @@ class MarketMaker(IbkrBotApp):
         ask: Optional[float],
         last_update_ts: float,
     ) -> Optional[str]:
+        """Return a reason string when NBBO is unusable for quoting, else None."""
         if bid is None:
             return "missing bid"
         if ask is None:
@@ -857,6 +891,7 @@ class MarketMaker(IbkrBotApp):
         return None
 
     def market_invalid_reason(self) -> Optional[str]:
+        """Why current ``quote`` state cannot support quoting (or None if OK)."""
         return self._market_invalid_reason_for_nbbo(
             self.quote.bid,
             self.quote.ask,
@@ -864,6 +899,7 @@ class MarketMaker(IbkrBotApp):
         )
 
     def us_regular_hours(self) -> bool:
+        """True during configured regular session hours."""
         return regular_session_open(self.config)
 
     def _poll_session_hours(self) -> None:
@@ -901,6 +937,7 @@ class MarketMaker(IbkrBotApp):
 
     @staticmethod
     def _quotes_pair_is_valid(buy_px: Optional[float], sell_px: Optional[float]) -> bool:
+        """Quotes pair is valid."""
         return is_valid_quote_pair(buy_px, sell_px)
 
     def _abort_quotes_on_invalid_pair(
@@ -917,11 +954,13 @@ class MarketMaker(IbkrBotApp):
         return True
 
     def market_is_valid(self) -> bool:
+        """Market is valid."""
         return self.market_invalid_reason() is None
 
     def _compute_desired_quotes_for(
         self, bid: float, ask: float, position_size: int, avg_cost: float
     ) -> Tuple[Optional[float], Optional[float]]:
+        """Compute desired quotes for."""
         spread = ask - bid
 
         buy_px = bid + min(self.inside_improve, spread * 0.25)
@@ -953,6 +992,7 @@ class MarketMaker(IbkrBotApp):
         return buy_px, sell_px
 
     def compute_desired_quotes(self):
+        """Desired bid/ask prices from inventory skew and NBBO, or None if invalid."""
         bid = self.quote.bid
         ask = self.quote.ask
         if bid is None or ask is None:
@@ -960,6 +1000,7 @@ class MarketMaker(IbkrBotApp):
         return self._compute_desired_quotes_for(bid, ask, self.position_size, self.avg_cost)
 
     def _desired_sizes_for(self, position_size: int, buy_shares_filled: int) -> Tuple[int, int]:
+        """Return ``(buy_qty, sell_qty)`` for the given position and buy fill tally."""
         buy_qty = min(self.base_qty, max(0, self.max_position - position_size))
         if self.max_buy_shares_per_run is not None:
             room = max(0, self.max_buy_shares_per_run - buy_shares_filled)
@@ -968,6 +1009,7 @@ class MarketMaker(IbkrBotApp):
         return buy_qty, sell_qty
 
     def desired_sizes(self):
+        """Current ``(buy_qty, sell_qty)`` from live position state."""
         return self._desired_sizes_for(self.position_size, self.buy_shares_filled)
 
     def _sell_working_open_qty(self, live: LiveOrder) -> int:
@@ -981,6 +1023,7 @@ class MarketMaker(IbkrBotApp):
         position_size: int,
         sell_snap: Optional[Tuple[str, int, int]],
     ) -> bool:
+        """Bypass NBBO throttle when inventory needs a sell quote refresh."""
         if position_size <= 0:
             return False
         if sell_snap is None:
@@ -1024,6 +1067,7 @@ class MarketMaker(IbkrBotApp):
         return self._should_keep_order(incumbent, candidate)
 
     def is_same_order(self, live: Optional[LiveOrder], side: str, qty: int, px: float) -> bool:
+        """True if working order already matches desired side, qty, and price."""
         if live is None:
             return False
         if live.side != side:
@@ -1043,6 +1087,7 @@ class MarketMaker(IbkrBotApp):
         return True
 
     def cancel_live_order(self, live: Optional[LiveOrder]):
+        """Cancel a tracked working order and clear local state."""
         if live is None:
             return
 
@@ -1067,6 +1112,7 @@ class MarketMaker(IbkrBotApp):
     def _place_or_replace_lmt(
         self, side: Literal["BUY", "SELL"], qty: int, px: Optional[float]
     ) -> None:
+        """Place or replace lmt."""
         if side == "BUY":
             prior = self.buy_order
         else:
@@ -1123,12 +1169,15 @@ class MarketMaker(IbkrBotApp):
         self.logger.info("%s working id=%s qty=%s px=%.2f", side, oid, qty, px)
 
     def place_or_replace_buy(self, qty: int, px: Optional[float]):
+        """Place or replace buy."""
         self._place_or_replace_lmt("BUY", qty, px)
 
     def place_or_replace_sell(self, qty: int, px: Optional[float]):
+        """Place or replace sell."""
         self._place_or_replace_lmt("SELL", qty, px)
 
     def _capture_quote_mgmt_snapshot(self) -> QuoteMgmtSnapshot:
+        """Capture quote mgmt snapshot."""
         with self.lock:
             return QuoteMgmtSnapshot(
                 connected_flag=self.connected_flag,
@@ -1226,6 +1275,7 @@ class MarketMaker(IbkrBotApp):
         )
 
     def maybe_manage_quotes(self, force=False):
+        """Evaluate NBBO and place/replace/cancel two-sided quotes."""
         now = time.time()
         snap = self._capture_quote_mgmt_snapshot()
 
@@ -1341,6 +1391,7 @@ class MarketMaker(IbkrBotApp):
             self.logger.debug(msg, *log_args)
 
     def watchdog_loop(self):
+        """Background loop: session hours, stale-quote cancel, and quote refresh."""
         while not self.shutdown_flag:
             time.sleep(1.0)
             self._poll_session_hours()
@@ -1394,6 +1445,7 @@ class MarketMaker(IbkrBotApp):
                         self.last_watchdog_log_ts = now
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for this bot script."""
     parser = argparse.ArgumentParser(
         description="IBKR market-making bot (JSON config with CLI overrides)"
     )
@@ -1450,6 +1502,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main():
+    """CLI entry point."""
     parser = build_arg_parser()
     args = parser.parse_args()
 
