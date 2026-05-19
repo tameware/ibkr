@@ -21,6 +21,7 @@ from ibkr_app_support import (
     add_config_argument,
     add_ib_connection_arguments,
     add_logging_arguments,
+    add_never_sell_below_avg_cost_argument,
     add_session_hours_arguments,
     cfg_bool as _cfg_bool,
     execution_belongs_to_client,
@@ -34,6 +35,7 @@ from ibkr_app_support import (
     idle_until_shutdown,
     clamp_buy_to_avoid_self_trade,
     clamp_quote_prices_to_avoid_self_trade,
+    clamp_sell_to_avg_cost_floor,
     clamp_sell_to_avoid_self_trade,
     load_merged_config,
     log_session_transition,
@@ -495,7 +497,12 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         with self.lock:
             self.account = account
             handle_ledger_ib_position(
-                self.ledger, account, int(position), float(avgCost), logger=self.logger
+                self.ledger,
+                account,
+                int(position),
+                float(avgCost),
+                contract=contract,
+                logger=self.logger,
             )
             sync_attrs_from_ledger(
                 self.ledger,
@@ -506,8 +513,8 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             )
 
         self.logger.info(
-            "Position update account=%s symbol=%s ledger_qty=%s avgCost=%.4f "
-            "ib_snapshot_qty=%s",
+            "Position update account=%s symbol=%s ledger_qty=%s "
+            "ledger_avg_cost_per_share=%.4f ib_snapshot_qty=%s",
             account,
             contract.symbol,
             self.position_size,
@@ -972,6 +979,8 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         if position_size > 0 and avg_cost > 0:
             sell_floor = avg_cost + self.target_roundtrip_capture
             sell_px = max(sell_px, sell_floor)
+        if position_size > 0:
+            sell_px = clamp_sell_to_avg_cost_floor(sell_px, avg_cost, self.config)
 
         buy_px = min(buy_px, ask - 0.02)
         sell_px = max(sell_px, bid + 0.02)
@@ -1475,6 +1484,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         help="Cancel tracked BUY/SELL quotes before disconnect (default: false)",
     )
+    add_never_sell_below_avg_cost_argument(parser)
 
     parser.add_argument(
         "--log_bid_ask_ticks",

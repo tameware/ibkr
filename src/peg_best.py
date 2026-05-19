@@ -9,6 +9,7 @@ from ibkr_app_support import (
     add_config_argument,
     add_ib_connection_arguments,
     clamp_buy_to_avoid_self_trade,
+    clamp_sell_to_avg_cost_floor,
     clamp_sell_to_avoid_self_trade,
 )
 from single_side_quoter import (
@@ -54,6 +55,9 @@ class Trader(SingleSideQuoter):
         )
         sell_limit = clamp_sell_to_avoid_self_trade(
             sell_limit, self.config, bid=self._bid, ask=self._ask, mid=self.ref_price
+        )
+        sell_limit = clamp_sell_to_avg_cost_floor(
+            sell_limit, self.avg_cost, self.config
         )
         return buy_limit, sell_limit
 

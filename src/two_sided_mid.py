@@ -18,8 +18,10 @@ from ibkr_app_support import (
     add_config_argument,
     add_ib_connection_arguments,
     add_logging_arguments,
+    add_never_sell_below_avg_cost_argument,
     add_session_hours_arguments,
     clamp_quote_prices_to_avoid_self_trade,
+    clamp_sell_to_avg_cost_floor,
     has_valid_nbbo,
     NbboCoalesceSink,
     handle_ledger_execution,
@@ -302,7 +304,12 @@ class TwoSidedMidTrader(
         """IB callback: reconcile IB position snapshot with ledger."""
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
             handle_ledger_ib_position(
-                self.ledger, account, int(pos), float(avgCost), logger=self.logger
+                self.ledger,
+                account,
+                int(pos),
+                float(avgCost),
+                contract=contract,
+                logger=self.logger,
             )
             sync_attrs_from_ledger(
                 self.ledger, self, qty_attr="position_size", avg_attr="avg_cost"
@@ -340,6 +347,9 @@ class TwoSidedMidTrader(
             bid=self._bid,
             ask=self._ask,
             mid=self.ref_price,
+        )
+        sell_limit = clamp_sell_to_avg_cost_floor(
+            sell_limit, self.avg_cost, self.config
         )
 
         buy_qty = max_pos - pos
@@ -422,6 +432,7 @@ def add_two_sided_mid_arguments(parser: argparse.ArgumentParser) -> None:
         action=argparse.BooleanOptionalAction,
         help="Cancel tracked BUY/SELL quotes before disconnect (default: false)",
     )
+    add_never_sell_below_avg_cost_argument(parser)
     add_logging_arguments(parser)
 
 

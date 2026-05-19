@@ -219,7 +219,31 @@ def _write_avg_cost_per_share(data: Dict[str, Any], value: float) -> None:
 
 def _normalize_ledger_data(data: Dict[str, Any]) -> None:
     """Migrate legacy ``avg_cost`` to ``avg_cost_per_share``."""
+    data.pop("ib_snapshot_avg_cost", None)
     _write_avg_cost_per_share(data, _read_avg_cost_per_share(data))
+
+
+def average_cost_after_purchase(
+    prior_qty: int,
+    prior_avg_cost_per_share: float,
+    purchase_shares: int,
+    purchase_price: float,
+) -> float:
+    """Volume-weighted average cost per share after a buy.
+
+    Uses existing position size and average cost as the base, then blends in
+    ``purchase_shares`` at ``purchase_price``. Does not use IB-reported averages.
+    """
+    shares = int(purchase_shares)
+    if shares <= 0:
+        pq = int(prior_qty)
+        return float(prior_avg_cost_per_share) if pq > 0 else 0.0
+    pq = int(prior_qty)
+    price = float(purchase_price)
+    if pq <= 0:
+        return price
+    total_cost = pq * float(prior_avg_cost_per_share) + shares * price
+    return total_cost / (pq + shares)
 
 
 def ledger_path_for_strategy(
@@ -279,7 +303,6 @@ class PositionLedger:
                 "updated_at": None,
                 "last_exec_id": None,
                 "ib_snapshot_qty": None,
-                "ib_snapshot_avg_cost": None,
                 "ib_snapshot_account": None,
                 "ib_snapshot_at": None,
             }
@@ -292,6 +315,7 @@ class PositionLedger:
         ledger._data["client_id"] = cid
         if acct:
             ledger._data["account"] = acct
+        ledger._data.pop("ib_snapshot_avg_cost", None)
         _normalize_ledger_data(ledger._data)
         return ledger
 
@@ -341,12 +365,12 @@ class PositionLedger:
             return False
 
         qty = self.qty
-        avg = self.avg_cost
+        prior_avg = self.avg_cost
+        avg = prior_avg
         if side_key == "BUY":
             if qty >= 0:
-                total_cost = qty * avg + shares * price
+                avg = average_cost_after_purchase(qty, prior_avg, shares, price)
                 qty += shares
-                avg = total_cost / qty if qty > 0 else 0.0
             else:
                 qty += shares
                 if qty > 0:
@@ -368,28 +392,18 @@ class PositionLedger:
         self.save()
         return True
 
-    def record_ib_snapshot(
-        self,
-        account: str,
-        qty: int,
-        avg_cost: float,
-    ) -> None:
-        """Store the latest account-level IB position snapshot (does not change ledger qty)."""
+    def record_ib_snapshot(self, account: str, qty: int) -> None:
+        """Store latest IB position quantity snapshot (avg cost comes from fills only)."""
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self._data["ib_snapshot_account"] = str(account)
         self._data["ib_snapshot_qty"] = int(qty)
-        self._data["ib_snapshot_avg_cost"] = float(avg_cost)
         self._data["ib_snapshot_at"] = now
-        q = int(qty)
-        ac = float(avg_cost)
-        if q > 0 and self.qty == q:
-            _write_avg_cost_per_share(self._data, ac)
-        elif q == 0 and self.qty == 0:
-            _write_avg_cost_per_share(self._data, 0.0)
+        self._data.pop("ib_snapshot_avg_cost", None)
 
     def save(self) -> None:
         """Persist ledger state to disk."""
         _normalize_ledger_data(self._data)
+        self._data.pop("ib_snapshot_avg_cost", None)
         self._data["updated_at"] = datetime.datetime.now(
             datetime.timezone.utc
         ).isoformat()
@@ -438,7 +452,7 @@ def seed_ledger_position(
     ac = float(avg_cost) if q > 0 else 0.0
     ledger._data["qty"] = q
     _write_avg_cost_per_share(ledger._data, ac)
-    ledger.record_ib_snapshot(account, q, ac)
+    ledger.record_ib_snapshot(account, q)
     ledger.save()
     setattr(target, qty_attr, q)
     if avg_attr is not None and hasattr(target, avg_attr):
@@ -629,6 +643,26 @@ def clamp_sell_to_avoid_self_trade(
     return max(float(sell_px), sell_floor)
 
 
+def never_sell_below_avg_cost_enabled(config: Dict[str, Any]) -> bool:
+    """True when sell limits must not be below average cost per share."""
+    return bool(config.get("never_sell_below_avg_cost", False))
+
+
+def clamp_sell_to_avg_cost_floor(
+    sell_px: float,
+    avg_cost: float,
+    config: Dict[str, Any],
+) -> float:
+    """Raise ``sell_px`` to ``avg_cost`` when :func:`never_sell_below_avg_cost_enabled`."""
+    if not never_sell_below_avg_cost_enabled(config):
+        return float(sell_px)
+    ac = float(avg_cost)
+    if ac <= 0:
+        return float(sell_px)
+    floor = round(ac, price_digits_from_config(config))
+    return max(float(sell_px), floor)
+
+
 def clamp_quote_prices_to_avoid_self_trade(
     buy_px: float,
     sell_px: float,
@@ -705,20 +739,35 @@ def handle_ledger_execution(
         return False
     side, shares, price = fill
     exec_id = getattr(execution, "execId", None)
+    prior_avg = ledger.avg_cost_per_share
+    prior_qty = ledger.qty
     if not ledger.apply_fill(side, shares, price, exec_id=exec_id):
         return False
     ledger.save()
     if logger is not None:
-        logger.info(
-            "Ledger %s qty=%s avg_cost=%.4f (%s %s @ %.4f execId=%s)",
-            ledger.path.name,
-            ledger.qty,
-            ledger.avg_cost,
-            side,
-            shares,
-            price,
-            exec_id,
-        )
+        if side == "BUY" and prior_qty >= 0:
+            logger.info(
+                "Ledger %s fill VWAP: avg_cost_per_share %.4f -> %.4f "
+                "(BUY %s @ %.4f, prior qty=%s; IB avgCost not used) execId=%s",
+                ledger.path.name,
+                prior_avg,
+                ledger.avg_cost_per_share,
+                shares,
+                price,
+                prior_qty,
+                exec_id,
+            )
+        else:
+            logger.info(
+                "Ledger %s qty=%s avg_cost_per_share=%.4f (%s %s @ %.4f execId=%s)",
+                ledger.path.name,
+                ledger.qty,
+                ledger.avg_cost_per_share,
+                side,
+                shares,
+                price,
+                exec_id,
+            )
     return True
 
 
@@ -728,14 +777,16 @@ def handle_ledger_ib_position(
     qty: int,
     avg_cost: float,
     *,
+    contract: Any = None,
     logger: Optional[logging.Logger] = None,
 ) -> None:
-    """Record IB ``position`` snapshot; log if it differs from ledger qty."""
-    ledger.record_ib_snapshot(account, qty, avg_cost)
+    """Record IB ``position`` quantity snapshot; avg cost is ledger fill VWAP only."""
+    del contract  # qty only; IB avgCost is not stored
+    ledger.record_ib_snapshot(account, qty)
     if logger is not None and ledger.qty != int(qty):
         logger.warning(
             "Ledger %s qty=%s differs from IB position snapshot qty=%s "
-            "(account=%s avgCost=%.4f); using ledger qty for trading",
+            "(account=%s IB avgCost=%.4f ignored); using ledger qty for trading",
             ledger.path.name,
             ledger.qty,
             int(qty),
@@ -782,6 +833,16 @@ def add_session_hours_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--market_open_hour", type=int)
     parser.add_argument("--market_open_minute", type=int)
     parser.add_argument("--market_close_hour", type=int)
+
+
+def add_never_sell_below_avg_cost_argument(parser: argparse.ArgumentParser) -> None:
+    """Add ``--never_sell_below_avg_cost`` / ``--no-never_sell_below_avg_cost``."""
+    parser.add_argument(
+        "--never_sell_below_avg_cost",
+        "--never-sell-below-avg-cost",
+        action=argparse.BooleanOptionalAction,
+        help="Floor sell limits at ledger avg_cost_per_share (default: false)",
+    )
 
 
 def add_ib_connection_arguments(

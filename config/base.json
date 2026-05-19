@@ -19,14 +19,16 @@
     "market_close_hour": 16,
     "price_round_digits": 2,
     "loop_seconds": 10,
-    "max_pos": 100,
+    "max_pos": 200,
     "mid_delta": 0.20,
     "tif": "DAY",
     "nbbo_coalesce_seconds": 4.0,
     "nbbo_coalesce_max_seconds": 10.0,
     "//": "Commit pending NBBO after quiet ticks, or at least every max interval if ticks never pause",
     "resync_debounce_seconds": 0.35,
-    "//": "Min interval between full position/open-order snapshots and sync_orders"
+    "//": "Min interval between full position/open-order snapshots and sync_orders",
+    "never_sell_below_avg_cost": false,
+    "//": "When true, sell limits are floored at ledger avg_cost_per_share (long positions only)"
   },
 
   "risk": {

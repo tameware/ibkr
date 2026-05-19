@@ -202,6 +202,15 @@ class TestAdjustedRelLimits(unittest.TestCase):
         self.assertGreater(sell_l, mid)
         self.assertGreater(sell_l, buy_l)
 
+    def test_never_sell_below_avg_cost_raises_sell_floor(self):
+        t = Trader(self._cfg(mid_delta=0.02, never_sell_below_avg_cost=True))
+        t.avg_cost = 52.0
+        t._bid = 49.90
+        t._ask = 50.10
+        buy_l, sell_l = t.adjusted_rel_limits()
+        self.assertEqual(buy_l, 49.98)
+        self.assertEqual(sell_l, 52.0)
+
 
 class TestTrader(unittest.TestCase):
     def setUp(self):

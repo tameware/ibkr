@@ -19,6 +19,7 @@ from ibkr_app_support import (
     add_config_argument,
     add_ib_connection_arguments,
     add_logging_arguments,
+    add_never_sell_below_avg_cost_argument,
     add_session_hours_arguments,
     cli_to_config,
     default_config_path,
@@ -26,8 +27,11 @@ from ibkr_app_support import (
     execution_belongs_to_client,
     clamp_buy_to_avoid_self_trade,
     clamp_quote_prices_to_avoid_self_trade,
+    clamp_sell_to_avg_cost_floor,
     clamp_sell_to_avoid_self_trade,
+    never_sell_below_avg_cost_enabled,
     handle_ledger_execution,
+    handle_ledger_ib_position,
     has_valid_nbbo,
     is_valid_quote_pair,
     max_sell_shares,
@@ -36,6 +40,7 @@ from ibkr_app_support import (
     plan_working_order_reconcile,
     self_trade_limits_from_nbbo,
     ib_client_id_from_config,
+    average_cost_after_purchase,
     ib_error_is_status_info,
     idle_until_shutdown,
     ledger_path_for_strategy,
@@ -98,6 +103,32 @@ class TestSelfTradeLimits(unittest.TestCase):
     def test_legacy_buy_sell_delta_fallback(self):
         cfg = {"price_round_digits": 2, "buy_delta": 0.05, "sell_delta": 0.03}
         self.assertEqual(mid_delta_for_config(cfg), 0.05)
+
+    def test_never_sell_below_avg_cost_disabled_by_default(self):
+        self.assertFalse(never_sell_below_avg_cost_enabled({}))
+        self.assertEqual(
+            clamp_sell_to_avg_cost_floor(49.50, 50.00, {}),
+            49.50,
+        )
+
+    def test_clamp_sell_to_avg_cost_floor_when_enabled(self):
+        cfg = {
+            "never_sell_below_avg_cost": True,
+            "price_round_digits": 2,
+        }
+        self.assertTrue(never_sell_below_avg_cost_enabled(cfg))
+        self.assertEqual(
+            clamp_sell_to_avg_cost_floor(49.50, 50.123, cfg),
+            50.12,
+        )
+        self.assertEqual(
+            clamp_sell_to_avg_cost_floor(51.00, 50.00, cfg),
+            51.00,
+        )
+        self.assertEqual(
+            clamp_sell_to_avg_cost_floor(49.50, 0.0, cfg),
+            49.50,
+        )
 
 
 class TestQuotingPrimitives(unittest.TestCase):
@@ -239,16 +270,51 @@ class TestPositionLedger(unittest.TestCase):
         self.assertFalse(handle_ledger_execution(ledger, execution, 7))
         self.assertEqual(ledger.qty, 0)
 
+    def test_average_cost_after_purchase_from_flat(self):
+        self.assertAlmostEqual(
+            average_cost_after_purchase(0, 0.0, 100, 50.0),
+            50.0,
+        )
+
+    def test_average_cost_after_purchase_blends_prior_position(self):
+        # 100 @ 50, then buy 100 @ 60 → avg 55
+        self.assertAlmostEqual(
+            average_cost_after_purchase(100, 50.0, 100, 60.0),
+            55.0,
+        )
+
+    def test_apply_fill_buy_updates_avg_from_ledger_vwap(self):
+        ledger = PositionLedger.open("peg_primary", self.config)
+        ledger.apply_fill("BUY", 100, 50.0, exec_id="e1")
+        ledger.apply_fill("BUY", 100, 60.0, exec_id="e2")
+        self.assertEqual(ledger.qty, 200)
+        self.assertAlmostEqual(ledger.avg_cost_per_share, 55.0)
+
+    def test_record_ib_snapshot_stores_qty_only(self):
+        ledger = PositionLedger.open("peg_primary", self.config)
+        ledger.apply_fill("BUY", 100, 50.0, exec_id="e1")
+        ledger.record_ib_snapshot("U123", 100)
+        self.assertAlmostEqual(ledger.avg_cost_per_share, 50.0)
+        self.assertEqual(ledger.ib_snapshot_qty, 100)
+        self.assertNotIn("ib_snapshot_avg_cost", ledger._data)
+
+    def test_handle_ledger_ib_position_does_not_overwrite_avg_when_qty_matches(self):
+        ledger = PositionLedger.open("peg_primary", self.config)
+        ledger.apply_fill("BUY", 100, 50.0, exec_id="e1")
+        handle_ledger_ib_position(ledger, "U123", 100, 99.99)
+        self.assertAlmostEqual(ledger.avg_cost_per_share, 50.0)
+        self.assertNotIn("ib_snapshot_avg_cost", ledger._data)
+
     def test_max_sell_shares_zero_ledger_with_account_long(self):
         ledger = PositionLedger.open("peg_primary", self.config)
-        ledger.record_ib_snapshot("U123", 500, 100.0)
+        ledger.record_ib_snapshot("U123", 500)
         self.assertEqual(ledger.qty, 0)
         self.assertEqual(max_sell_shares(ledger), 0)
 
     def test_max_sell_shares_capped_by_ib_snapshot(self):
         ledger = PositionLedger.open("peg_primary", self.config)
         ledger.apply_fill("BUY", 100, 50.0)
-        ledger.record_ib_snapshot("U123", 30, 50.0)
+        ledger.record_ib_snapshot("U123", 30)
         self.assertEqual(max_sell_shares(ledger), 30)
 
     def test_apply_fill_sell_cannot_drive_ledger_negative(self):
@@ -566,6 +632,26 @@ class TestArgparseHelpers(unittest.TestCase):
         self.assertTrue(args.console)
         self.assertEqual(args.market_timezone, "America/New_York")
         self.assertEqual(args.market_close_hour, 16)
+
+    def test_add_never_sell_below_avg_cost_argument(self):
+        parser = argparse.ArgumentParser()
+        add_never_sell_below_avg_cost_argument(parser)
+        self.assertFalse(
+            parser.parse_args([]).never_sell_below_avg_cost
+        )
+        self.assertTrue(
+            parser.parse_args(["--never_sell_below_avg_cost"]).never_sell_below_avg_cost
+        )
+        self.assertTrue(
+            parser.parse_args(["--never-sell-below-avg-cost"]).never_sell_below_avg_cost
+        )
+        self.assertFalse(
+            parser.parse_args(["--no-never_sell_below_avg_cost"]).never_sell_below_avg_cost
+        )
+        cfg = cli_to_config(
+            argparse.Namespace(never_sell_below_avg_cost=True)
+        )
+        self.assertTrue(cfg["never_sell_below_avg_cost"])
 
 
 class TestIbErrorFiltering(unittest.TestCase):

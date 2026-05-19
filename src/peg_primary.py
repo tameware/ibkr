@@ -53,12 +53,14 @@ from ibkr_app_support import (
     add_config_argument,
     add_ib_connection_arguments,
     add_logging_arguments,
+    add_never_sell_below_avg_cost_argument,
     add_session_hours_arguments,
     execution_belongs_to_client,
     handle_ledger_execution,
     handle_ledger_ib_position,
     ib_client_id_from_config,
     clamp_buy_to_avoid_self_trade,
+    clamp_sell_to_avg_cost_floor,
     clamp_sell_to_avoid_self_trade,
     load_merged_config,
     max_sell_shares,
@@ -463,7 +465,12 @@ class Trader(
         """IB callback: reconcile IB position snapshot with ledger."""
         if contract.symbol == self.config["symbol"] and contract.secType == self.config["sec_type"]:
             handle_ledger_ib_position(
-                self.ledger, account, int(pos), float(avgCost), logger=self.logger
+                self.ledger,
+                account,
+                int(pos),
+                float(avgCost),
+                contract=contract,
+                logger=self.logger,
             )
             sync_attrs_from_ledger(
                 self.ledger, self, qty_attr="position_size", avg_attr="avg_cost"
@@ -490,9 +497,13 @@ class Trader(
         above ``mid``. Caller must ensure :meth:`_has_valid_nbbo` is true.
         """
         assert self._has_valid_nbbo()
-        return self_trade_limits_from_nbbo(
+        buy_limit, sell_limit = self_trade_limits_from_nbbo(
             float(self._bid), float(self._ask), self.config
         )
+        sell_limit = clamp_sell_to_avg_cost_floor(
+            sell_limit, self.avg_cost, self.config
+        )
+        return buy_limit, sell_limit
 
     def maybe_sync_orders_from_nbbo(self, *, force: bool = False) -> None:
         """Re-peg working REL orders when NBBO moves (API callback thread)."""
@@ -917,6 +928,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         help="Cancel tracked BUY/SELL quotes before disconnect (default: false)",
     )
+    add_never_sell_below_avg_cost_argument(parser)
 
     add_logging_arguments(parser)
     return parser
