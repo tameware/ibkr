@@ -168,6 +168,28 @@ class TestQuotingPrimitives(unittest.TestCase):
         sink.flush_commit()
         self.assertEqual(seen, [(50.0, 50.2)])
 
+    def test_nbbo_coalesce_sink_requires_paired_ticks_after_reset(self):
+        seen: list[tuple[float, float]] = []
+        sink = NbboCoalesceSink(
+            {"nbbo_coalesce_seconds": 1.0, "nbbo_coalesce_max_seconds": 0.0},
+            lambda b, a: seen.append((b, a)),
+        )
+        sink.stage_tick_price(1, 50.0)
+        sink.stage_tick_price(2, 50.2)
+        sink.flush_commit()
+        self.assertEqual(seen, [(50.0, 50.2)])
+        seen.clear()
+        sink.reset()
+        self.assertFalse(sink.is_ready_for_quoting())
+        sink.stage_tick_price(1, 51.0)
+        sink.flush_commit()
+        self.assertEqual(seen, [])
+        self.assertFalse(sink.is_ready_for_quoting())
+        sink.stage_tick_price(2, 51.2)
+        sink.flush_commit()
+        self.assertEqual(seen, [(51.0, 51.2)])
+        self.assertTrue(sink.is_ready_for_quoting())
+
     def test_plan_working_order_reconcile(self):
         noop = plan_working_order_reconcile(
             70,

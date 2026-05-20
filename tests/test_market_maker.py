@@ -392,6 +392,18 @@ class TestMarketMakerCore(unittest.TestCase):
             clamp_qty_nonneg=True,
         )
 
+    def _sync_paired_nbbo_from_quote(self) -> None:
+        """Align ``_nbbo`` with ``quote`` and mark paired (for tests that set quote directly)."""
+        self.mm._nbbo.bid = self.mm.quote.bid
+        self.mm._nbbo.ask = self.mm.quote.ask
+        self.mm._nbbo.satisfy_pair_for_quoting()
+
+    def _clear_pair_gate(self) -> None:
+        """Skip paired-NBBO gate so quote-only invalid-NBBO tests can run."""
+        self.mm._nbbo._awaiting_pair_after_reset = False
+        self.mm._nbbo._bid_tick_since_reset = True
+        self.mm._nbbo._ask_tick_since_reset = True
+
     def test_cfg_bool_from_strings(self):
         cfg_no_console = {**self.base_config, "console": False}
         cfg_off = {**cfg_no_console, "cancel_on_invalid_market": "false"}
@@ -423,14 +435,17 @@ class TestMarketMakerCore(unittest.TestCase):
 
     def test_market_invalid_reason_missing_bid(self):
         self.mm.quote = QuoteState(bid=None, ask=100.0, last_update_ts=999999.0)
+        self._clear_pair_gate()
         self.assertEqual(self.mm.market_invalid_reason(), "missing bid")
 
     def test_market_invalid_reason_crossed(self):
         self.mm.quote = QuoteState(bid=101.0, ask=100.0, last_update_ts=999999.0)
+        self._clear_pair_gate()
         self.assertIn("crossed_or_locked", self.mm.market_invalid_reason() or "")
 
     def test_market_invalid_reason_stale(self):
         self.mm.quote = QuoteState(bid=100.0, ask=101.0, last_update_ts=0.0)
+        self._sync_paired_nbbo_from_quote()
         with patch("market_maker.time.time", return_value=1000.0):
             reason = self.mm.market_invalid_reason()
         self.assertIsNotNone(reason)
@@ -441,6 +456,7 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.quote = QuoteState(
             bid=100.0, ask=100.02, last_update_ts=now
         )
+        self._sync_paired_nbbo_from_quote()
         with patch("market_maker.time.time", return_value=now):
             reason = self.mm.market_invalid_reason()
         self.assertIsNotNone(reason)
@@ -723,6 +739,7 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.quote.ask_size = 200
         self.mm.quote.last_update_ts = 1_000_000.0
         self.mm.last_nbbo_ok_ts = 1_000_000.0
+        self._sync_paired_nbbo_from_quote()
         with patch.object(self.mm, "maybe_manage_quotes"):
             with patch("market_maker.time.time", return_value=2_000_000.0):
                 self.mm.tickSize(1001, 3, 400)

@@ -145,7 +145,9 @@ class Trader(
         self.sell_order_qty: int | None = None
 
         self.ref_price = None
-        self._nbbo = NbboCoalesceSink(self.config, self._on_coalesced_nbbo)
+        self._nbbo = NbboCoalesceSink(
+            self.config, self._on_coalesced_nbbo, logger=self.logger
+        )
 
         self.remaining_by_order: Dict[int, Any] = {}
         self.filled_by_order: Dict[int, float] = {}
@@ -358,6 +360,7 @@ class Trader(
     @_bid.setter
     def _bid(self, value: float | None) -> None:
         self._nbbo.bid = None if value is None else float(value)
+        self._nbbo.satisfy_pair_for_quoting()
 
     @property
     def _ask(self) -> float | None:
@@ -366,6 +369,7 @@ class Trader(
     @_ask.setter
     def _ask(self, value: float | None) -> None:
         self._nbbo.ask = None if value is None else float(value)
+        self._nbbo.satisfy_pair_for_quoting()
 
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
         """IB callback: stage bid/ask ticks for NBBO coalescing."""
@@ -481,8 +485,8 @@ class Trader(
         return regular_session_open(self.config)
 
     def _has_valid_nbbo(self) -> bool:
-        """True when staged bid/ask form a valid NBBO."""
-        return has_valid_nbbo(self._bid, self._ask)
+        """True when bid/ask are paired since reset and form a valid NBBO."""
+        return self._nbbo.is_ready_for_quoting()
 
     def _nbbo_mid_rounded(self) -> float:
         """NBBO mid rounded to :attr:`_digits`. Caller must ensure :meth:`_has_valid_nbbo`."""

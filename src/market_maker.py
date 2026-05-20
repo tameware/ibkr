@@ -189,7 +189,9 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         )
 
         self.quote = QuoteState()
-        self._nbbo = NbboCoalesceSink(self.config, self._on_coalesced_nbbo)
+        self._nbbo = NbboCoalesceSink(
+            self.config, self._on_coalesced_nbbo, logger=self.logger
+        )
         self.position_size = 0
         self.avg_cost = 0.0
         self.account = None
@@ -413,6 +415,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         with self.lock:
             self.quote.bid = bid
             self.quote.ask = ask
+            self._nbbo.satisfy_pair_for_quoting()
             now = time.time()
             self.quote.last_update_ts = now
             self.last_nbbo_ok_ts = now
@@ -896,6 +899,8 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
 
     def market_invalid_reason(self) -> Optional[str]:
         """Why current ``quote`` state cannot support quoting (or None if OK)."""
+        if self._nbbo._awaiting_pair_after_reset:
+            return "awaiting paired NBBO (bid and ask since reset)"
         return self._market_invalid_reason_for_nbbo(
             self.quote.bid,
             self.quote.ask,

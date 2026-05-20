@@ -97,7 +97,9 @@ class SingleSideQuoter(
         self.buy_order_id: int | None = None
         self.sell_order_id: int | None = None
         self.ref_price = None
-        self._nbbo = NbboCoalesceSink(self.config, self._on_coalesced_nbbo)
+        self._nbbo = NbboCoalesceSink(
+            self.config, self._on_coalesced_nbbo, logger=self.logger
+        )
 
         self.remaining_by_order: Dict[int, Any] = {}
         self.open_symbol_buys = 0
@@ -138,6 +140,7 @@ class SingleSideQuoter(
     @_bid.setter
     def _bid(self, value: float | None) -> None:
         self._nbbo.bid = None if value is None else float(value)
+        self._nbbo.satisfy_pair_for_quoting()
 
     @property
     def _ask(self) -> float | None:
@@ -146,6 +149,7 @@ class SingleSideQuoter(
     @_ask.setter
     def _ask(self, value: float | None) -> None:
         self._nbbo.ask = None if value is None else float(value)
+        self._nbbo.satisfy_pair_for_quoting()
 
     def _on_coalesced_nbbo(self, bid: float, ask: float) -> None:
         """Update ``ref_price`` from coalesced bid/ask mid."""
@@ -154,7 +158,7 @@ class SingleSideQuoter(
             self.ref_price = mid
 
     def _has_valid_nbbo(self) -> bool:
-        return has_valid_nbbo(self._bid, self._ask)
+        return self._nbbo.is_ready_for_quoting()
 
     def shutdown_quotes(self) -> None:
         """Cancel working quotes and clear local order tracking."""

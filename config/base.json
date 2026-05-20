@@ -47,6 +47,8 @@
 
   "diagnostics": {
     "market_data_resubscribe_debounce_seconds": 1.0,
-    "market_data_stall_seconds": 15.0
+    "market_data_stall_seconds": 15.0,
+    "log_tick_price_before_coalesce": true,
+    "//": "Temporary: log each tickPrice tickType/price before NBBO coalesce"
   }
 }

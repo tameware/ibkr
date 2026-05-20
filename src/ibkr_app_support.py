@@ -1072,6 +1072,7 @@ class NbboCoalesceSink:
         config: Dict[str, Any],
         on_valid_nbbo: Callable[[float, float], None],
         *,
+        logger: Optional[logging.Logger] = None,
         clock: Callable[[], float] = time.monotonic,
         require_positive: bool = True,
     ) -> None:
@@ -1082,6 +1083,11 @@ class NbboCoalesceSink:
         self._pending_ask: Optional[float] = None
         self._on_valid_nbbo = on_valid_nbbo
         self._require_positive = require_positive
+        self._logger = logger
+        self._log_ticks = log_tick_price_before_coalesce_enabled(config)
+        self._awaiting_pair_after_reset = True
+        self._bid_tick_since_reset = False
+        self._ask_tick_since_reset = False
         quiet, max_interval = nbbo_coalesce_intervals_from_config(config)
         self._coalesce = NbboCoalescer(
             quiet,
@@ -1094,16 +1100,45 @@ class NbboCoalesceSink:
         """Stage a bid or ask ``tickPrice`` update for coalescing."""
         tt = int(tick_type)
         if tt in _NBBO_BID_TICK_TYPES:
+            if self._log_ticks and self._logger is not None:
+                self._logger.info(
+                    "tickPrice pre-coalesce tickType=%s %s price=%s role=bid",
+                    tt,
+                    _NBBO_TICK_TYPE_LABELS[tt],
+                    price,
+                )
             if self._require_positive and price <= 0:
                 return
+            self._bid_tick_since_reset = True
             self._pending_bid = float(price)
         elif tt in _NBBO_ASK_TICK_TYPES:
+            if self._log_ticks and self._logger is not None:
+                self._logger.info(
+                    "tickPrice pre-coalesce tickType=%s %s price=%s role=ask",
+                    tt,
+                    _NBBO_TICK_TYPE_LABELS[tt],
+                    price,
+                )
             if self._require_positive and price <= 0:
                 return
+            self._ask_tick_since_reset = True
             self._pending_ask = float(price)
         else:
             return
         self._coalesce.schedule()
+
+    def is_ready_for_quoting(self) -> bool:
+        """True when bid/ask are paired (both sides ticked since last :meth:`reset`)."""
+        if self._awaiting_pair_after_reset:
+            return False
+        return has_valid_nbbo(self.bid, self.ask)
+
+    def satisfy_pair_for_quoting(self) -> None:
+        """Mark a valid bid/ask as paired (used when tests assign quotes directly)."""
+        if has_valid_nbbo(self.bid, self.ask):
+            self._awaiting_pair_after_reset = False
+            self._bid_tick_since_reset = True
+            self._ask_tick_since_reset = True
 
     def flush_commit(self) -> None:
         """Apply pending bid/ask immediately (used after coalesce timer or in tests)."""
@@ -1115,6 +1150,9 @@ class NbboCoalesceSink:
         self._pending_ask = None
         self.bid = None
         self.ask = None
+        self._awaiting_pair_after_reset = True
+        self._bid_tick_since_reset = False
+        self._ask_tick_since_reset = False
         self._coalesce.cancel()
 
     def cancel(self) -> None:
@@ -1127,8 +1165,15 @@ class NbboCoalesceSink:
             self.bid = self._pending_bid
         if self._pending_ask is not None:
             self.ask = self._pending_ask
-        if has_valid_nbbo(self.bid, self.ask):
-            self._on_valid_nbbo(float(self.bid), float(self.ask))
+        if self._awaiting_pair_after_reset:
+            if not (self._bid_tick_since_reset and self._ask_tick_since_reset):
+                return
+            if not has_valid_nbbo(self.bid, self.ask):
+                return
+            self._awaiting_pair_after_reset = False
+        elif not has_valid_nbbo(self.bid, self.ask):
+            return
+        self._on_valid_nbbo(float(self.bid), float(self.ask))
 
 
 def cfg_bool(config: Dict[str, Any], key: str, default: bool) -> bool:
@@ -1323,6 +1368,17 @@ def ib_error_is_connectivity_restored(error_code: Any) -> bool:
 
 _NBBO_BID_TICK_TYPES = frozenset({1, 66})
 _NBBO_ASK_TICK_TYPES = frozenset({2, 67})
+_NBBO_TICK_TYPE_LABELS: Dict[int, str] = {
+    1: "BID",
+    2: "ASK",
+    66: "DELAYED_BID",
+    67: "DELAYED_ASK",
+}
+
+
+def log_tick_price_before_coalesce_enabled(config: Dict[str, Any]) -> bool:
+    """Temporary debug: log each ``tickPrice`` before NBBO coalescing."""
+    return cfg_bool(config, "log_tick_price_before_coalesce", False)
 
 
 def apply_resolved_stock_contract(template: Any, resolved: Any) -> None:
