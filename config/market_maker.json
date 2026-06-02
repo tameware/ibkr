@@ -9,17 +9,27 @@
   },
 
   "strategy": {
-    "base_qty": 100,
-    "max_position": 100,
-    "max_gross_shares": 500,
-    "max_buy_shares_per_run": 1000,
-    "min_spread": 0.05,
-    "inside_improve": 0.02,
-    "inventory_penalty_per_100": 0.08,
-    "target_roundtrip_capture": 0.02,
-    "quote_refresh_seconds": 3.0,
+    "base_qty": 200,
+    "//": "Max shares per buy order (capped by max_position - position)",
+    "max_position": 200,
+    "max_gross_shares": 4000,
+    "//": "Daily share-turn cap (buy + sell fills); raise for more volume",
+    "max_buy_shares_per_run": 4000,
+    "min_spread": 0.03,
+    "//": "Still quote when NBBO spread is at least this wide",
+    "inside_improve": 0.04,
+    "//": "Step bid/ask inside spread for more fills (was 0.02)",
+    "inventory_penalty_per_100": 0.03,
+    "//": "Lower skew when long so buys stay nearer the bid (was 0.08)",
+    "target_roundtrip_capture": 0.01,
+    "//": "Min profit vs avg cost on sells; lower = accept smaller edge (was 0.02)",
+    "mid_delta": 0.03,
+    "//": "Overrides base.json; lower = buy/sell closer to mid (more aggressive)",
+    "quote_refresh_seconds": 1.5,
+    "//": "Re-quote sooner on NBBO changes (was 3.0)",
     "max_market_stale_seconds": 1200,
-    "min_quote_spread_cents": 5
+    "min_quote_spread_cents": 3,
+    "//": "Min width between working buy and sell (was 5)"
   },
 
   "risk": {

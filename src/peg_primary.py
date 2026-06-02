@@ -373,14 +373,14 @@ class Trader(
 
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
         """IB callback: stage bid/ask ticks for NBBO coalescing."""
-        if reqId != MKTDATA_REQ_ID:
+        if not self.is_nbbo_market_data_req(reqId):
             return
         self.note_market_data_tick()
         self._nbbo.stage_tick_price(int(tickType), float(price))
 
     def tickSize(self, reqId: TickerId, tickType: TickType, size: Decimal) -> None:
         """IB callback: count size ticks for market-data stall recovery."""
-        if reqId != MKTDATA_REQ_ID:
+        if not self.is_nbbo_market_data_req(reqId):
             return
         self.note_market_data_tick()
 
@@ -889,6 +889,8 @@ class Trader(
                 self.trigger_resync()
 
             self.maybe_recover_stalled_market_data()
+            if self._market_data_subscribed and not self._nbbo.is_ready_for_quoting():
+                self.maybe_watchdog_recover_market_data(nbbo_ok=False)
             time.sleep(1.0)
 
 

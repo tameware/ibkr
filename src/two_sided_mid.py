@@ -270,7 +270,7 @@ class TwoSidedMidTrader(
 
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
         """IB callback: stage bid/ask ticks for NBBO coalescing."""
-        if reqId != MKTDATA_REQ_ID:
+        if not self.is_nbbo_market_data_req(reqId):
             return
         self.note_market_data_tick()
         self._nbbo.stage_tick_price(int(tickType), float(price))

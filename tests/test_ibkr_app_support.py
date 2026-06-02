@@ -932,6 +932,26 @@ class TestMarketDataHelpers(unittest.TestCase):
         )
         client.cancelMktData.assert_called_once_with(3001)
 
+    def test_subscribe_stock_nbbo_market_data_snapshot(self):
+        client = MagicMock()
+        contract = MagicMock()
+        client.isConnected.return_value = True
+        client.serverVersion.return_value = 157
+        subscribe_stock_nbbo_market_data(
+            client, 1002, contract, snapshot=True, cancel_first=True
+        )
+        client.reqMktData.assert_called_once_with(1002, contract, "", True, False, [])
+        client.reqMarketDataType.assert_not_called()
+
+    def test_subscribe_stock_nbbo_market_data_delayed_type(self):
+        client = MagicMock()
+        contract = MagicMock()
+        subscribe_stock_nbbo_market_data(
+            client, 3001, contract, live=False, market_data_type=3
+        )
+        client.reqMarketDataType.assert_called_once_with(3)
+        client.reqMktData.assert_called_once_with(3001, contract, "", False, False, [])
+
     def test_apply_resolved_stock_contract_sets_con_id(self):
         template = MagicMock()
         resolved = MagicMock(

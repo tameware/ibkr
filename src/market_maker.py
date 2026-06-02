@@ -299,6 +299,8 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
 
     def marketDataType(self, reqId, marketDataType):
         """IB callback: record live/delayed data type."""
+        if not self.is_nbbo_market_data_req(reqId):
+            return
         self.market_data_type = marketDataType
         self.logger.info("Market data type update reqId=%s type=%s", reqId, marketDataType)
         if self.require_live_data and marketDataType != 1:
@@ -430,14 +432,14 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
 
     def tickPrice(self, reqId, tickType, price, attrib):
         """IB callback: stage bid/ask ticks for NBBO coalescing."""
-        if reqId != self.market_data_req_id:
+        if not self.is_nbbo_market_data_req(reqId):
             return
         self.note_market_data_tick()
         self._nbbo.stage_tick_price(int(tickType), float(price))
 
     def tickSize(self, reqId, tickType, size):
         """IB callback: update bid/ask size from market data."""
-        if reqId != self.market_data_req_id:
+        if not self.is_nbbo_market_data_req(reqId):
             return
         self.note_market_data_tick()
 
@@ -1438,6 +1440,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                         )
                         self.last_watchdog_log_ts = now
                     self.maybe_recover_stalled_market_data()
+                    self.maybe_watchdog_recover_market_data(nbbo_ok=False)
                 else:
                     age_ok = now - last_nbbo_ok_ts
                     if (
@@ -1455,6 +1458,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                             market_data_type,
                         )
                         self.last_watchdog_log_ts = now
+                    self.maybe_watchdog_recover_market_data(nbbo_ok=False)
 
 def build_arg_parser() -> argparse.ArgumentParser:
     """Build the argparse parser for this bot script."""

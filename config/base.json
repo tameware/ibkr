@@ -48,6 +48,13 @@
   "diagnostics": {
     "market_data_resubscribe_debounce_seconds": 1.0,
     "market_data_stall_seconds": 15.0,
+    "market_data_watchdog_resubscribe_seconds": 60.0,
+    "//": "Force cancel+reqMktData when NBBO missing/stale (after stall grace)",
+    "market_data_snapshot_poll_seconds": 30.0,
+    "//": "One-shot reqMktData snapshot polls on the same schedule family",
+    "market_data_allow_delayed_fallback": true,
+    "//": "Every 3rd watchdog resubscribe try delayed (type 3) quotes",
+    "market_data_snapshot_req_id": 1002,
     "log_tick_price_before_coalesce": true,
     "//": "Temporary: log each tickPrice tickType/price before NBBO coalesce"
   }

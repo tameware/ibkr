@@ -1438,6 +1438,26 @@ def stock_contract_on_primary_exchange(contract: Any) -> Any:
     return routed
 
 
+def stock_contract_on_smart_exchange(contract: Any) -> Any:
+    """Copy ``contract`` but route market data through SMART (composite NBBO)."""
+    from ibapi.contract import Contract
+
+    routed = Contract()
+    routed.conId = int(getattr(contract, "conId", 0) or 0)
+    routed.symbol = str(getattr(contract, "symbol", "") or "")
+    routed.secType = str(getattr(contract, "secType", "STK") or "STK")
+    routed.currency = str(getattr(contract, "currency", "USD") or "USD")
+    routed.exchange = "SMART"
+    routed.primaryExchange = str(getattr(contract, "primaryExchange", "") or "")
+    routed.localSymbol = str(
+        getattr(contract, "localSymbol", "") or routed.symbol
+    )
+    trading_class = getattr(contract, "tradingClass", None)
+    if trading_class:
+        routed.tradingClass = str(trading_class)
+    return routed
+
+
 def subscribe_stock_nbbo_market_data(
     client: Any,
     req_id: int,
@@ -1445,8 +1465,10 @@ def subscribe_stock_nbbo_market_data(
     *,
     live: bool = True,
     cancel_first: bool = False,
+    snapshot: bool = False,
+    market_data_type: int | None = None,
 ) -> None:
-    """Subscribe to streaming NBBO (``reqMktData``), optionally requesting live quotes."""
+    """Subscribe to streaming or one-shot NBBO (``reqMktData``)."""
     if (
         cancel_first
         and hasattr(client, "cancelMktData")
@@ -1457,9 +1479,12 @@ def subscribe_stock_nbbo_market_data(
             client.cancelMktData(req_id)
         except Exception:
             pass
-    if live and hasattr(client, "reqMarketDataType"):
-        client.reqMarketDataType(1)
-    client.reqMktData(req_id, contract, "", False, False, [])
+    if not snapshot:
+        if market_data_type is not None and hasattr(client, "reqMarketDataType"):
+            client.reqMarketDataType(int(market_data_type))
+        elif live and hasattr(client, "reqMarketDataType"):
+            client.reqMarketDataType(1)
+    client.reqMktData(req_id, contract, "", bool(snapshot), False, [])
 
 
 def should_suppress_ib_error(

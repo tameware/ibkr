@@ -153,8 +153,10 @@ class _MktDataStub(ContractResolutionMixin, IbkrBotApp):
         self.reqContractDetails = MagicMock()
         self.reqMktData = MagicMock()
         self.reqMarketDataType = MagicMock()
+        self.cancelMktData = MagicMock()
         self.isConnected = MagicMock(return_value=True)
         self.serverVersion = MagicMock(return_value=157)
+        self.shutdown_flag = False
 
     def startup(self) -> None:
         pass
@@ -209,6 +211,57 @@ class TestContractResolutionMixin(unittest.TestCase):
         bot._market_data_contract = bot.contract
         routed = bot.market_data_contract()
         self.assertEqual(routed.exchange, "AMEX")
+
+    def test_maybe_watchdog_recover_resubscribes_and_polls_snapshot(self):
+        bot = _MktDataStub(
+            {
+                "symbol": "OZ",
+                "sec_type": "STK",
+                "currency": "USD",
+                "exchange": "SMART",
+                "market_data_stall_seconds": 0.0,
+                "market_data_watchdog_resubscribe_seconds": 30.0,
+                "market_data_snapshot_poll_seconds": 30.0,
+            }
+        )
+        from ibapi.contract import Contract
+
+        bot.contract = Contract()
+        bot.contract.conId = 1
+        bot.contract.symbol = "OZ"
+        bot.contract.secType = "STK"
+        bot.contract.currency = "USD"
+        bot.contract.exchange = "SMART"
+        bot.contract.primaryExchange = "AMEX"
+        bot._market_data_contract = bot.contract
+        bot._market_data_subscribed = True
+        bot._market_data_subscribed_ts = 0.0
+        bot._last_watchdog_resubscribe_ts = 0.0
+        bot._last_snapshot_poll_ts = 0.0
+        with patch("ibkr_bot_base.time.monotonic", return_value=100.0):
+            bot.maybe_watchdog_recover_market_data(nbbo_ok=False)
+        stream_calls = [
+            c for c in bot.reqMktData.call_args_list if c[0][3] is False
+        ]
+        snap_calls = [c for c in bot.reqMktData.call_args_list if c[0][3] is True]
+        self.assertEqual(len(stream_calls), 1)
+        self.assertEqual(len(snap_calls), 1)
+        self.assertEqual(stream_calls[0][0][1].exchange, "SMART")
+
+    def test_maybe_watchdog_recover_skips_when_nbbo_ok(self):
+        bot = _MktDataStub(
+            {
+                "symbol": "OZ",
+                "sec_type": "STK",
+                "currency": "USD",
+                "exchange": "SMART",
+                "market_data_stall_seconds": 0.0,
+            }
+        )
+        bot._market_data_subscribed = True
+        bot._market_data_subscribed_ts = 0.0
+        bot.maybe_watchdog_recover_market_data(nbbo_ok=True)
+        bot.reqMktData.assert_not_called()
 
 
 class TestIbkrBotApp(unittest.TestCase):

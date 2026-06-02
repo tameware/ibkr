@@ -19,11 +19,13 @@ from ibkr_app_support import (
     make_stock_contract,
     stock_contract_from_details,
     stock_contract_on_primary_exchange,
+    stock_contract_on_smart_exchange,
     subscribe_stock_nbbo_market_data,
 )
 
 HIST_REQ_ID = 1001
 CONTRACT_DETAILS_REQ_ID = 2001
+MARKET_DATA_SNAPSHOT_REQ_ID = 1002
 
 
 class OpenPriceBootstrapMixin:
@@ -175,8 +177,25 @@ class ContractResolutionMixin:
         self._market_data_subscribed_ts = 0.0
         self._market_data_last_tick_ts = 0.0
         self._market_data_fallback_attempted = False
+        self._market_data_route = "auto"
+        self._market_data_use_delayed = False
+        self._watchdog_resubscribe_count = 0
+        self._last_watchdog_resubscribe_ts = 0.0
+        self._last_snapshot_poll_ts = 0.0
         self.market_data_stall_seconds = float(
             config.get("market_data_stall_seconds", 15.0)
+        )
+        self.market_data_watchdog_resubscribe_seconds = float(
+            config.get("market_data_watchdog_resubscribe_seconds", 60.0)
+        )
+        self.market_data_snapshot_poll_seconds = float(
+            config.get("market_data_snapshot_poll_seconds", 30.0)
+        )
+        self.market_data_allow_delayed_fallback = cfg_bool(
+            config, "market_data_allow_delayed_fallback", True
+        )
+        self.market_data_snapshot_req_id = int(
+            config.get("market_data_snapshot_req_id", MARKET_DATA_SNAPSHOT_REQ_ID)
         )
 
     def request_contract_details(self) -> None:
@@ -215,13 +234,45 @@ class ContractResolutionMixin:
         When ``primaryExchange`` differs from ``exchange`` (e.g. SMART vs AMEX),
         subscribe on the primary listing — IB often delivers no bid/ask ticks on
         SMART for some symbols (OZ) even when TWS shows a live quote.
+
+        :attr:`_market_data_route` ``smart`` / ``primary`` override routing during
+        watchdog recovery (alternate SMART vs listing).
         """
         base = self._market_data_contract or self.contract
+        route = str(getattr(self, "_market_data_route", "auto") or "auto")
+        if route == "smart":
+            return stock_contract_on_smart_exchange(base)
+        if route == "primary":
+            primary = str(getattr(base, "primaryExchange", "") or "").strip()
+            if primary:
+                return stock_contract_on_primary_exchange(base)
         primary = str(getattr(base, "primaryExchange", "") or "").strip()
         current = str(getattr(base, "exchange", "") or "").strip()
         if primary and primary != current:
             return stock_contract_on_primary_exchange(base)
         return base
+
+    def market_data_snapshot_req_ids(self) -> Sequence[int]:
+        """Request ids for one-shot ``reqMktData`` snapshot polls (watchdog fallback)."""
+        if self.market_data_snapshot_poll_seconds <= 0:
+            return ()
+        return (self.market_data_snapshot_req_id,)
+
+    def all_market_data_req_ids(self) -> Sequence[int]:
+        """Streaming + snapshot ids (for ``cancelMktData`` on shutdown)."""
+        ids: list[int] = []
+        for req_id in self.market_data_req_ids():
+            ids.append(int(req_id))
+        for req_id in self.market_data_snapshot_req_ids():
+            rid = int(req_id)
+            if rid not in ids:
+                ids.append(rid)
+        return ids
+
+    def is_nbbo_market_data_req(self, req_id: Any) -> bool:
+        """True when ``req_id`` is a streaming or snapshot NBBO subscription."""
+        rid = int(req_id)
+        return rid in {int(x) for x in self.all_market_data_req_ids()}
 
     def note_market_data_tick(self) -> None:
         """Record that a market data callback arrived (for stall recovery)."""
@@ -258,6 +309,100 @@ class ContractResolutionMixin:
             force=True,
         )
 
+    def _market_data_type_for_subscribe(self) -> int | None:
+        if self._market_data_use_delayed:
+            return 3
+        return None
+
+    def _advance_market_data_route_for_recovery(self) -> None:
+        """Toggle SMART vs primary listing for the next watchdog resubscribe."""
+        base = self._market_data_contract or self.contract
+        primary = str(getattr(base, "primaryExchange", "") or "").strip()
+        if not primary:
+            return
+        route = str(self._market_data_route or "auto")
+        if route in ("auto", "primary"):
+            self._market_data_route = "smart"
+        else:
+            self._market_data_route = "primary"
+
+    def poll_market_data_snapshot(self) -> None:
+        """Request a one-shot NBBO snapshot (``reqMktData`` with ``snapshot=True``)."""
+        snap_ids = list(self.market_data_snapshot_req_ids())
+        if not snap_ids or self.shutdown_flag or not self.isConnected():
+            return
+        contract = self.market_data_contract()
+        md_type = self._market_data_type_for_subscribe()
+        for req_id in snap_ids:
+            subscribe_stock_nbbo_market_data(
+                self,
+                int(req_id),
+                contract,
+                live=md_type is None,
+                cancel_first=True,
+                snapshot=True,
+                market_data_type=md_type,
+            )
+        self.logger.info(
+            "NBBO snapshot poll reqIds=%s exchange=%s primaryExchange=%s conId=%s",
+            snap_ids,
+            getattr(contract, "exchange", None),
+            getattr(contract, "primaryExchange", None),
+            getattr(contract, "conId", None),
+        )
+
+    def maybe_watchdog_recover_market_data(self, *, nbbo_ok: bool) -> None:
+        """Force resubscribe and/or snapshot poll when NBBO is missing or stale."""
+        if (
+            nbbo_ok
+            or self.shutdown_flag
+            or not self.isConnected()
+            or not self._market_data_subscribed
+        ):
+            return
+        now = time.monotonic()
+        if now - self._market_data_subscribed_ts < self.market_data_stall_seconds:
+            return
+
+        resub_interval = self.market_data_watchdog_resubscribe_seconds
+        snap_interval = self.market_data_snapshot_poll_seconds
+
+        if (
+            resub_interval > 0
+            and (now - self._last_watchdog_resubscribe_ts) >= resub_interval
+        ):
+            self._last_watchdog_resubscribe_ts = now
+            self._watchdog_resubscribe_count += 1
+            self._market_data_fallback_attempted = False
+            self._advance_market_data_route_for_recovery()
+            if (
+                self.market_data_allow_delayed_fallback
+                and self._watchdog_resubscribe_count % 3 == 0
+            ):
+                self._market_data_use_delayed = True
+                self.logger.warning(
+                    "Watchdog: enabling delayed market data (type 3) after %s resubscribes",
+                    self._watchdog_resubscribe_count,
+                )
+            nbbo = getattr(self, "_nbbo", None)
+            if nbbo is not None:
+                nbbo.reset()
+            contract = self.market_data_contract()
+            self.logger.warning(
+                "Watchdog: force re-subscribe route=%s exchange=%s (attempt %s)",
+                self._market_data_route,
+                getattr(contract, "exchange", None),
+                self._watchdog_resubscribe_count,
+            )
+            self.ensure_market_data_subscription(
+                reason="watchdog_resubscribe",
+                force=True,
+            )
+
+        if snap_interval > 0 and (now - self._last_snapshot_poll_ts) >= snap_interval:
+            self._last_snapshot_poll_ts = now
+            self.poll_market_data_snapshot()
+
     def ensure_market_data_subscription(
         self,
         *,
@@ -271,24 +416,28 @@ class ContractResolutionMixin:
         if not req_ids:
             return
         contract = self.market_data_contract()
-        cancel_first = self._market_data_subscribed
+        cancel_first = self._market_data_subscribed or force
+        md_type = self._market_data_type_for_subscribe()
         for req_id in req_ids:
             subscribe_stock_nbbo_market_data(
                 self,
                 int(req_id),
                 contract,
-                live=True,
+                live=md_type is None,
                 cancel_first=cancel_first,
+                market_data_type=md_type,
             )
         self._market_data_subscribed = True
         self._market_data_subscribed_ts = time.monotonic()
         if not force:
             self._market_data_fallback_attempted = False
         self.logger.info(
-            "NBBO market data subscribed (%s) reqIds=%s conId=%s",
+            "NBBO market data subscribed (%s) reqIds=%s exchange=%s conId=%s delayed=%s",
             reason,
             req_ids,
+            getattr(contract, "exchange", None),
             getattr(contract, "conId", None),
+            self._market_data_use_delayed,
         )
 
     def subscribe_market_data(self) -> None:
@@ -445,8 +594,13 @@ class IbkrBotApp(EWrapper, EClient, ABC):
         except Exception as e:
             self.logger.warning("Order cancel during shutdown failed: %s", e)
 
+        cancel_ids = (
+            list(self.all_market_data_req_ids())
+            if hasattr(self, "all_market_data_req_ids")
+            else list(self.market_data_req_ids())
+        )
         disconnect_cleanly(
             self,
             logger=self.logger,
-            market_data_req_ids=list(self.market_data_req_ids()),
+            market_data_req_ids=cancel_ids,
         )
