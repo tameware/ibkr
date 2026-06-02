@@ -161,9 +161,9 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         )
         self.require_live_data = _cfg_bool(config, "require_live_data", False)
 
-        self.log_bid_ask_ticks = _cfg_bool(config, "log_bid_ask_ticks", True)
+        self.log_bid_ask_ticks = _cfg_bool(config, "log_bid_ask_ticks", False)
         self.log_invalid_market_reasons = _cfg_bool(
-            config, "log_invalid_market_reasons", True
+            config, "log_invalid_market_reasons", False
         )
         self.nbbo_watchdog_seconds = float(
             config.get("nbbo_watchdog_seconds", 30.0)
@@ -302,7 +302,9 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         if not self.is_nbbo_market_data_req(reqId):
             return
         self.market_data_type = marketDataType
-        self.logger.info("Market data type update reqId=%s type=%s", reqId, marketDataType)
+        self.logger.debug(
+            "Market data type update reqId=%s type=%s", reqId, marketDataType
+        )
         if self.require_live_data and marketDataType != 1:
             self.logger.warning("Live data required, but market data type is %s", marketDataType)
 
@@ -1310,7 +1312,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             return
 
         if not snap.open_orders_snapshot_done:
-            self.logger.info(
+            self.logger.debug(
                 "Open-order snapshot not complete; skipping quote management this cycle."
             )
             return

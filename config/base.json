@@ -55,7 +55,7 @@
     "market_data_allow_delayed_fallback": true,
     "//": "Every 3rd watchdog resubscribe try delayed (type 3) quotes",
     "market_data_snapshot_req_id": 1002,
-    "log_tick_price_before_coalesce": true,
-    "//": "Temporary: log each tickPrice tickType/price before NBBO coalesce"
+    "log_tick_price_before_coalesce": false,
+    "//": "Log each tickPrice before NBBO coalesce (very verbose)"
   }
 }

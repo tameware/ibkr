@@ -526,7 +526,7 @@ class Trader(
 
         mid = self._nbbo_mid_rounded()
         if mid != self.ref_price:
-            self.logger.info(
+            self.logger.debug(
                 "ref_price updated: bid=%s ask=%s mid=%s",
                 self._bid,
                 self._ask,

@@ -42,8 +42,8 @@
   },
 
   "diagnostics": {
-    "log_bid_ask_ticks": true,
-    "log_invalid_market_reasons": true,
+    "log_bid_ask_ticks": false,
+    "log_invalid_market_reasons": false,
     "nbbo_watchdog_seconds": 300,
     "watchdog_repeat_seconds": 600
   }

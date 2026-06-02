@@ -343,7 +343,7 @@ class ContractResolutionMixin:
                 snapshot=True,
                 market_data_type=md_type,
             )
-        self.logger.info(
+        self.logger.debug(
             "NBBO snapshot poll reqIds=%s exchange=%s primaryExchange=%s conId=%s",
             snap_ids,
             getattr(contract, "exchange", None),
@@ -431,14 +431,20 @@ class ContractResolutionMixin:
         self._market_data_subscribed_ts = time.monotonic()
         if not force:
             self._market_data_fallback_attempted = False
-        self.logger.info(
-            "NBBO market data subscribed (%s) reqIds=%s exchange=%s conId=%s delayed=%s",
+        msg = (
+            "NBBO market data subscribed (%s) reqIds=%s exchange=%s conId=%s delayed=%s"
+        )
+        args = (
             reason,
             req_ids,
             getattr(contract, "exchange", None),
             getattr(contract, "conId", None),
             self._market_data_use_delayed,
         )
+        if reason in ("contract_resolved", "primary_exchange_fallback"):
+            self.logger.info(msg, *args)
+        else:
+            self.logger.debug(msg, *args)
 
     def subscribe_market_data(self) -> None:
         """Subscribe or refresh streaming NBBO (after resolve or on reconnect)."""
