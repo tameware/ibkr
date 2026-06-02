@@ -181,22 +181,15 @@ class Trader(
         sync_attrs_from_ledger(
             self.ledger, self, qty_attr="position_size", avg_attr="avg_cost"
         )
-        self.logger.info(
-            "Position ledger %s qty=%s avg_cost_per_share=%.4f",
-            self.ledger.path,
-            self.ledger.qty,
-            self.ledger.avg_cost_per_share,
-        )
-
         _coalesce_quiet, _coalesce_max = nbbo_coalesce_intervals_from_config(self.config)
         self.logger.info(
-            "REL quoter initialized symbol=%s exchange=%s "
-            "(NBBO coalesce quiet=%.2fs min_interval=%.2fs; ib_client_id=%s)",
+            "peg_primary %s/%s client_id=%s ledger_qty=%s (coalesce %.2f–%.2fs)",
             self.config["symbol"],
             self.config["exchange"],
+            self.ib_client_id,
+            self.ledger.qty,
             _coalesce_quiet,
             _coalesce_max,
-            self.ib_client_id,
         )
 
     def market_data_req_ids(self):
@@ -298,7 +291,7 @@ class Trader(
                     if orderId == self.sell_order_id
                     else "ORDER"
                 )
-                self.logger.info(
+                self.logger.debug(
                     f"{side} {orderId} partial fill: filled={filled} remaining={remaining} "
                     f"avgFillPrice={avgFillPrice} lastFillPrice={lastFillPrice}"
                 )
@@ -307,14 +300,16 @@ class Trader(
 
         if status in ("Filled", "Cancelled", "Inactive", "ApiCancelled"):
             if orderId == self.buy_order_id:
-                self.logger.info(
+                log = self.logger.info if status == "Filled" else self.logger.debug
+                log(
                     f"BUY {orderId} {status} filled={filled} avgFillPrice={avgFillPrice}"
                 )
                 self.pending_buy = False
                 self.buy_order_id = None
                 self.buy_order_qty = None
             if orderId == self.sell_order_id:
-                self.logger.info(
+                log = self.logger.info if status == "Filled" else self.logger.debug
+                log(
                     f"SELL {orderId} {status} filled={filled} avgFillPrice={avgFillPrice}"
                 )
                 self.pending_sell = False
@@ -345,7 +340,7 @@ class Trader(
 
         raw_side = getattr(execution, "side", "")
         side = "BUY" if raw_side == "BOT" else "SELL" if raw_side == "SLD" else raw_side
-        self.logger.info(
+        self.logger.debug(
             f"Execution {side} orderId={execution.orderId} execId={execution.execId} "
             f"shares={execution.shares} price={execution.price} "
             f"exchange={execution.exchange} cumQty={execution.cumQty} "
@@ -402,7 +397,7 @@ class Trader(
         self.request_today_open_or_prior_close()
         self.request_contract_details()
         self.request_open_orders_snapshot()
-        self.logger.info(
+        self.logger.debug(
             "Startup: requested positions, daily bars, market data, and open orders."
         )
 
@@ -452,14 +447,14 @@ class Trader(
         if not self._startup_open_orders_logged:
             sym = self.config["symbol"]
             if self._snapshot_open_order_lines:
-                self.logger.info(
+                self.logger.debug(
                     f"Open orders at startup for {sym} ({self.config['sec_type']}): "
                     f"{len(self._snapshot_open_order_lines)}"
                 )
                 for ln in self._snapshot_open_order_lines:
-                    self.logger.info(ln)
+                    self.logger.debug(ln)
             else:
-                self.logger.info(
+                self.logger.debug(
                     f"Open orders at startup for {sym} ({self.config['sec_type']}): none"
                 )
             self._startup_open_orders_logged = True
@@ -584,7 +579,7 @@ class Trader(
             return False
 
         if plan.kind == "cancel":
-            self.logger.info(
+            self.logger.debug(
                 f"Cancelling {action} id={oid} (desired remaining "
                 f"{desired_remaining} < min_order_size {self.min_order_size}; "
                 f"filled={plan.filled_now})"
@@ -593,7 +588,7 @@ class Trader(
             self._clear_order_state(action)
             return True
 
-        self.logger.info(
+        self.logger.debug(
             f"Modifying {action} id={oid} totalQty {current_total_qty}->{plan.new_total_qty} "
             f"(filled={plan.filled_now} remaining {plan.remaining_now}->{desired_remaining} "
             f"lmtPrice={limit_price})"
@@ -646,7 +641,7 @@ class Trader(
         ) == round(new_a, self._digits):
             return False
         mid = self._nbbo_mid_rounded()
-        self.logger.info(
+        self.logger.debug(
             f"Updating {action} id={oid} lmtPrice {old_l}->{new_l} "
             f"auxPrice {old_a}->{new_a} (totalQty={total_qty} "
             f"bid={self._bid} ask={self._ask} mid={mid})"
@@ -673,7 +668,7 @@ class Trader(
 
         if pos <= 0:
             if self.sell_order_id is not None:
-                self.logger.info(
+                self.logger.debug(
                     "Cancelling SELL order id=%s (flat or flat target)",
                     self.sell_order_id,
                 )
@@ -715,7 +710,7 @@ class Trader(
                 self.pending_buy = True
                 order = self.build_rel_order("BUY", buy_qty, buy_limit)
                 off = order.auxPrice
-                self.logger.info(
+                self.logger.debug(
                     "Placing REL (peg primary) BUY qty=%s lmtPrice=%s auxPrice=%s id=%s",
                     buy_qty,
                     buy_limit,
@@ -728,7 +723,7 @@ class Trader(
 
         if pos >= max_pos:
             if self.buy_order_id is not None:
-                self.logger.info(
+                self.logger.debug(
                     "Cancelling BUY order id=%s (at or above max_pos)",
                     self.buy_order_id,
                 )
@@ -770,7 +765,7 @@ class Trader(
                 self.pending_sell = True
                 order = self.build_rel_order("SELL", sell_qty, sell_limit)
                 off = order.auxPrice
-                self.logger.info(
+                self.logger.debug(
                     "Placing REL (peg primary) SELL qty=%s lmtPrice=%s auxPrice=%s id=%s",
                     sell_qty,
                     sell_limit,
@@ -809,7 +804,7 @@ class Trader(
             self.pending_buy = True
             order = self.build_rel_order("BUY", buy_qty, buy_limit)
             off = order.auxPrice
-            self.logger.info(
+            self.logger.debug(
                 "Placing REL (peg primary) BUY qty=%s lmtPrice=%s auxPrice=%s id=%s",
                 buy_qty,
                 buy_limit,
@@ -843,7 +838,7 @@ class Trader(
             self.pending_sell = True
             order = self.build_rel_order("SELL", sell_qty, sell_limit)
             off = order.auxPrice
-            self.logger.info(
+            self.logger.debug(
                 "Placing REL (peg primary) SELL qty=%s lmtPrice=%s auxPrice=%s id=%s",
                 sell_qty,
                 sell_limit,

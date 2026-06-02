@@ -38,7 +38,7 @@ class OpenPriceBootstrapMixin:
 
     def request_today_open_or_prior_close(self) -> None:
         """Request daily bars to seed ``open_price``."""
-        self.logger.info("Requesting daily bars for open/prior close")
+        self.logger.debug("Requesting daily bars for open/prior close")
         self._bars = []
         self.reqHistoricalData(
             HIST_REQ_ID,
@@ -65,17 +65,17 @@ class OpenPriceBootstrapMixin:
             return
 
         if not self._bars:
-            self.logger.info("No historical bars returned; cannot set open_price")
+            self.logger.debug("No historical bars returned; cannot set open_price")
             return
 
         last_bar = self._bars[-1]
 
         if last_bar.open and last_bar.open > 0:
             self.open_price = float(last_bar.open)
-            self.logger.info("Today's open price: %s", self.open_price)
+            self.logger.debug("Today's open price: %s", self.open_price)
         else:
             self.open_price = float(last_bar.close)
-            self.logger.info("No valid open; using prior close: %s", self.open_price)
+            self.logger.debug("No valid open; using prior close: %s", self.open_price)
 
         self.on_open_price_ready(self.open_price)
 
@@ -218,7 +218,7 @@ class ContractResolutionMixin:
         """IB callback: subscribe to NBBO after the contract is resolved."""
         if int(reqId) != int(self.contract_details_req_id):
             return
-        self.logger.info(
+        self.logger.debug(
             "Contract details complete reqId=%s conId=%s symbol=%s exchange=%s primaryExchange=%s",
             reqId,
             getattr(self.contract, "conId", None),
@@ -441,10 +441,7 @@ class ContractResolutionMixin:
             getattr(contract, "conId", None),
             self._market_data_use_delayed,
         )
-        if reason in ("contract_resolved", "primary_exchange_fallback"):
-            self.logger.info(msg, *args)
-        else:
-            self.logger.debug(msg, *args)
+        self.logger.debug(msg, *args)
 
     def subscribe_market_data(self) -> None:
         """Subscribe or refresh streaming NBBO (after resolve or on reconnect)."""
@@ -544,7 +541,7 @@ class IbkrBotApp(EWrapper, EClient, ABC):
 
     def connectAck(self) -> None:
         """IB callback: connection acknowledged."""
-        self.logger.info("IBKR connectAck received")
+        self.logger.debug("IBKR connectAck received")
 
     def connectionClosed(self) -> None:
         """IB callback: mark disconnected and run teardown hook."""
@@ -555,7 +552,7 @@ class IbkrBotApp(EWrapper, EClient, ABC):
 
     def nextValidId(self, orderId: int) -> None:
         """IB callback: API ready; assign order id and run ``startup``."""
-        self.logger.info("nextValidId: %s", orderId)
+        self.logger.debug("nextValidId: %s", orderId)
         self._api_ready = True
         self.assign_next_order_id(orderId)
         self.on_api_ready(orderId)

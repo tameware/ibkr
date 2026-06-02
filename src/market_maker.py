@@ -243,17 +243,13 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             clamp_qty_nonneg=True,
         )
         self.logger.info(
-            "Position ledger %s qty=%s avg_cost_per_share=%.4f",
-            self.ledger.path,
-            self.ledger.qty,
-            self.ledger.avg_cost_per_share,
-        )
-
-        self.logger.info(
-            "Bot initialized for %s on %s/%s",
+            "market_maker %s %s/%s client_id=%s ledger_qty=%s avg=%.4f",
             self.contract.symbol,
             self.contract.exchange,
             self.contract.primaryExchange,
+            self.client_id,
+            self.ledger.qty,
+            self.ledger.avg_cost_per_share,
         )
 
     def market_data_req_ids(self):
@@ -327,7 +323,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         else:
             self.reqAllOpenOrders()       # visibility only, not cancelable if id=0
 
-        self.logger.info(
+        self.logger.debug(
             "Requested contract details, positions, open orders, and live market data."
         )
 
@@ -350,7 +346,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             if new_min_tick is not None:
                 self.min_tick = new_min_tick
 
-        self.logger.info(
+        self.logger.debug(
             "Resolved contract: conId=%s symbol=%s localSymbol=%s exchange=%s primaryExchange=%s currency=%s minTick=%s",
             getattr(summary, "conId", None),
             getattr(summary, "symbol", None),
@@ -519,7 +515,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 clamp_qty_nonneg=True,
             )
 
-        self.logger.info(
+        self.logger.debug(
             "Position update account=%s symbol=%s ledger_qty=%s "
             "ledger_avg_cost_per_share=%.4f ib_snapshot_qty=%s",
             account,
@@ -531,7 +527,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
 
     def positionEnd(self):
         """IB callback: position snapshot complete."""
-        self.logger.info("Initial position snapshot complete.")
+        self.logger.debug("Initial position snapshot complete.")
 
     def openOrder(self, orderId, contract, order, orderState):
         """IB callback: track working orders for this symbol."""
@@ -570,7 +566,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                     self.buy_order = live
                 elif side == "SELL" and self.sell_order and self.sell_order.order_id == orderId:
                     self.sell_order = live
-            self.logger.info(
+            self.logger.debug(
                 "openOrder refresh id=%s side=%s qty=%s px=%.2f status=%s remaining=%s",
                 orderId,
                 live.side,
@@ -609,7 +605,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                     self.sell_order = live
                     action = "replaced-incumbent-cancel-old"
 
-        self.logger.info(
+        self.logger.debug(
             "openOrder adoption id=%s side=%s qty=%s px=%.2f status=%s remaining=%s action=%s",
             orderId,
             live.side,
@@ -628,7 +624,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         with self.lock:
             self.open_orders_snapshot_done = True
             self.adoption_phase = False
-            self.logger.info(
+            self.logger.debug(
                 "Open orders snapshot complete. Adopted buy_order=%s sell_order=%s",
                 self.buy_order,
                 self.sell_order,
@@ -673,15 +669,22 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                     elif target.side == "SELL":
                         self.sell_order = None
 
-        self.logger.info(
-            "orderStatus id=%s status=%s filled=%s remaining=%s avgFill=%.4f lastFill=%.4f",
-            orderId,
-            status,
-            filled,
-            remaining,
-            float(avgFillPrice or 0.0),
-            float(lastFillPrice or 0.0),
-        )
+        if status == "Filled":
+            self.logger.info(
+                "orderStatus id=%s Filled filled=%s avgFill=%.4f",
+                orderId,
+                filled,
+                float(avgFillPrice or 0.0),
+            )
+        else:
+            self.logger.debug(
+                "orderStatus id=%s status=%s filled=%s remaining=%s avgFill=%.4f",
+                orderId,
+                status,
+                filled,
+                remaining,
+                float(avgFillPrice or 0.0),
+            )
 
     def execDetails(self, reqId, contract, execution):
         """IB callback: apply fills to the position ledger."""
@@ -717,14 +720,13 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 self.ledger.save()
 
         self.logger.info(
-            "execDetails side=%s shares=%s px=%.4f ledger_qty=%s gross=%s realized=%.2f execId=%s",
+            "Fill %s %s @ %.4f pos=%s gross=%s pnl=%.2f",
             side_raw,
             shares,
             px,
             self.position_size,
             self.gross_shares_traded,
             self.realized_pnl,
-            execution.execId,
         )
 
         self.maybe_manage_quotes(force=True)
@@ -786,7 +788,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 and sell_px - cand_buy >= min_width
             ):
                 buy_px = cand_buy
-                self.logger.info(
+                self.logger.debug(
                     "NBBO tick improve BUY: bid_sz=%s buy_qty=%s -> buy_px=%.4f",
                     bid_size,
                     buy_qty,
@@ -801,7 +803,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 and cand_sell - buy_px >= min_width
             ):
                 sell_px = cand_sell
-                self.logger.info(
+                self.logger.debug(
                     "NBBO tick improve SELL: ask_sz=%s sell_qty=%s -> sell_px=%.4f",
                     ask_size,
                     sell_qty,
@@ -941,7 +943,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         if self.cancel_on_invalid_market:
             self._cancel_working_quotes_flat_inventory()
         if self.log_invalid_market_reasons:
-            self.logger.info("Not quoting: %s", reason)
+            self.logger.debug("Not quoting: %s", reason)
         return True
 
     def _abort_quotes_if_market_invalid(self) -> bool:
@@ -1120,7 +1122,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 elif side == "SELL" and self.sell_order and self.sell_order.order_id == oid:
                     self.sell_order = None
 
-            self.logger.info("Cancel order id=%s side=%s px=%.2f qty=%s", oid, side, px, qty)
+            self.logger.debug("Cancel order id=%s side=%s px=%.2f qty=%s", oid, side, px, qty)
         except Exception as e:
             self.logger.exception("Cancel failed for order id=%s side=%s: %s", oid, side, e)
 
@@ -1181,7 +1183,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 qty=qty,
                 remaining=qty,
             )
-        self.logger.info("%s working id=%s qty=%s px=%.2f", side, oid, qty, px)
+        self.logger.debug("%s working id=%s qty=%s px=%.2f", side, oid, qty, px)
 
     def place_or_replace_buy(self, qty: int, px: Optional[float]):
         """Place or replace buy."""
@@ -1401,9 +1403,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         )
         if decision_key != self._last_quote_decision_log_key:
             self._last_quote_decision_log_key = decision_key
-            self.logger.info(msg, *log_args)
-        else:
-            self.logger.debug(msg, *log_args)
+        self.logger.debug(msg, *log_args)
 
     def watchdog_loop(self):
         """Background loop: session hours, stale-quote cancel, and quote refresh."""

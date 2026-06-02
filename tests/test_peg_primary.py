@@ -556,7 +556,7 @@ class TestExecutionLogging(unittest.TestCase):
 
     def test_order_status_logs_cancelled_terminal(self):
         self.t.sell_order_id = 7
-        with patch.object(self.t.logger, "info") as tp:
+        with patch.object(self.t.logger, "debug") as tp:
             self._order_status(orderId=7, status="Cancelled", filled=0,
                                remaining=0)
         msgs = [_log_line(c) for c in tp.call_args_list]
@@ -567,7 +567,7 @@ class TestExecutionLogging(unittest.TestCase):
         """IB sends partial fills as Submitted with cumulative filled > 0
         and remaining > 0. The script should log a partial-fill line."""
         self.t.buy_order_id = 99
-        with patch.object(self.t.logger, "info") as tp:
+        with patch.object(self.t.logger, "debug") as tp:
             self._order_status(orderId=99, status="Submitted", filled=10,
                                remaining=90, avgFillPrice=50.0,
                                lastFillPrice=50.0)
@@ -581,7 +581,7 @@ class TestExecutionLogging(unittest.TestCase):
         """Repeated Submitted callbacks with the same cumulative filled
         should not relog the partial fill."""
         self.t.buy_order_id = 99
-        with patch.object(self.t.logger, "info") as tp:
+        with patch.object(self.t.logger, "debug") as tp:
             self._order_status(orderId=99, status="Submitted", filled=10,
                                remaining=90, avgFillPrice=50.0)
             self._order_status(orderId=99, status="Submitted", filled=10,
@@ -590,7 +590,7 @@ class TestExecutionLogging(unittest.TestCase):
                         if "partial fill" in _log_line(c)]
         self.assertEqual(len(partial_msgs), 1)
 
-        with patch.object(self.t.logger, "info") as tp2:
+        with patch.object(self.t.logger, "debug") as tp2:
             self._order_status(orderId=99, status="Submitted", filled=25,
                                remaining=75, avgFillPrice=50.1)
         partial_msgs = [_log_line(c) for c in tp2.call_args_list
@@ -635,7 +635,7 @@ class TestExecutionLogging(unittest.TestCase):
         return c
 
     def test_exec_details_logs_buy(self):
-        with patch.object(self.t.logger, "info") as tp:
+        with patch.object(self.t.logger, "debug") as tp:
             self.t.execDetails(0, self._contract(),
                                self._execution(side="BOT", orderId=42,
                                                execId="x-42-1", shares=25,
@@ -655,7 +655,7 @@ class TestExecutionLogging(unittest.TestCase):
         self.assertIn("cumQty=25", m)
 
     def test_exec_details_logs_sell(self):
-        with patch.object(self.t.logger, "info") as tp:
+        with patch.object(self.t.logger, "debug") as tp:
             self.t.execDetails(0, self._contract(),
                                self._execution(side="SLD"))
         msgs = [_log_line(c) for c in tp.call_args_list]
@@ -948,7 +948,7 @@ class TestStartupOpenOrders(unittest.TestCase):
         state = MagicMock()
         state.status = "Submitted"
         t.reqOpenOrders = Mock()
-        with patch.object(t.logger, "info") as tp:
+        with patch.object(t.logger, "debug") as tp:
             t.request_open_orders_snapshot()
             t.openOrder(7, contract, order, state)
             t.openOrderEnd()

@@ -746,7 +746,7 @@ def handle_ledger_execution(
     ledger.save()
     if logger is not None:
         if side == "BUY" and prior_qty >= 0:
-            logger.info(
+            logger.debug(
                 "Ledger %s fill VWAP: avg_cost_per_share %.4f -> %.4f "
                 "(BUY %s @ %.4f, prior qty=%s; IB avgCost not used) execId=%s",
                 ledger.path.name,
@@ -758,7 +758,7 @@ def handle_ledger_execution(
                 exec_id,
             )
         else:
-            logger.info(
+            logger.debug(
                 "Ledger %s qty=%s avg_cost_per_share=%.4f (%s %s @ %.4f execId=%s)",
                 ledger.path.name,
                 ledger.qty,
@@ -1336,7 +1336,7 @@ def log_session_transition(
     """Log once at startup outside the window or on the first transition to closed."""
     if prev_in_hours is None and not in_hours:
         now, tz_name, moh, mom, mch = session_wall_clock(config)
-        logger.info(
+        logger.debug(
             "Configured regular session is closed at startup (now %s; "
             "window %02d:%02d–%02d:00 %s). Quoting paused.",
             now.strftime("%Y-%m-%d %H:%M:%S %Z"),
@@ -1347,7 +1347,7 @@ def log_session_transition(
         )
     elif prev_in_hours is True and not in_hours:
         now, tz_name, moh, mom, mch = session_wall_clock(config)
-        logger.info(
+        logger.debug(
             "Regular session ended (now %s; configured window %02d:%02d–%02d:00 %s). "
             "Quoting paused; DAY orders may be canceled by the broker at the close.",
             now.strftime("%Y-%m-%d %H:%M:%S %Z"),
@@ -1563,7 +1563,7 @@ def log_ib_error(
         msg = f"reqId={req_id} errorTime={error_time} code={error_code} msg={text}"
         if advanced_order_reject:
             msg += f" reject={advanced_order_reject}"
-        logger.info("IB status: %s", msg)
+        logger.debug("IB status: %s", msg)
         return True
 
     logger.warning(

@@ -415,8 +415,8 @@ class TestRegularSession(unittest.TestCase):
             prev_in_hours=None,
             in_hours=False,
         )
-        logger.info.assert_called_once()
-        self.assertIn("closed at startup", logger.info.call_args[0][0])
+        logger.debug.assert_called_once()
+        self.assertIn("closed at startup", logger.debug.call_args[0][0])
 
     def test_log_session_transition_session_end(self):
         logger = MagicMock()
@@ -426,8 +426,8 @@ class TestRegularSession(unittest.TestCase):
             prev_in_hours=True,
             in_hours=False,
         )
-        logger.info.assert_called_once()
-        self.assertIn("session ended", logger.info.call_args[0][0])
+        logger.debug.assert_called_once()
+        self.assertIn("session ended", logger.debug.call_args[0][0])
 
     def test_log_session_transition_no_op_when_open(self):
         logger = MagicMock()
@@ -728,7 +728,7 @@ class TestIbErrorFiltering(unittest.TestCase):
             error_code=2158,
             error_string="Farm OK",
         )
-        logger.info.assert_called_once()
+        logger.debug.assert_called_once()
         logger.warning.assert_not_called()
 
     def test_ib_error_is_status_info(self):
