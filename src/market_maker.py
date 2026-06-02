@@ -69,6 +69,7 @@ class LiveOrder:
     status: str = "PendingSubmit"
     filled: int = 0
     remaining: int = 0
+    total_qty: int = 0
 
 
 @dataclass(frozen=True)
@@ -231,6 +232,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         self.open_orders_snapshot_done = False
         self.adoption_phase = False
         self._prev_us_regular_hours: bool | None = None
+        self._last_order_update_log_key: Dict[int, Tuple[int, int, int, float]] = {}
 
         self.ledger = PositionLedger.open(
             "market_maker", config, client_id=self.client_id, account=raw_acct
@@ -529,6 +531,56 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         """IB callback: position snapshot complete."""
         self.logger.debug("Initial position snapshot complete.")
 
+    @staticmethod
+    def _sell_working_remaining_from_ib(
+        total_qty: int, filled: int, raw_remaining: Optional[int]
+    ) -> int:
+        """Shares still open on a sell, from IB ``openOrder`` / ``orderStatus`` fields.
+
+        IB sometimes sets ``remaining`` equal to ``totalQuantity`` before ``filled`` is
+        applied; prefer ``totalQuantity - filled`` when that yields a smaller value.
+        """
+        total = max(0, int(total_qty))
+        filled_i = max(0, int(filled))
+        implied = max(0, total - filled_i)
+        if raw_remaining is None:
+            return implied
+        raw = max(0, int(raw_remaining))
+        if filled_i > 0 and raw > implied:
+            return implied
+        if raw > total:
+            return implied
+        return raw
+
+    def _log_order_qty_update_if_changed(
+        self,
+        order_id: int,
+        side: str,
+        *,
+        prior_working: int,
+        working: int,
+        total_qty: int,
+        filled: int,
+        px: float,
+    ) -> None:
+        """INFO once per distinct working-size/price snapshot; DEBUG on repeats."""
+        key = (int(working), int(total_qty), int(filled), round(float(px), 2))
+        prev = self._last_order_update_log_key.get(int(order_id))
+        if side == "SELL":
+            msg = (
+                "Order update id=%s side=SELL working_remaining %s->%s "
+                "(totalQty=%s filled=%s) px=%.2f"
+            )
+            args = (order_id, prior_working, working, total_qty, filled, px)
+        else:
+            msg = "Order update id=%s side=%s qty %s->%s px=%.2f"
+            args = (order_id, side, prior_working, working, px)
+        if prev == key:
+            self.logger.debug(msg, *args)
+            return
+        self._last_order_update_log_key[int(order_id)] = key
+        self.logger.info(msg, *args)
+
     def openOrder(self, orderId, contract, order, orderState):
         """IB callback: track working orders for this symbol."""
         if not self._is_target_contract(contract):
@@ -543,12 +595,20 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             return
 
         filled = int(getattr(orderState, "filled", 0) or 0)
-        remaining = getattr(orderState, "remaining", None)
-        if remaining is None:
-            remaining = max(0, int(order.totalQuantity) - filled)
-        remaining = int(remaining)
-
-        live_qty = remaining if side == "SELL" else int(order.totalQuantity)
+        total_qty = int(float(order.totalQuantity))
+        raw_remaining = getattr(orderState, "remaining", None)
+        if side == "SELL":
+            working = self._sell_working_remaining_from_ib(
+                total_qty, filled, raw_remaining
+            )
+            live_qty = working
+            remaining = working
+        else:
+            if raw_remaining is None:
+                remaining = max(0, total_qty - filled)
+            else:
+                remaining = int(raw_remaining)
+            live_qty = total_qty
 
         live = LiveOrder(
             order_id=orderId,
@@ -558,6 +618,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             status=orderState.status,
             filled=filled,
             remaining=remaining,
+            total_qty=total_qty,
         )
 
         if not self.adoption_phase:
@@ -567,27 +628,29 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                     prior_qty = self.buy_order.qty
                     self.buy_order = live
                 elif side == "SELL" and self.sell_order and self.sell_order.order_id == orderId:
-                    prior_qty = self.sell_order.qty
+                    prior_qty = self._sell_working_open_qty(self.sell_order)
                     self.sell_order = live
             if prior_qty is not None and prior_qty != live.qty:
-                self.logger.info(
-                    "Order qty update id=%s side=%s qty %s->%s px=%.2f remaining=%s",
+                self._log_order_qty_update_if_changed(
                     orderId,
                     live.side,
-                    prior_qty,
-                    live.qty,
-                    live.price,
-                    live.remaining,
+                    prior_working=prior_qty,
+                    working=live.qty,
+                    total_qty=live.total_qty,
+                    filled=live.filled,
+                    px=live.price,
                 )
             else:
                 self.logger.debug(
-                    "openOrder refresh id=%s side=%s qty=%s px=%.2f status=%s remaining=%s",
+                    "openOrder refresh id=%s side=%s working=%s totalQty=%s filled=%s "
+                    "px=%.2f status=%s",
                     orderId,
                     live.side,
                     live.qty,
+                    live.total_qty,
+                    live.filled,
                     live.price,
                     live.status,
-                    live.remaining,
                 )
             return
 
@@ -619,31 +682,59 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                     self.sell_order = live
                     action = "replaced-incumbent-cancel-old"
 
-        self.logger.info(
-            "Session order inherited id=%s side=%s qty=%s px=%.2f status=%s "
-            "remaining=%s action=%s",
+        self.logger.debug(
+            "openOrder adoption id=%s side=%s totalQty=%s filled=%s working=%s "
+            "px=%.2f status=%s action=%s",
             orderId,
             live.side,
+            int(order.totalQuantity),
+            filled,
             live.qty,
             live.price,
             live.status,
-            live.remaining,
             action,
         )
 
         if extra_to_cancel is not None and extra_to_cancel.order_id != live.order_id:
             self._cancel_adopted_extra(extra_to_cancel)
 
+    def _log_session_working_order(self, label: str, live: Optional[LiveOrder]) -> None:
+        if live is None:
+            return
+        if live.side == "SELL":
+            self.logger.info(
+                "Session working %s id=%s totalQty=%s filled=%s working_remaining=%s "
+                "px=%.2f status=%s",
+                label,
+                live.order_id,
+                live.total_qty or (live.filled + live.qty),
+                live.filled,
+                live.qty,
+                live.price,
+                live.status,
+            )
+        else:
+            self.logger.info(
+                "Session working %s id=%s qty=%s px=%.2f status=%s",
+                label,
+                live.order_id,
+                live.qty,
+                live.price,
+                live.status,
+            )
+
     def openOrderEnd(self):
         """IB callback: open-order snapshot complete."""
         with self.lock:
             self.open_orders_snapshot_done = True
             self.adoption_phase = False
-            self.logger.info(
-                "Session open orders: buy=%s sell=%s",
-                self.buy_order,
-                self.sell_order,
-            )
+            buy = self.buy_order
+            sell = self.sell_order
+        if buy is None and sell is None:
+            self.logger.debug("Open-order snapshot complete (no working orders for symbol)")
+            return
+        self._log_session_working_order("buy", buy)
+        self._log_session_working_order("sell", sell)
 
     def orderStatus(
         self,
@@ -672,9 +763,18 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             if target:
                 target.status = status
                 target.filled = int(filled)
-                target.remaining = int(remaining)
                 if target.side == "SELL":
-                    target.qty = int(remaining)
+                    total = target.total_qty or (
+                        int(target.filled) + max(int(target.qty), int(remaining))
+                    )
+                    working = self._sell_working_remaining_from_ib(
+                        total, int(filled), int(remaining)
+                    )
+                    target.total_qty = total
+                    target.qty = working
+                    target.remaining = working
+                else:
+                    target.remaining = int(remaining)
 
                 if status in {"Filled", "Cancelled", "ApiCancelled", "Inactive"} and int(
                     remaining
@@ -951,11 +1051,22 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         if self.position_size <= 0:
             self.place_or_replace_sell(0, None)
 
+    def _invalid_market_should_cancel_working(self, reason: str) -> bool:
+        """Only cancel working orders for structural invalidity, not missing NBBO at startup."""
+        if not self.cancel_on_invalid_market:
+            return False
+        transient = (
+            "missing bid",
+            "missing ask",
+            "awaiting paired NBBO",
+        )
+        return not any(reason.startswith(prefix) for prefix in transient)
+
     def _abort_for_market_invalid_reason(self, reason: Optional[str]) -> bool:
         """If ``reason`` is set, optionally cancel working quotes and log; return True."""
         if reason is None:
             return False
-        if self.cancel_on_invalid_market:
+        if self._invalid_market_should_cancel_working(reason):
             self._cancel_working_quotes_flat_inventory()
         if self.log_invalid_market_reasons:
             self.logger.debug("Not quoting: %s", reason)
@@ -1049,6 +1160,15 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         if live.remaining > 0:
             return int(live.remaining)
         return int(live.qty)
+
+    def _sell_order_total_quantity(
+        self, desired_remaining: int, prior: Optional[LiveOrder]
+    ) -> int:
+        """IB ``totalQuantity`` for sells; amends must add shares already filled."""
+        remaining = max(0, int(desired_remaining))
+        if prior is None:
+            return remaining
+        return max(0, int(prior.filled)) + remaining
 
     def _needs_quote_despite_nbbo_throttle_with(
         self,
@@ -1182,8 +1302,16 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             return
 
         oid = prior.order_id if prior is not None else self.next_id()
-        prior_qty = prior.qty if prior is not None else None
-        order = self.build_lmt_order(side, qty, px)
+        if prior is not None and side == "SELL":
+            prior_qty = self._sell_working_open_qty(prior)
+        else:
+            prior_qty = prior.qty if prior is not None else None
+        ib_qty = (
+            self._sell_order_total_quantity(qty, prior)
+            if side == "SELL"
+            else qty
+        )
+        order = self.build_lmt_order(side, ib_qty, px)
         self.placeOrder(oid, self.contract, order)
         if side == "BUY":
             self.buy_order = LiveOrder(
@@ -1192,26 +1320,42 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 price=px,
                 qty=qty)
         else:
+            filled = int(prior.filled) if prior is not None else 0
             self.sell_order = LiveOrder(
                 order_id=oid,
                 side="SELL",
                 price=px,
                 qty=qty,
+                filled=filled,
                 remaining=qty,
+                total_qty=ib_qty,
             )
         if prior is None:
             self.logger.info(
                 "Order placed id=%s side=%s qty=%s px=%.2f", oid, side, qty, px
             )
         elif prior_qty != qty:
-            self.logger.info(
-                "Order qty change id=%s side=%s qty %s->%s px=%.2f",
-                oid,
-                side,
-                prior_qty,
-                qty,
-                px,
-            )
+            if side == "SELL" and int(prior.filled) > 0:
+                self.logger.info(
+                    "Order qty change id=%s side=%s remaining %s->%s "
+                    "totalQuantity %s->%s px=%.2f",
+                    oid,
+                    side,
+                    prior_qty,
+                    qty,
+                    int(prior.filled) + int(prior_qty),
+                    ib_qty,
+                    px,
+                )
+            else:
+                self.logger.info(
+                    "Order qty change id=%s side=%s qty %s->%s px=%.2f",
+                    oid,
+                    side,
+                    prior_qty,
+                    qty,
+                    px,
+                )
         else:
             self.logger.debug(
                 "Order price change id=%s side=%s qty=%s px %.4f->%.4f",

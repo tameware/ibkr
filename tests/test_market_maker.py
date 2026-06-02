@@ -310,6 +310,32 @@ class TestNbboTickImprove(unittest.TestCase):
         self.assertAlmostEqual(ns, 50.71)
 
 
+class TestInvalidMarketCancelPolicy(unittest.TestCase):
+    def test_missing_nbbo_does_not_cancel(self):
+        mm = MarketMaker.__new__(MarketMaker)
+        mm.cancel_on_invalid_market = True
+        self.assertFalse(
+            mm._invalid_market_should_cancel_working("missing bid")
+        )
+        self.assertTrue(
+            mm._invalid_market_should_cancel_working("stale quote age=999.0s")
+        )
+
+
+class TestSellWorkingRemaining(unittest.TestCase):
+    def test_ib_remaining_equals_total_uses_filled(self):
+        self.assertEqual(
+            MarketMaker._sell_working_remaining_from_ib(200, 84, 200),
+            116,
+        )
+
+    def test_normal_remaining(self):
+        self.assertEqual(
+            MarketMaker._sell_working_remaining_from_ib(200, 84, 116),
+            116,
+        )
+
+
 class TestMarketMakerStatics(unittest.TestCase):
     """Pure helpers on MarketMaker."""
 
@@ -691,6 +717,25 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.cancelOrder = Mock()
         safe_cancel_order(self.mm, 99)
         self.mm.cancelOrder.assert_not_called()
+
+    def test_sell_amend_total_quantity_includes_filled(self):
+        """Partially filled sells need totalQuantity = filled + desired remaining."""
+        self._seed_pos(116)
+        self.mm.sell_order = LiveOrder(
+            order_id=513,
+            side="SELL",
+            price=48.42,
+            qty=32,
+            status="Submitted",
+            filled=84,
+            remaining=32,
+        )
+        self.mm.placeOrder = Mock()
+        self.mm.place_or_replace_sell(116, 48.42)
+        order = self.mm.placeOrder.call_args[0][2]
+        self.assertEqual(order.totalQuantity, 200)
+        self.assertEqual(self.mm.sell_order.remaining, 116)
+        self.assertEqual(self.mm.sell_order.filled, 84)
 
     def test_place_or_replace_sell_reuses_order_id_when_price_changes(self):
         """IB modifies a limit in place when placeOrder uses the same order id (no cancel/replace)."""
