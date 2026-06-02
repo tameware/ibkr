@@ -447,15 +447,15 @@ class Trader(
         if not self._startup_open_orders_logged:
             sym = self.config["symbol"]
             if self._snapshot_open_order_lines:
-                self.logger.debug(
-                    f"Open orders at startup for {sym} ({self.config['sec_type']}): "
+                self.logger.info(
+                    f"Session open orders for {sym} ({self.config['sec_type']}): "
                     f"{len(self._snapshot_open_order_lines)}"
                 )
                 for ln in self._snapshot_open_order_lines:
-                    self.logger.debug(ln)
+                    self.logger.info(ln)
             else:
-                self.logger.debug(
-                    f"Open orders at startup for {sym} ({self.config['sec_type']}): none"
+                self.logger.info(
+                    f"Session open orders for {sym} ({self.config['sec_type']}): none"
                 )
             self._startup_open_orders_logged = True
         super().on_open_orders_snapshot_end()
@@ -579,7 +579,7 @@ class Trader(
             return False
 
         if plan.kind == "cancel":
-            self.logger.debug(
+            self.logger.info(
                 f"Cancelling {action} id={oid} (desired remaining "
                 f"{desired_remaining} < min_order_size {self.min_order_size}; "
                 f"filled={plan.filled_now})"
@@ -588,8 +588,8 @@ class Trader(
             self._clear_order_state(action)
             return True
 
-        self.logger.debug(
-            f"Modifying {action} id={oid} totalQty {current_total_qty}->{plan.new_total_qty} "
+        self.logger.info(
+            f"Order qty change {action} id={oid} totalQty {current_total_qty}->{plan.new_total_qty} "
             f"(filled={plan.filled_now} remaining {plan.remaining_now}->{desired_remaining} "
             f"lmtPrice={limit_price})"
         )
@@ -668,7 +668,7 @@ class Trader(
 
         if pos <= 0:
             if self.sell_order_id is not None:
-                self.logger.debug(
+                self.logger.info(
                     "Cancelling SELL order id=%s (flat or flat target)",
                     self.sell_order_id,
                 )
@@ -710,8 +710,8 @@ class Trader(
                 self.pending_buy = True
                 order = self.build_rel_order("BUY", buy_qty, buy_limit)
                 off = order.auxPrice
-                self.logger.debug(
-                    "Placing REL (peg primary) BUY qty=%s lmtPrice=%s auxPrice=%s id=%s",
+                self.logger.info(
+                    "Order placed REL BUY qty=%s lmtPrice=%s auxPrice=%s id=%s",
                     buy_qty,
                     buy_limit,
                     off,
@@ -723,7 +723,7 @@ class Trader(
 
         if pos >= max_pos:
             if self.buy_order_id is not None:
-                self.logger.debug(
+                self.logger.info(
                     "Cancelling BUY order id=%s (at or above max_pos)",
                     self.buy_order_id,
                 )
@@ -765,8 +765,8 @@ class Trader(
                 self.pending_sell = True
                 order = self.build_rel_order("SELL", sell_qty, sell_limit)
                 off = order.auxPrice
-                self.logger.debug(
-                    "Placing REL (peg primary) SELL qty=%s lmtPrice=%s auxPrice=%s id=%s",
+                self.logger.info(
+                    "Order placed REL SELL qty=%s lmtPrice=%s auxPrice=%s id=%s",
                     sell_qty,
                     sell_limit,
                     off,
@@ -804,8 +804,8 @@ class Trader(
             self.pending_buy = True
             order = self.build_rel_order("BUY", buy_qty, buy_limit)
             off = order.auxPrice
-            self.logger.debug(
-                "Placing REL (peg primary) BUY qty=%s lmtPrice=%s auxPrice=%s id=%s",
+            self.logger.info(
+                "Order placed REL BUY qty=%s lmtPrice=%s auxPrice=%s id=%s",
                 buy_qty,
                 buy_limit,
                 off,
@@ -838,8 +838,8 @@ class Trader(
             self.pending_sell = True
             order = self.build_rel_order("SELL", sell_qty, sell_limit)
             off = order.auxPrice
-            self.logger.debug(
-                "Placing REL (peg primary) SELL qty=%s lmtPrice=%s auxPrice=%s id=%s",
+            self.logger.info(
+                "Order placed REL SELL qty=%s lmtPrice=%s auxPrice=%s id=%s",
                 sell_qty,
                 sell_limit,
                 off,

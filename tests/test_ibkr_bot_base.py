@@ -247,6 +247,39 @@ class TestContractResolutionMixin(unittest.TestCase):
         self.assertEqual(len(stream_calls), 1)
         self.assertEqual(len(snap_calls), 1)
         self.assertEqual(stream_calls[0][0][1].exchange, "SMART")
+        snap_cancel = [
+            c for c in bot.cancelMktData.call_args_list if int(c[0][0]) == 1002
+        ]
+        self.assertEqual(snap_cancel, [])
+
+    def test_snapshot_poll_skipped_while_in_flight(self):
+        bot = _MktDataStub(
+            {
+                "symbol": "OZ",
+                "sec_type": "STK",
+                "currency": "USD",
+                "exchange": "SMART",
+            }
+        )
+        bot._market_data_snapshot_in_flight = True
+        bot._market_data_snapshot_started_ts = 100.0
+        with patch("ibkr_bot_base.time.monotonic", return_value=105.0):
+            bot.poll_market_data_snapshot()
+        bot.reqMktData.assert_not_called()
+
+    def test_tick_snapshot_end_clears_in_flight(self):
+        bot = _MktDataStub(
+            {
+                "symbol": "OZ",
+                "sec_type": "STK",
+                "currency": "USD",
+                "exchange": "SMART",
+                "market_data_snapshot_poll_seconds": 30.0,
+            }
+        )
+        bot._market_data_snapshot_in_flight = True
+        bot.tickSnapshotEnd(bot.market_data_snapshot_req_id)
+        self.assertFalse(bot._market_data_snapshot_in_flight)
 
     def test_maybe_watchdog_recover_skips_when_nbbo_ok(self):
         bot = _MktDataStub(

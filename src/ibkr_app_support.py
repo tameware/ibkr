@@ -1507,6 +1507,11 @@ def should_suppress_ib_error(
     for text in config.get("ignore_error_substrings") or []:
         if text and (text in error_text or text in reject_text):
             return True
+    try:
+        if int(error_code) == 300 and "Can't find EId" in error_text:
+            return True
+    except (TypeError, ValueError):
+        pass
     return False
 
 

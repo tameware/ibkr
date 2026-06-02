@@ -561,20 +561,34 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         )
 
         if not self.adoption_phase:
+            prior_qty: Optional[int] = None
             with self.lock:
                 if side == "BUY" and self.buy_order and self.buy_order.order_id == orderId:
+                    prior_qty = self.buy_order.qty
                     self.buy_order = live
                 elif side == "SELL" and self.sell_order and self.sell_order.order_id == orderId:
+                    prior_qty = self.sell_order.qty
                     self.sell_order = live
-            self.logger.debug(
-                "openOrder refresh id=%s side=%s qty=%s px=%.2f status=%s remaining=%s",
-                orderId,
-                live.side,
-                live.qty,
-                live.price,
-                live.status,
-                live.remaining,
-            )
+            if prior_qty is not None and prior_qty != live.qty:
+                self.logger.info(
+                    "Order qty update id=%s side=%s qty %s->%s px=%.2f remaining=%s",
+                    orderId,
+                    live.side,
+                    prior_qty,
+                    live.qty,
+                    live.price,
+                    live.remaining,
+                )
+            else:
+                self.logger.debug(
+                    "openOrder refresh id=%s side=%s qty=%s px=%.2f status=%s remaining=%s",
+                    orderId,
+                    live.side,
+                    live.qty,
+                    live.price,
+                    live.status,
+                    live.remaining,
+                )
             return
 
         extra_to_cancel = None
@@ -605,8 +619,9 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                     self.sell_order = live
                     action = "replaced-incumbent-cancel-old"
 
-        self.logger.debug(
-            "openOrder adoption id=%s side=%s qty=%s px=%.2f status=%s remaining=%s action=%s",
+        self.logger.info(
+            "Session order inherited id=%s side=%s qty=%s px=%.2f status=%s "
+            "remaining=%s action=%s",
             orderId,
             live.side,
             live.qty,
@@ -624,8 +639,8 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         with self.lock:
             self.open_orders_snapshot_done = True
             self.adoption_phase = False
-            self.logger.debug(
-                "Open orders snapshot complete. Adopted buy_order=%s sell_order=%s",
+            self.logger.info(
+                "Session open orders: buy=%s sell=%s",
                 self.buy_order,
                 self.sell_order,
             )
@@ -1122,7 +1137,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 elif side == "SELL" and self.sell_order and self.sell_order.order_id == oid:
                     self.sell_order = None
 
-            self.logger.debug("Cancel order id=%s side=%s px=%.2f qty=%s", oid, side, px, qty)
+            self.logger.info("Cancel order id=%s side=%s px=%.2f qty=%s", oid, side, px, qty)
         except Exception as e:
             self.logger.exception("Cancel failed for order id=%s side=%s: %s", oid, side, e)
 
@@ -1167,6 +1182,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             return
 
         oid = prior.order_id if prior is not None else self.next_id()
+        prior_qty = prior.qty if prior is not None else None
         order = self.build_lmt_order(side, qty, px)
         self.placeOrder(oid, self.contract, order)
         if side == "BUY":
@@ -1183,7 +1199,28 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 qty=qty,
                 remaining=qty,
             )
-        self.logger.debug("%s working id=%s qty=%s px=%.2f", side, oid, qty, px)
+        if prior is None:
+            self.logger.info(
+                "Order placed id=%s side=%s qty=%s px=%.2f", oid, side, qty, px
+            )
+        elif prior_qty != qty:
+            self.logger.info(
+                "Order qty change id=%s side=%s qty %s->%s px=%.2f",
+                oid,
+                side,
+                prior_qty,
+                qty,
+                px,
+            )
+        else:
+            self.logger.debug(
+                "Order price change id=%s side=%s qty=%s px %.4f->%.4f",
+                oid,
+                side,
+                qty,
+                prior.price,
+                px,
+            )
 
     def place_or_replace_buy(self, qty: int, px: Optional[float]):
         """Place or replace buy."""

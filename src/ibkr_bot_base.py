@@ -182,6 +182,11 @@ class ContractResolutionMixin:
         self._watchdog_resubscribe_count = 0
         self._last_watchdog_resubscribe_ts = 0.0
         self._last_snapshot_poll_ts = 0.0
+        self._market_data_snapshot_in_flight = False
+        self._market_data_snapshot_started_ts = 0.0
+        self.market_data_snapshot_timeout_seconds = float(
+            config.get("market_data_snapshot_timeout_seconds", 10.0)
+        )
         self.market_data_stall_seconds = float(
             config.get("market_data_stall_seconds", 15.0)
         )
@@ -278,6 +283,11 @@ class ContractResolutionMixin:
         """Record that a market data callback arrived (for stall recovery)."""
         self._market_data_last_tick_ts = time.monotonic()
 
+    def tickSnapshotEnd(self, reqId: int) -> None:
+        """IB callback: snapshot ``reqMktData`` finished (allows another poll)."""
+        if int(reqId) in {int(x) for x in self.market_data_snapshot_req_ids()}:
+            self._market_data_snapshot_in_flight = False
+
     def maybe_recover_stalled_market_data(self) -> None:
         """Re-subscribe on the primary exchange if no ticks arrive after subscribe."""
         if (
@@ -331,18 +341,26 @@ class ContractResolutionMixin:
         snap_ids = list(self.market_data_snapshot_req_ids())
         if not snap_ids or self.shutdown_flag or not self.isConnected():
             return
+        if self._market_data_snapshot_in_flight:
+            elapsed = time.monotonic() - self._market_data_snapshot_started_ts
+            if elapsed < self.market_data_snapshot_timeout_seconds:
+                return
+            self._market_data_snapshot_in_flight = False
         contract = self.market_data_contract()
         md_type = self._market_data_type_for_subscribe()
+        if md_type is not None and hasattr(self, "reqMarketDataType"):
+            self.reqMarketDataType(int(md_type))
         for req_id in snap_ids:
             subscribe_stock_nbbo_market_data(
                 self,
                 int(req_id),
                 contract,
                 live=md_type is None,
-                cancel_first=True,
+                cancel_first=False,
                 snapshot=True,
-                market_data_type=md_type,
             )
+        self._market_data_snapshot_in_flight = True
+        self._market_data_snapshot_started_ts = time.monotonic()
         self.logger.debug(
             "NBBO snapshot poll reqIds=%s exchange=%s primaryExchange=%s conId=%s",
             snap_ids,
@@ -380,7 +398,7 @@ class ContractResolutionMixin:
                 and self._watchdog_resubscribe_count % 3 == 0
             ):
                 self._market_data_use_delayed = True
-                self.logger.warning(
+                self.logger.debug(
                     "Watchdog: enabling delayed market data (type 3) after %s resubscribes",
                     self._watchdog_resubscribe_count,
                 )
@@ -388,7 +406,7 @@ class ContractResolutionMixin:
             if nbbo is not None:
                 nbbo.reset()
             contract = self.market_data_contract()
-            self.logger.warning(
+            self.logger.debug(
                 "Watchdog: force re-subscribe route=%s exchange=%s (attempt %s)",
                 self._market_data_route,
                 getattr(contract, "exchange", None),

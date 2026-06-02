@@ -692,6 +692,13 @@ class TestIbErrorFiltering(unittest.TestCase):
             should_suppress_ib_error(self._CFG, 10000, "Error: HMDS connection issue")
         )
 
+    def test_should_suppress_cancel_unknown_ticker_300(self):
+        self.assertTrue(
+            should_suppress_ib_error(
+                self._CFG, 300, "Can't find EId with tickerId:1002"
+            )
+        )
+
     def test_should_suppress_data_farm_in_reject_json(self):
         self.assertTrue(
             should_suppress_ib_error(

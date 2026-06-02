@@ -948,18 +948,18 @@ class TestStartupOpenOrders(unittest.TestCase):
         state = MagicMock()
         state.status = "Submitted"
         t.reqOpenOrders = Mock()
-        with patch.object(t.logger, "debug") as tp:
+        with patch.object(t.logger, "info") as tp:
             t.request_open_orders_snapshot()
             t.openOrder(7, contract, order, state)
             t.openOrderEnd()
         lines = [_log_line(c) for c in tp.call_args_list]
-        self.assertTrue(any("Open orders at startup for TEST" in x for x in lines))
+        self.assertTrue(any("Session open orders for TEST" in x for x in lines))
         self.assertTrue(any("id=7" in x for x in lines))
 
         with patch.object(t.logger, "info") as tp2:
             t.openOrderEnd()
         self.assertFalse(
-            any("Open orders at startup" in _log_line(c) for c in tp2.call_args_list)
+            any("Session open orders" in _log_line(c) for c in tp2.call_args_list)
         )
 
 
