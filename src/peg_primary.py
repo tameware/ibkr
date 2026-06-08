@@ -46,7 +46,7 @@ import argparse
 import datetime
 import sys
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 from ibkr_app_support import (
     PositionLedger,
@@ -173,6 +173,9 @@ class Trader(
         self._startup_open_orders_logged = False
         self.order_working_lmt: Dict[int, float] = {}
         self.order_working_aux: Dict[int, float] = {}
+        self._last_nbbo_quoting_log_key: Optional[
+            Tuple[float, float, float, float, int]
+        ] = None
 
         self.ib_client_id = ib_client_id_from_config(config, default=1)
         self.ledger = PositionLedger.open(
@@ -665,6 +668,28 @@ class Trader(
         max_pos = int(self.config["max_pos"])
 
         buy_limit, sell_limit = self.adjusted_rel_limits()
+        bid = float(self._bid)
+        ask = float(self._ask)
+        mid = self._nbbo_mid_rounded()
+        quoting_key = (
+            round(bid, self._digits),
+            round(ask, self._digits),
+            round(buy_limit, self._digits),
+            round(sell_limit, self._digits),
+            int(pos),
+        )
+        if quoting_key != self._last_nbbo_quoting_log_key:
+            self._last_nbbo_quoting_log_key = quoting_key
+            self.logger.info(
+                "NBBO for quoting bid=%.2f ask=%.2f mid=%.2f pos=%s "
+                "-> buy_limit=%.2f sell_limit=%.2f",
+                bid,
+                ask,
+                mid,
+                pos,
+                buy_limit,
+                sell_limit,
+            )
 
         if pos <= 0:
             if self.sell_order_id is not None:

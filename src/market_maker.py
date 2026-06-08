@@ -1567,8 +1567,8 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             None if sell_qty <= 0 else round(float(sell_px), 2),
         )
         msg = (
-            "Quote decision nbbo=%.2f x %.2f (bid_sz=%s ask_sz=%s) pos=%s avg_cost=%.4f "
-            "desired_buy=%s@%s desired_sell=%s@%s"
+            "NBBO for quoting bid=%.2f ask=%.2f (bid_sz=%s ask_sz=%s) pos=%s "
+            "avg_cost=%.4f -> buy=%s@%s sell=%s@%s"
         )
         log_args = (
             log_bid,
@@ -1584,7 +1584,9 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         )
         if decision_key != self._last_quote_decision_log_key:
             self._last_quote_decision_log_key = decision_key
-        self.logger.debug(msg, *log_args)
+            self.logger.info(msg, *log_args)
+        else:
+            self.logger.debug(msg, *log_args)
 
     def watchdog_loop(self):
         """Background loop: session hours, stale-quote cancel, and quote refresh."""
