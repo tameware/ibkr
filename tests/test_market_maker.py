@@ -383,7 +383,6 @@ class TestMarketMakerCore(unittest.TestCase):
             "min_spread": 0.05,
             "inside_improve": 0.10,
             "inventory_penalty_per_100": 0.05,
-            "target_roundtrip_capture": 0.30,
             "quote_refresh_seconds": 3.0,
             "max_market_stale_seconds": 60.0,
             "mid_delta": 0.01,

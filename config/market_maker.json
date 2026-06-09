@@ -21,8 +21,6 @@
     "//": "Step bid/ask inside spread for more fills (was 0.02)",
     "inventory_penalty_per_100": 0.03,
     "//": "Lower skew when long so buys stay nearer the bid (was 0.08)",
-    "target_roundtrip_capture": 0.01,
-    "//": "Min profit vs avg cost on sells; lower = accept smaller edge (was 0.02)",
     "mid_delta": 0.03,
     "//": "Overrides base.json; lower = buy/sell closer to mid (more aggressive)",
     "quote_refresh_seconds": 1.5,

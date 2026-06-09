@@ -141,9 +141,6 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         self.inventory_penalty_per_100 = float(
             config.get("inventory_penalty_per_100", 0.05)
         )
-        self.target_roundtrip_capture = float(
-            config.get("target_roundtrip_capture", 0.30)
-        )
         self.quote_refresh_seconds = float(config.get("quote_refresh_seconds", 3.0))
         self._nbbo_throttle = NbboThrottle(
             self.quote_refresh_seconds,
@@ -1113,9 +1110,6 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         buy_px -= skew
         sell_px -= min(skew * 2.0, spread * 0.20)
 
-        if position_size > 0 and avg_cost > 0:
-            sell_floor = avg_cost + self.target_roundtrip_capture
-            sell_px = max(sell_px, sell_floor)
         if position_size > 0:
             sell_px = clamp_sell_to_avg_cost_floor(sell_px, avg_cost, self.config)
 
@@ -1661,7 +1655,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min_spread", type=float)
     parser.add_argument("--inside_improve", type=float)
     parser.add_argument("--inventory_penalty_per_100", type=float)
-    parser.add_argument("--target_roundtrip_capture", type=float)
     parser.add_argument("--quote_refresh_seconds", type=float)
     parser.add_argument("--max_market_stale_seconds", type=float)
 
