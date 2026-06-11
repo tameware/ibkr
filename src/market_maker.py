@@ -82,7 +82,6 @@ class QuoteMgmtSnapshot:
     position_size: int
     gross_shares_traded: int
     avg_cost: float
-    buy_shares_filled: int
     max_sell: int
     last_quote_eval: float
     last_nbbo_snap: Optional[Tuple[Optional[float], Optional[float], int, int]]
@@ -149,11 +148,6 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         self.max_market_stale_seconds = float(
             config.get("max_market_stale_seconds", 15.0)
         )
-        _mbd = config.get("max_buy_shares_per_run")
-        self.max_buy_shares_per_run: Optional[int] = (
-            None if _mbd is None else int(_mbd)
-        )
-
         self.cancel_on_invalid_market = _cfg_bool(
             config, "cancel_on_invalid_market", True
         )
@@ -201,7 +195,6 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
 
         self.gross_shares_traded = 0
         self.realized_pnl = 0.0
-        self.buy_shares_filled = 0
 
         self.last_quote_eval = 0.0
         self._session_nbbo_logged = False
@@ -827,8 +820,6 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 self.realized_pnl += sellable * (px - self.ledger.avg_cost)
 
             self.gross_shares_traded += shares
-            if side == "BUY":
-                self.buy_shares_filled += shares
 
             exec_id = getattr(execution, "execId", None)
             if self.ledger.apply_fill(side, shares, px, exec_id=exec_id):
@@ -974,15 +965,12 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         return o
 
     def can_open_new_long(self) -> bool:
-        """True if position/gross/per-run buy caps allow another buy."""
+        """True if position and gross share caps allow another buy."""
         with self.lock:
             if self.position_size >= self.max_position:
                 return False
             if self.gross_shares_traded >= self.max_gross_shares:
                 return False
-            if self.max_buy_shares_per_run is not None:
-                if self.buy_shares_filled >= self.max_buy_shares_per_run:
-                    return False
             return True
 
     def max_sellable_qty(self) -> int:
@@ -1146,18 +1134,15 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             return None, None
         return self._compute_desired_quotes_for(bid, ask, self.position_size, self.avg_cost)
 
-    def _desired_sizes_for(self, position_size: int, buy_shares_filled: int) -> Tuple[int, int]:
-        """Return ``(buy_qty, sell_qty)`` for the given position and buy fill tally."""
+    def _desired_sizes_for(self, position_size: int) -> Tuple[int, int]:
+        """Return ``(buy_qty, sell_qty)`` for the given position."""
         buy_qty = min(self.base_qty, max(0, self.max_position - position_size))
-        if self.max_buy_shares_per_run is not None:
-            room = max(0, self.max_buy_shares_per_run - buy_shares_filled)
-            buy_qty = min(buy_qty, room)
         sell_qty = max_sell_shares(self.ledger)
         return buy_qty, sell_qty
 
     def desired_sizes(self):
         """Current ``(buy_qty, sell_qty)`` from live position state."""
-        return self._desired_sizes_for(self.position_size, self.buy_shares_filled)
+        return self._desired_sizes_for(self.position_size)
 
     def _sell_working_open_qty(self, live: LiveOrder) -> int:
         """Working size for a sell (prefer IB ``remaining``, else last ``qty``)."""
@@ -1396,7 +1381,6 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 position_size=self.position_size,
                 gross_shares_traded=self.gross_shares_traded,
                 avg_cost=self.avg_cost,
-                buy_shares_filled=self.buy_shares_filled,
                 max_sell=max_sell_shares(self.ledger),
                 last_quote_eval=self.last_quote_eval,
                 last_nbbo_snap=self._nbbo_throttle.last_key,
@@ -1436,7 +1420,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         if not self._quotes_pair_is_valid(buy_px, sell_px):
             return QuotePipelineInvalidPair(False, buy_px, sell_px)
 
-        buy_qty, sell_qty = self._desired_sizes_for(snap.position_size, snap.buy_shares_filled)
+        buy_qty, sell_qty = self._desired_sizes_for(snap.position_size)
 
         sell_qty = min(sell_qty, snap.max_sell)
         if snap.max_sell <= 0:
@@ -1628,7 +1612,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base_qty", type=int)
     parser.add_argument("--max_position", type=int)
     parser.add_argument("--max_gross_shares", type=int)
-    parser.add_argument("--max_buy_shares_per_run", type=int)
     parser.add_argument("--min_inventory_before_offering", type=int)
     parser.add_argument("--min_spread", type=float)
     parser.add_argument("--inside_improve", type=float)

@@ -14,7 +14,6 @@
     "max_position": 200,
     "max_gross_shares": 4000,
     "//": "Daily share-turn cap (buy + sell fills); raise for more volume",
-    "max_buy_shares_per_run": 4000,
     "min_spread": 0.03,
     "//": "Still quote when NBBO spread is at least this wide",
     "inside_improve": 0.04,

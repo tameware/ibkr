@@ -558,13 +558,6 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertEqual(b, 100)
         self.assertEqual(s, 50)
 
-    def test_desired_sizes_caps_buy_by_max_buy_shares_per_run(self):
-        self.mm.max_buy_shares_per_run = 30
-        self.mm.buy_shares_filled = 25
-        self._seed_pos(0)
-        b, _ = self.mm.desired_sizes()
-        self.assertEqual(b, 5)
-
     def test_is_same_order(self):
         live = LiveOrder(
             order_id=1,
