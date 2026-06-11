@@ -204,20 +204,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         self.buy_shares_filled = 0
 
         self.last_quote_eval = 0.0
-        self._last_quote_decision_log_key: Optional[
-            Tuple[
-                Optional[float],
-                Optional[float],
-                int,
-                int,
-                int,
-                float,
-                int,
-                Optional[float],
-                int,
-                Optional[float],
-            ]
-        ] = None
+        self._session_nbbo_logged = False
         self._last_tick_size_log_key: Optional[
             Tuple[int, int, Optional[float], Optional[float], int, int]
         ] = None
@@ -408,6 +395,28 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 e,
             )
 
+    def _format_nbbo_for_log(self) -> str:
+        """Current NBBO snapshot for log lines (call under ``self.lock`` or accept race)."""
+        with self.lock:
+            bid = self.quote.bid
+            ask = self.quote.ask
+            bid_sz = self.quote.bid_size
+            ask_sz = self.quote.ask_size
+        if bid is None or ask is None:
+            return "NBBO bid=? ask=?"
+        return (
+            f"NBBO bid={float(bid):.2f} ask={float(ask):.2f} "
+            f"bid_sz={bid_sz} ask_sz={ask_sz}"
+        )
+
+    def _log_session_nbbo_once(self) -> None:
+        """Log NBBO once per session when the first paired quote arrives."""
+        with self.lock:
+            if self._session_nbbo_logged:
+                return
+            self._session_nbbo_logged = True
+        self.logger.info("%s (session start)", self._format_nbbo_for_log())
+
     def _on_coalesced_nbbo(self, bid: float, ask: float) -> None:
         """Update ``ref_price`` from coalesced bid/ask mid."""
         log_msg = None
@@ -423,6 +432,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                     f"NBBO coalesced bid={bid:.2f} ask={ask:.2f} "
                     f"bid_sz={self.quote.bid_size} ask_sz={self.quote.ask_size}"
                 )
+        self._log_session_nbbo_once()
         if log_msg:
             self.logger.info(log_msg)
         self.maybe_manage_quotes()
@@ -1326,13 +1336,18 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             )
         if prior is None:
             self.logger.info(
-                "Order placed id=%s side=%s qty=%s px=%.2f", oid, side, qty, px
+                "Order placed id=%s side=%s qty=%s px=%.2f [%s]",
+                oid,
+                side,
+                qty,
+                px,
+                self._format_nbbo_for_log(),
             )
         elif prior_qty != qty:
             if side == "SELL" and int(prior.filled) > 0:
                 self.logger.info(
                     "Order qty change id=%s side=%s remaining %s->%s "
-                    "totalQuantity %s->%s px=%.2f",
+                    "totalQuantity %s->%s px=%.2f [%s]",
                     oid,
                     side,
                     prior_qty,
@@ -1340,24 +1355,27 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                     int(prior.filled) + int(prior_qty),
                     ib_qty,
                     px,
+                    self._format_nbbo_for_log(),
                 )
             else:
                 self.logger.info(
-                    "Order qty change id=%s side=%s qty %s->%s px=%.2f",
+                    "Order qty change id=%s side=%s qty %s->%s px=%.2f [%s]",
                     oid,
                     side,
                     prior_qty,
                     qty,
                     px,
+                    self._format_nbbo_for_log(),
                 )
-        else:
-            self.logger.debug(
-                "Order price change id=%s side=%s qty=%s px %.4f->%.4f",
+        elif abs(float(px) - float(prior.price)) > 0.01:
+            self.logger.info(
+                "Order price change id=%s side=%s qty=%s px %.2f->%.2f [%s]",
                 oid,
                 side,
                 qty,
                 prior.price,
                 px,
+                self._format_nbbo_for_log(),
             )
 
     def place_or_replace_buy(self, qty: int, px: Optional[float]):
@@ -1541,46 +1559,6 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
 
         with self.lock:
             self._nbbo_throttle.mark_ran(nbbo_key)
-
-        log_bid = self.quote.bid
-        log_ask = self.quote.ask
-        log_bid_sz = self.quote.bid_size
-        log_ask_sz = self.quote.ask_size
-        log_pos = self.position_size
-        log_avg = self.avg_cost
-        decision_key = (
-            None if log_bid is None else round(float(log_bid), 2),
-            None if log_ask is None else round(float(log_ask), 2),
-            int(log_bid_sz),
-            int(log_ask_sz),
-            int(log_pos),
-            round(float(log_avg), 4),
-            int(buy_qty),
-            None if buy_qty <= 0 else round(float(buy_px), 2),
-            int(sell_qty),
-            None if sell_qty <= 0 else round(float(sell_px), 2),
-        )
-        msg = (
-            "NBBO for quoting bid=%.2f ask=%.2f (bid_sz=%s ask_sz=%s) pos=%s "
-            "avg_cost=%.4f -> buy=%s@%s sell=%s@%s"
-        )
-        log_args = (
-            log_bid,
-            log_ask,
-            log_bid_sz,
-            log_ask_sz,
-            log_pos,
-            log_avg,
-            buy_qty,
-            buy_px,
-            sell_qty,
-            sell_px,
-        )
-        if decision_key != self._last_quote_decision_log_key:
-            self._last_quote_decision_log_key = decision_key
-            self.logger.info(msg, *log_args)
-        else:
-            self.logger.debug(msg, *log_args)
 
     def watchdog_loop(self):
         """Background loop: session hours, stale-quote cancel, and quote refresh."""

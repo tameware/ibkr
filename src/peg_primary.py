@@ -46,7 +46,7 @@ import argparse
 import datetime
 import sys
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from ibkr_app_support import (
     PositionLedger,
@@ -173,9 +173,7 @@ class Trader(
         self._startup_open_orders_logged = False
         self.order_working_lmt: Dict[int, float] = {}
         self.order_working_aux: Dict[int, float] = {}
-        self._last_nbbo_quoting_log_key: Optional[
-            Tuple[float, float, float, float, int]
-        ] = None
+        self._session_nbbo_logged = False
 
         self.ib_client_id = ib_client_id_from_config(config, default=1)
         self.ledger = PositionLedger.open(
@@ -382,8 +380,20 @@ class Trader(
             return
         self.note_market_data_tick()
 
+    def _format_nbbo_for_log(self) -> str:
+        if not self._has_valid_nbbo():
+            return "NBBO bid=? ask=?"
+        return f"NBBO bid={float(self._bid):.2f} ask={float(self._ask):.2f}"
+
+    def _log_session_nbbo_once(self) -> None:
+        if self._session_nbbo_logged or not self._has_valid_nbbo():
+            return
+        self._session_nbbo_logged = True
+        self.logger.info("%s (session start)", self._format_nbbo_for_log())
+
     def _on_coalesced_nbbo(self, bid: float, ask: float) -> None:
         """Update ``ref_price`` from coalesced bid/ask mid."""
+        self._log_session_nbbo_once()
         if self._has_valid_nbbo():
             self.maybe_sync_orders_from_nbbo()
 
@@ -594,7 +604,7 @@ class Trader(
         self.logger.info(
             f"Order qty change {action} id={oid} totalQty {current_total_qty}->{plan.new_total_qty} "
             f"(filled={plan.filled_now} remaining {plan.remaining_now}->{desired_remaining} "
-            f"lmtPrice={limit_price})"
+            f"lmtPrice={limit_price}) [{self._format_nbbo_for_log()}]"
         )
         order = self.build_rel_order(action, plan.new_total_qty, limit_price)
         self.placeOrder(oid, self.contract, order)
@@ -643,12 +653,11 @@ class Trader(
             old_a, self._digits
         ) == round(new_a, self._digits):
             return False
-        mid = self._nbbo_mid_rounded()
-        self.logger.debug(
-            f"Updating {action} id={oid} lmtPrice {old_l}->{new_l} "
-            f"auxPrice {old_a}->{new_a} (totalQty={total_qty} "
-            f"bid={self._bid} ask={self._ask} mid={mid})"
-        )
+        if abs(new_l - old_l) > 0.01:
+            self.logger.info(
+                f"Order price change {action} id={oid} lmtPrice {old_l}->{new_l} "
+                f"auxPrice {old_a}->{new_a} (totalQty={total_qty}) [{self._format_nbbo_for_log()}]"
+            )
         self.placeOrder(oid, self.contract, new_order)
         self._note_order_cache(oid, new_order)
         return True
@@ -668,28 +677,6 @@ class Trader(
         max_pos = int(self.config["max_pos"])
 
         buy_limit, sell_limit = self.adjusted_rel_limits()
-        bid = float(self._bid)
-        ask = float(self._ask)
-        mid = self._nbbo_mid_rounded()
-        quoting_key = (
-            round(bid, self._digits),
-            round(ask, self._digits),
-            round(buy_limit, self._digits),
-            round(sell_limit, self._digits),
-            int(pos),
-        )
-        if quoting_key != self._last_nbbo_quoting_log_key:
-            self._last_nbbo_quoting_log_key = quoting_key
-            self.logger.info(
-                "NBBO for quoting bid=%.2f ask=%.2f mid=%.2f pos=%s "
-                "-> buy_limit=%.2f sell_limit=%.2f",
-                bid,
-                ask,
-                mid,
-                pos,
-                buy_limit,
-                sell_limit,
-            )
 
         if pos <= 0:
             if self.sell_order_id is not None:
@@ -736,11 +723,12 @@ class Trader(
                 order = self.build_rel_order("BUY", buy_qty, buy_limit)
                 off = order.auxPrice
                 self.logger.info(
-                    "Order placed REL BUY qty=%s lmtPrice=%s auxPrice=%s id=%s",
+                    "Order placed REL BUY qty=%s lmtPrice=%s auxPrice=%s id=%s [%s]",
                     buy_qty,
                     buy_limit,
                     off,
                     oid,
+                    self._format_nbbo_for_log(),
                 )
                 self.placeOrder(oid, self.contract, order)
                 self._note_order_cache(oid, order)
@@ -791,11 +779,12 @@ class Trader(
                 order = self.build_rel_order("SELL", sell_qty, sell_limit)
                 off = order.auxPrice
                 self.logger.info(
-                    "Order placed REL SELL qty=%s lmtPrice=%s auxPrice=%s id=%s",
+                    "Order placed REL SELL qty=%s lmtPrice=%s auxPrice=%s id=%s [%s]",
                     sell_qty,
                     sell_limit,
                     off,
                     oid,
+                    self._format_nbbo_for_log(),
                 )
                 self.placeOrder(oid, self.contract, order)
                 self._note_order_cache(oid, order)
@@ -830,11 +819,12 @@ class Trader(
             order = self.build_rel_order("BUY", buy_qty, buy_limit)
             off = order.auxPrice
             self.logger.info(
-                "Order placed REL BUY qty=%s lmtPrice=%s auxPrice=%s id=%s",
+                "Order placed REL BUY qty=%s lmtPrice=%s auxPrice=%s id=%s [%s]",
                 buy_qty,
                 buy_limit,
                 off,
                 oid,
+                self._format_nbbo_for_log(),
             )
             self.placeOrder(oid, self.contract, order)
             self._note_order_cache(oid, order)
@@ -864,11 +854,12 @@ class Trader(
             order = self.build_rel_order("SELL", sell_qty, sell_limit)
             off = order.auxPrice
             self.logger.info(
-                "Order placed REL SELL qty=%s lmtPrice=%s auxPrice=%s id=%s",
+                "Order placed REL SELL qty=%s lmtPrice=%s auxPrice=%s id=%s [%s]",
                 sell_qty,
                 sell_limit,
                 off,
                 oid,
+                self._format_nbbo_for_log(),
             )
             self.placeOrder(oid, self.contract, order)
             self._note_order_cache(oid, order)
