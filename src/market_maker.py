@@ -20,9 +20,11 @@ from ibkr_app_support import (
     PositionLedger,
     add_config_argument,
     add_ib_connection_arguments,
+    add_ignore_ledger_argument,
     add_logging_arguments,
     add_never_sell_below_avg_cost_argument,
     add_session_hours_arguments,
+    average_cost_after_purchase,
     cfg_bool as _cfg_bool,
     execution_belongs_to_client,
     execution_fill_tuple,
@@ -167,6 +169,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             config.get("min_quote_spread_cents", 50.0)
         )
         self.min_tick = float(config.get("min_tick", 0.01))
+        self.ignore_ledger = _cfg_bool(config, "ignore_ledger", False)
 
         self.lock = threading.RLock()
         self.connected_flag = False
@@ -214,21 +217,26 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         self.ledger = PositionLedger.open(
             "market_maker", config, client_id=self.client_id, account=raw_acct
         )
-        sync_attrs_from_ledger(
-            self.ledger,
-            self,
-            qty_attr="position_size",
-            avg_attr="avg_cost",
-            clamp_qty_nonneg=True,
-        )
+        if not self.ignore_ledger:
+            sync_attrs_from_ledger(
+                self.ledger,
+                self,
+                qty_attr="position_size",
+                avg_attr="avg_cost",
+                clamp_qty_nonneg=True,
+            )
         self.logger.info(
-            "market_maker %s %s/%s client_id=%s ledger_qty=%s avg=%.4f",
+            "market_maker %s %s/%s client_id=%s ignore_ledger=%s "
+            "ledger_qty=%s ledger_avg=%.4f pos=%s avg=%.4f",
             self.contract.symbol,
             self.contract.exchange,
             self.contract.primaryExchange,
             self.client_id,
+            self.ignore_ledger,
             self.ledger.qty,
             self.ledger.avg_cost_per_share,
+            self.position_size,
+            self.avg_cost,
         )
 
     def market_data_req_ids(self):
@@ -492,6 +500,41 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         if updated:
             self.maybe_manage_quotes()
 
+    def _apply_ib_position(self, qty: int, avg_cost: float) -> None:
+        """Set ``position_size`` / ``avg_cost`` from IB (caller holds ``self.lock``)."""
+        self.position_size = max(0, int(qty))
+        self.avg_cost = float(avg_cost) if self.position_size > 0 else 0.0
+
+    def _apply_fill_to_trading_position(
+        self, side: str, shares: int, px: float
+    ) -> None:
+        """Update in-memory position from a fill when ``ignore_ledger`` (caller holds lock)."""
+        shares = int(shares)
+        if shares <= 0:
+            return
+        px = float(px)
+        pos = int(self.position_size)
+        avg = float(self.avg_cost)
+        if side == "BUY":
+            if pos >= 0:
+                avg = average_cost_after_purchase(pos, avg, shares, px)
+            pos += shares
+        else:
+            sold = min(shares, max(0, pos))
+            if sold > 0 and avg > 0:
+                self.realized_pnl += sold * (px - avg)
+            pos -= sold
+            if pos <= 0:
+                avg = 0.0
+        self.position_size = max(0, pos)
+        self.avg_cost = avg if self.position_size > 0 else 0.0
+
+    def _max_sell_qty(self) -> int:
+        """Shares available to sell (ledger-capped, or full IB position when ignoring ledger)."""
+        if self.ignore_ledger:
+            return max(0, int(self.position_size))
+        return max_sell_shares(self.ledger)
+
     def position(self, account, contract, position, avgCost):
         """IB callback: reconcile IB position snapshot with ledger."""
         if contract.symbol != self.contract.symbol or contract.secType != self.contract.secType:
@@ -499,31 +542,40 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         if self.account_filter and account != self.account_filter:
             return
 
+        ib_qty = int(position)
+        ib_avg = float(avgCost)
         with self.lock:
             self.account = account
-            handle_ledger_ib_position(
-                self.ledger,
-                account,
-                int(position),
-                float(avgCost),
-                contract=contract,
-                logger=self.logger,
-            )
-            sync_attrs_from_ledger(
-                self.ledger,
-                self,
-                qty_attr="position_size",
-                avg_attr="avg_cost",
-                clamp_qty_nonneg=True,
-            )
+            if self.ignore_ledger:
+                self.ledger.record_ib_snapshot(account, ib_qty)
+                self.ledger.save()
+                self._apply_ib_position(ib_qty, ib_avg)
+            else:
+                handle_ledger_ib_position(
+                    self.ledger,
+                    account,
+                    ib_qty,
+                    ib_avg,
+                    contract=contract,
+                    logger=self.logger,
+                )
+                sync_attrs_from_ledger(
+                    self.ledger,
+                    self,
+                    qty_attr="position_size",
+                    avg_attr="avg_cost",
+                    clamp_qty_nonneg=True,
+                )
 
         self.logger.debug(
-            "Position update account=%s symbol=%s ledger_qty=%s "
-            "ledger_avg_cost_per_share=%.4f ib_snapshot_qty=%s",
+            "Position update account=%s symbol=%s ignore_ledger=%s pos=%s "
+            "avg=%.4f ledger_qty=%s ib_snapshot_qty=%s",
             account,
             contract.symbol,
+            self.ignore_ledger,
             self.position_size,
             self.avg_cost,
+            self.ledger.qty,
             self.ledger.ib_snapshot_qty,
         )
 
@@ -815,22 +867,29 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         side_raw = str(getattr(execution, "side", "")).upper()
 
         with self.lock:
-            if side_raw in ("SLD", "SELL") and self.ledger.qty > 0 and self.ledger.avg_cost > 0:
-                sellable = min(self.ledger.qty, shares)
-                self.realized_pnl += sellable * (px - self.ledger.avg_cost)
-
             self.gross_shares_traded += shares
 
-            exec_id = getattr(execution, "execId", None)
-            if self.ledger.apply_fill(side, shares, px, exec_id=exec_id):
-                sync_attrs_from_ledger(
-                    self.ledger,
-                    self,
-                    qty_attr="position_size",
-                    avg_attr="avg_cost",
-                    clamp_qty_nonneg=True,
-                )
-                self.ledger.save()
+            if self.ignore_ledger:
+                self._apply_fill_to_trading_position(side, shares, px)
+            else:
+                if (
+                    side_raw in ("SLD", "SELL")
+                    and self.ledger.qty > 0
+                    and self.ledger.avg_cost > 0
+                ):
+                    sellable = min(self.ledger.qty, shares)
+                    self.realized_pnl += sellable * (px - self.ledger.avg_cost)
+
+                exec_id = getattr(execution, "execId", None)
+                if self.ledger.apply_fill(side, shares, px, exec_id=exec_id):
+                    sync_attrs_from_ledger(
+                        self.ledger,
+                        self,
+                        qty_attr="position_size",
+                        avg_attr="avg_cost",
+                        clamp_qty_nonneg=True,
+                    )
+                    self.ledger.save()
 
         self.logger.info(
             "Fill %s %s @ %.4f pos=%s gross=%s pnl=%.2f",
@@ -974,8 +1033,8 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             return True
 
     def max_sellable_qty(self) -> int:
-        """Shares available to sell per ledger (non-negative qty)."""
-        return max_sell_shares(self.ledger)
+        """Shares available to sell (non-negative qty)."""
+        return self._max_sell_qty()
 
     def _market_invalid_reason_for_nbbo(
         self,
@@ -1137,7 +1196,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
     def _desired_sizes_for(self, position_size: int) -> Tuple[int, int]:
         """Return ``(buy_qty, sell_qty)`` for the given position."""
         buy_qty = min(self.base_qty, max(0, self.max_position - position_size))
-        sell_qty = max_sell_shares(self.ledger)
+        sell_qty = self._max_sell_qty()
         return buy_qty, sell_qty
 
     def desired_sizes(self):
@@ -1381,7 +1440,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 position_size=self.position_size,
                 gross_shares_traded=self.gross_shares_traded,
                 avg_cost=self.avg_cost,
-                max_sell=max_sell_shares(self.ledger),
+                max_sell=self._max_sell_qty(),
                 last_quote_eval=self.last_quote_eval,
                 last_nbbo_snap=self._nbbo_throttle.last_key,
                 quote_bid=self.quote.bid,
@@ -1633,6 +1692,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Cancel tracked BUY/SELL quotes before disconnect (default: false)",
     )
     add_never_sell_below_avg_cost_argument(parser)
+    add_ignore_ledger_argument(parser)
 
     parser.add_argument(
         "--log_bid_ask_ticks",

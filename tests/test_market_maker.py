@@ -558,6 +558,29 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertEqual(b, 100)
         self.assertEqual(s, 50)
 
+    def test_ignore_ledger_logs_flag_on_startup(self):
+        cfg = {**self.base_config, "ignore_ledger": True}
+        with patch("ibkr_bot_base.build_logger", return_value=MagicMock()) as bl:
+            MarketMaker(cfg)
+        logger = bl.return_value
+        startup = next(
+            c
+            for c in logger.info.call_args_list
+            if c.args and "ignore_ledger=%s" in str(c.args[0])
+        )
+        self.assertTrue(startup.args[4])
+
+    def test_ignore_ledger_uses_ib_position(self):
+        cfg = {**self.base_config, "ignore_ledger": True}
+        mm = MarketMaker(cfg)
+        seed_ledger_position(mm.ledger, mm, 100, clamp_qty_nonneg=True)
+        mm.position("DU123", mm.contract, 1000, 48.22)
+        self.assertEqual(mm.position_size, 1000)
+        self.assertAlmostEqual(mm.avg_cost, 48.22)
+        self.assertEqual(mm.ledger.qty, 100)
+        _, sell_qty = mm.desired_sizes()
+        self.assertEqual(sell_qty, 1000)
+
     def test_is_same_order(self):
         live = LiveOrder(
             order_id=1,

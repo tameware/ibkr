@@ -845,6 +845,16 @@ def add_never_sell_below_avg_cost_argument(parser: argparse.ArgumentParser) -> N
     )
 
 
+def add_ignore_ledger_argument(parser: argparse.ArgumentParser) -> None:
+    """Add ``--ignore-ledger`` / ``--no-ignore-ledger``."""
+    parser.add_argument(
+        "--ignore-ledger",
+        "--ignore_ledger",
+        action=argparse.BooleanOptionalAction,
+        help="Trade from IB account position instead of the strategy ledger (default: false)",
+    )
+
+
 def add_ib_connection_arguments(
     parser: argparse.ArgumentParser,
     *,
