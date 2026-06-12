@@ -581,6 +581,28 @@ class TestMarketMakerCore(unittest.TestCase):
         _, sell_qty = mm.desired_sizes()
         self.assertEqual(sell_qty, 1000)
 
+    def test_apply_fill_sell_caps_at_position(self):
+        """SELL fills cannot reduce position below zero (uses sold, not raw shares)."""
+        cfg = {**self.base_config, "ignore_ledger": True}
+        mm = MarketMaker(cfg)
+        mm.position_size = 50
+        mm.avg_cost = 10.0
+        with mm.lock:
+            mm._apply_fill_to_trading_position("SELL", 100, 12.0)
+        self.assertEqual(mm.position_size, 0)
+        self.assertEqual(mm.avg_cost, 0.0)
+        self.assertAlmostEqual(mm.realized_pnl, 50 * (12.0 - 10.0))
+
+    def test_apply_fill_sell_when_flat(self):
+        cfg = {**self.base_config, "ignore_ledger": True}
+        mm = MarketMaker(cfg)
+        mm.position_size = 0
+        mm.avg_cost = 0.0
+        with mm.lock:
+            mm._apply_fill_to_trading_position("SELL", 100, 12.0)
+        self.assertEqual(mm.position_size, 0)
+        self.assertEqual(mm.realized_pnl, 0.0)
+
     def test_is_same_order(self):
         live = LiveOrder(
             order_id=1,
