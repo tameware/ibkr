@@ -18,6 +18,7 @@ from ibkr_app_support import (
     add_config_argument,
     add_ib_connection_arguments,
     add_logging_arguments,
+    add_min_order_size_argument,
     add_never_sell_below_avg_cost_argument,
     add_session_hours_arguments,
     has_valid_nbbo,
@@ -28,6 +29,8 @@ from ibkr_app_support import (
     load_merged_config,
     log_startup_timezones,
     max_sell_shares,
+    meets_min_order_size,
+    min_order_size_from_config,
     regular_session_open,
     run_bot,
     safe_cancel_order,
@@ -108,6 +111,7 @@ class SingleSideQuoter(
         self.pending_sell = False
         self._init_snapshot_resync(config)
         self._init_contract_resolution(config)
+        self.min_order_size = min_order_size_from_config(config)
 
         self.client_id = ib_client_id_from_config(
             config, default=default_client_id
@@ -353,7 +357,11 @@ class SingleSideQuoter(
             if self.open_symbol_sells > 0:
                 return
 
-            if desired_qty > 0 and self.open_symbol_buys == 0 and not self.pending_buy:
+            if (
+                meets_min_order_size(desired_qty, self.min_order_size)
+                and self.open_symbol_buys == 0
+                and not self.pending_buy
+            ):
                 oid = self.nextOrderId
                 self.nextOrderId += 1
                 self.buy_order_id = oid
@@ -393,7 +401,11 @@ class SingleSideQuoter(
                 self.open_symbol_sells = 0
                 return
 
-            if desired_qty > 0 and self.open_symbol_sells == 0 and not self.pending_sell:
+            if (
+                meets_min_order_size(desired_qty, self.min_order_size)
+                and self.open_symbol_sells == 0
+                and not self.pending_sell
+            ):
                 oid = self.nextOrderId
                 self.nextOrderId += 1
                 self.sell_order_id = oid
@@ -427,6 +439,7 @@ def add_single_side_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--loop_seconds", type=float)
     parser.add_argument("--resync_debounce_seconds", type=float)
     add_session_hours_arguments(parser)
+    add_min_order_size_argument(parser)
     parser.add_argument("--last_trade_min_size", type=float)
     parser.add_argument("--tif")
     parser.add_argument("--price_round_digits", type=int)

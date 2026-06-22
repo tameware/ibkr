@@ -18,6 +18,7 @@ from ibkr_app_support import (
     add_config_argument,
     add_ib_connection_arguments,
     add_logging_arguments,
+    add_min_order_size_argument,
     add_never_sell_below_avg_cost_argument,
     add_session_hours_arguments,
     clamp_quote_prices_to_avoid_self_trade,
@@ -30,6 +31,8 @@ from ibkr_app_support import (
     load_merged_config,
     log_startup_timezones,
     max_sell_shares,
+    meets_min_order_size,
+    min_order_size_from_config,
     regular_session_open,
     run_bot,
     safe_cancel_order,
@@ -114,6 +117,7 @@ class TwoSidedMidTrader(
         self.pending_sell = False
         self._init_snapshot_resync(config)
         self._init_contract_resolution(config)
+        self.min_order_size = min_order_size_from_config(config)
 
         self.client_id = ib_client_id_from_config(
             config, default=default_client_id
@@ -357,7 +361,7 @@ class TwoSidedMidTrader(
         )
 
         buy_qty = max_pos - pos
-        if buy_qty > 0:
+        if meets_min_order_size(buy_qty, self.min_order_size):
             if self.open_symbol_buys == 0 and not self.pending_buy:
                 oid = self.nextOrderId
                 self.nextOrderId += 1
@@ -374,7 +378,7 @@ class TwoSidedMidTrader(
                     )
                 )
                 self.placeOrder(oid, self.contract, order)
-        else:
+        elif buy_qty <= 0:
             if self.buy_order_id is not None:
                 self.logger.info(
                     f"Cancelling BUY order id={self.buy_order_id} "
@@ -384,7 +388,7 @@ class TwoSidedMidTrader(
                 self.pending_buy = False
 
         sell_qty = max_sell_shares(self.ledger)
-        if sell_qty > 0:
+        if meets_min_order_size(sell_qty, self.min_order_size):
             if self.open_symbol_sells == 0 and not self.pending_sell:
                 oid = self.nextOrderId
                 self.nextOrderId += 1
@@ -401,7 +405,7 @@ class TwoSidedMidTrader(
                     )
                 )
                 self.placeOrder(oid, self.contract, order)
-        else:
+        elif sell_qty <= 0:
             if self.sell_order_id is not None:
                 self.logger.info(
                     f"Cancelling SELL order id={self.sell_order_id} "
@@ -428,6 +432,7 @@ def add_two_sided_mid_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--buy_delta", type=float)
     parser.add_argument("--sell_delta", type=float)
     add_session_hours_arguments(parser)
+    add_min_order_size_argument(parser)
     parser.add_argument("--last_trade_min_size", type=float)
     parser.add_argument("--tif")
     parser.add_argument("--price_round_digits", type=int)

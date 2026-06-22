@@ -555,7 +555,22 @@ class TestTrader(unittest.TestCase):
             "market_close_hour": 16,
         }
         self.assertFalse(regular_session_open(cfg, now=now))
-    
+
+    def test_sync_orders_skips_buy_below_min_order_size(self):
+        """Buy room below min_order_size does not place a buy (sell may still place)."""
+        seed_valid_nbbo(self.trader, 150.00)
+        self.trader.min_order_size = 10
+        self._seed(95)
+        captured = []
+        self.trader.placeOrder = Mock(
+            side_effect=lambda oid, contract, order: captured.append(order)
+        )
+        self.trader.sync_orders()
+        buy_orders = [o for o in captured if o.action == "BUY"]
+        self.assertEqual(buy_orders, [])
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].action, "SELL")
+
     def test_sync_orders_places_both_buy_and_sell_when_position_below_max(self):
         """Test sync_orders places both BUY and SELL orders when position is between 0 and max"""
         seed_valid_nbbo(self.trader, 150.00)

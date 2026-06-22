@@ -22,6 +22,7 @@ from ibkr_app_support import (
     add_ib_connection_arguments,
     add_ignore_ledger_argument,
     add_logging_arguments,
+    add_min_order_size_argument,
     add_never_sell_below_avg_cost_argument,
     add_session_hours_arguments,
     average_cost_after_purchase,
@@ -41,7 +42,9 @@ from ibkr_app_support import (
     clamp_sell_to_avoid_self_trade,
     load_merged_config,
     log_session_transition,
+    meets_min_order_size,
     max_sell_shares,
+    min_order_size_from_config,
     NbboThrottle,
     open_order_belongs_to_client,
     order_status_clients_match,
@@ -170,6 +173,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         )
         self.min_tick = float(config.get("min_tick", 0.01))
         self.ignore_ledger = _cfg_bool(config, "ignore_ledger", False)
+        self.min_order_size = min_order_size_from_config(config)
 
         self.lock = threading.RLock()
         self.connected_flag = False
@@ -1319,9 +1323,15 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             prior = self.sell_order
             qty = min(qty, self.max_sellable_qty())
 
-        if qty <= 0 or px is None:
+        if px is None:
             if prior:
                 self.cancel_live_order(prior)
+            return
+        if qty <= 0:
+            if prior:
+                self.cancel_live_order(prior)
+            return
+        if qty < self.min_order_size:
             return
 
         bid = self.quote.bid
@@ -1693,6 +1703,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     add_never_sell_below_avg_cost_argument(parser)
     add_ignore_ledger_argument(parser)
+    add_min_order_size_argument(parser)
 
     parser.add_argument(
         "--log_bid_ask_ticks",

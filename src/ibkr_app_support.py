@@ -592,12 +592,14 @@ def plan_working_order_reconcile(
         return WorkingOrderReconcilePlan("noop")
 
     filled_now = max(0, int(current_total_qty) - remaining_now)
-    if desired_remaining < min_order_size:
+    if desired_remaining <= 0:
         return WorkingOrderReconcilePlan(
             "cancel",
             remaining_now=remaining_now,
             filled_now=filled_now,
         )
+    if desired_remaining < min_order_size:
+        return WorkingOrderReconcilePlan("noop")
 
     return WorkingOrderReconcilePlan(
         "amend",
@@ -833,6 +835,30 @@ def add_session_hours_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--market_open_hour", type=int)
     parser.add_argument("--market_open_minute", type=int)
     parser.add_argument("--market_close_hour", type=int)
+
+
+DEFAULT_MIN_ORDER_SIZE = 10
+
+
+def min_order_size_from_config(
+    config: Dict[str, Any], *, default: int = DEFAULT_MIN_ORDER_SIZE
+) -> int:
+    """Minimum shares per submitted order (default 10)."""
+    return max(1, int(config.get("min_order_size", default)))
+
+
+def meets_min_order_size(qty: int, min_order_size: int) -> bool:
+    """True when ``qty`` is large enough to submit."""
+    return int(qty) >= int(min_order_size)
+
+
+def add_min_order_size_argument(parser: argparse.ArgumentParser) -> None:
+    """Add ``--min_order_size``."""
+    parser.add_argument(
+        "--min_order_size",
+        type=int,
+        help=f"Do not submit orders smaller than this many shares (default: {DEFAULT_MIN_ORDER_SIZE})",
+    )
 
 
 def add_never_sell_below_avg_cost_argument(parser: argparse.ArgumentParser) -> None:

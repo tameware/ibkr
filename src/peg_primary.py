@@ -53,6 +53,7 @@ from ibkr_app_support import (
     add_config_argument,
     add_ib_connection_arguments,
     add_logging_arguments,
+    add_min_order_size_argument,
     add_never_sell_below_avg_cost_argument,
     add_session_hours_arguments,
     execution_belongs_to_client,
@@ -64,6 +65,8 @@ from ibkr_app_support import (
     clamp_sell_to_avoid_self_trade,
     load_merged_config,
     max_sell_shares,
+    meets_min_order_size,
+    min_order_size_from_config,
     NbboCoalesceSink,
     has_valid_nbbo,
     nbbo_coalesce_intervals_from_config,
@@ -163,8 +166,7 @@ class Trader(
             clock=time.monotonic,
         )
         self._prev_us_regular_hours: bool | None = None
-        _mos = int(self.config.get("min_order_size", 10))
-        self.min_order_size = max(1, _mos)
+        self.min_order_size = min_order_size_from_config(config)
 
         self._digits = int(self.config["price_round_digits"])
         self._tick = 10.0 ** (-self._digits)
@@ -244,7 +246,7 @@ class Trader(
 
     def _meets_min_order_size(self, qty: int) -> bool:
         """Do not submit REL orders smaller than ``min_order_size`` (default 10)."""
-        return qty >= self.min_order_size
+        return meets_min_order_size(qty, self.min_order_size)
 
     def orderStatus(
         self,
@@ -915,7 +917,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--max_pos", type=int)
     parser.add_argument("--loop_seconds", type=float)
-    parser.add_argument("--min_order_size", type=int)
+    add_min_order_size_argument(parser)
     add_session_hours_arguments(parser)
     parser.add_argument("--tif")
     parser.add_argument("--price_round_digits", type=int)

@@ -10,6 +10,7 @@
 
   "strategy": {
     "base_qty": 100,
+    "min_order_size": 10,
     "//": "Max shares per buy order (capped by max_position - position)",
     "max_position": 300,
     "//": "Don't go long more than this many shares.",

@@ -603,6 +603,22 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertEqual(mm.position_size, 0)
         self.assertEqual(mm.realized_pnl, 0.0)
 
+    def test_default_min_order_size_is_ten(self):
+        self.assertEqual(self.mm.min_order_size, 10)
+
+    def test_place_or_replace_skips_below_min_order_size(self):
+        self.mm.min_order_size = 10
+        self.mm.next_order_id = 1
+        self.mm.buy_order = LiveOrder(
+            order_id=1, side="BUY", price=50.0, qty=50, status="Submitted"
+        )
+        self.mm.placeOrder = Mock()
+        self.mm.cancelOrder = Mock()
+        self.mm.place_or_replace_buy(5, 50.0)
+        self.mm.placeOrder.assert_not_called()
+        self.mm.cancelOrder.assert_not_called()
+        self.assertIsNotNone(self.mm.buy_order)
+
     def test_is_same_order(self):
         live = LiveOrder(
             order_id=1,

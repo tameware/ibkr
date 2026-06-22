@@ -20,6 +20,7 @@
     "price_round_digits": 2,
     "loop_seconds": 10,
     "max_pos": 200,
+    "min_order_size": 10,
     "mid_delta": 0.05,
     "tif": "DAY",
     "nbbo_coalesce_seconds": 4.0,

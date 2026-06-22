@@ -35,7 +35,9 @@ from ibkr_app_support import (
     has_valid_nbbo,
     is_valid_quote_pair,
     max_sell_shares,
+    meets_min_order_size,
     mid_delta_for_config,
+    min_order_size_from_config,
     nbbo_coalesce_intervals_from_config,
     plan_working_order_reconcile,
     self_trade_limits_from_nbbo,
@@ -205,8 +207,15 @@ class TestQuotingPrimitives(unittest.TestCase):
             desired_remaining=5,
             min_order_size=10,
         )
-        self.assertEqual(cancel.kind, "cancel")
-        self.assertEqual(cancel.filled_now, 80)
+        self.assertEqual(cancel.kind, "noop")
+
+        cancel_zero = plan_working_order_reconcile(
+            20,
+            current_total_qty=100,
+            desired_remaining=0,
+            min_order_size=10,
+        )
+        self.assertEqual(cancel_zero.kind, "cancel")
 
         amend = plan_working_order_reconcile(
             50,
@@ -216,6 +225,13 @@ class TestQuotingPrimitives(unittest.TestCase):
         )
         self.assertEqual(amend.kind, "amend")
         self.assertEqual(amend.new_total_qty, 50)
+
+    def test_min_order_size_from_config_defaults_to_ten(self):
+        self.assertEqual(min_order_size_from_config({}), 10)
+
+    def test_meets_min_order_size(self):
+        self.assertTrue(meets_min_order_size(10, 10))
+        self.assertFalse(meets_min_order_size(9, 10))
 
 
 class TestPositionLedger(unittest.TestCase):

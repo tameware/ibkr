@@ -814,8 +814,8 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
             cancel.assert_not_called()
         self.t.placeOrder.assert_not_called()
 
-    def test_resize_below_min_order_size_cancels(self):
-        """Shrink to below min_order_size cancels the order."""
+    def test_resize_below_min_order_size_leaves_order(self):
+        """Shrink target below min_order_size leaves the working order unchanged."""
         self.cfg["max_pos"] = 96
         self.cfg["min_order_size"] = 10
         self.t.min_order_size = 10
@@ -831,11 +831,11 @@ class TestResizeOppositeAfterPartialFill(unittest.TestCase):
 
         with patch("peg_primary.safe_cancel_order") as cancel:
             self.t.sync_orders()
-            cancel.assert_called_once_with(self.t, 40)
+            cancel.assert_not_called()
         self.t.placeOrder.assert_not_called()
-        self.assertIsNone(self.t.buy_order_id)
-        self.assertIsNone(self.t.buy_order_qty)
-        self.assertEqual(self.t.open_symbol_buys, 0)
+        self.assertEqual(self.t.buy_order_id, 40)
+        self.assertEqual(self.t.buy_order_qty, 100)
+        self.assertEqual(self.t.open_symbol_buys, 1)
 
     def test_flat_branch_resizes_existing_buy_back_to_max_pos(self):
         """Transition to flat (SELL fully filled). An existing BUY left over
