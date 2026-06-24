@@ -458,6 +458,11 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertEqual(o.tif, "DAY")
         self.assertFalse(o.outsideRth)
 
+    def test_build_lmt_order_sets_account_from_config(self):
+        mm = MarketMaker({**self.base_config, "account": "DU12345"})
+        o = mm.build_lmt_order("BUY", 10, 50.0)
+        self.assertEqual(o.account, "DU12345")
+
     def test_market_invalid_reason_missing_bid(self):
         self.mm.quote = QuoteState(bid=None, ask=100.0, last_update_ts=999999.0)
         self._clear_pair_gate()

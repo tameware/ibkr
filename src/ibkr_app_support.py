@@ -861,6 +861,26 @@ def add_min_order_size_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def trading_account_from_config(
+    config: Dict[str, Any],
+    *,
+    learned_account: Optional[str] = None,
+) -> Optional[str]:
+    """IB account id for orders: config ``account``, else learned from ``position``."""
+    raw = str(config.get("account") or "").strip()
+    if raw:
+        return raw
+    learned = str(learned_account or "").strip()
+    return learned or None
+
+
+def apply_order_account(order: Any, account: Optional[str]) -> None:
+    """Set ``order.account`` when IB requires an explicit account (error 435)."""
+    acct = str(account or "").strip()
+    if acct:
+        order.account = acct
+
+
 def add_never_sell_below_avg_cost_argument(parser: argparse.ArgumentParser) -> None:
     """Add ``--never_sell_below_avg_cost`` / ``--no-never_sell_below_avg_cost``."""
     parser.add_argument(

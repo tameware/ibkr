@@ -25,6 +25,7 @@ from ibkr_app_support import (
     add_min_order_size_argument,
     add_never_sell_below_avg_cost_argument,
     add_session_hours_arguments,
+    apply_order_account,
     average_cost_after_purchase,
     cfg_bool as _cfg_bool,
     execution_belongs_to_client,
@@ -46,6 +47,7 @@ from ibkr_app_support import (
     max_sell_shares,
     min_order_size_from_config,
     NbboThrottle,
+    trading_account_from_config,
     open_order_belongs_to_client,
     order_status_clients_match,
     regular_session_open,
@@ -1016,6 +1018,12 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             self.quote.ask_size,
         )
 
+    def _order_account(self) -> Optional[str]:
+        """Account id for ``placeOrder`` (config or first ``position`` callback)."""
+        return trading_account_from_config(
+            self.config, learned_account=self.account
+        )
+
     def build_lmt_order(self, action: str, qty: int, px: float) -> Order:
         """Build a DAY limit order at ``px``."""
         o = Order()
@@ -1025,6 +1033,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         o.lmtPrice = round(px, 2)
         o.tif = "DAY"
         o.outsideRth = False
+        apply_order_account(o, self._order_account())
         return o
 
     def can_open_new_long(self) -> bool:
