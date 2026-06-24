@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 DaemonThreadSpec = Union[Callable[[], None], Tuple[str, Callable[[], None]]]
 
-_IB_STATUS_INFO_CODES_DEFAULT = frozenset({2104, 2106, 2158})
+_IB_STATUS_INFO_CODES_DEFAULT = frozenset({2104, 2106, 2107, 2158})
 IB_ERROR_CONNECTIVITY_LOST = 1100
 IB_ERROR_CONNECTIVITY_RESTORED = 1102
 

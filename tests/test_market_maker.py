@@ -156,7 +156,7 @@ class TestFlattenConfig(unittest.TestCase):
         self.assertEqual(out["client_id"], 4)
         self.assertEqual(out["exchange"], "IBKRATS")
         self.assertEqual(out["log_file"], "peg_best.log")
-        self.assertEqual(out["ignored_error_codes"], [2103, 2104, 2106, 2108, 2158])
+        self.assertEqual(out["ignored_error_codes"], [2103, 2104, 2106, 2107, 2108, 2158])
 
 
 class TestHelpers(unittest.TestCase):

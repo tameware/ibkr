@@ -702,6 +702,13 @@ class TestIbErrorFiltering(unittest.TestCase):
         self.assertTrue(
             should_suppress_ib_error(self._CFG, 2104, "Market data farm connected")
         )
+        self.assertTrue(
+            should_suppress_ib_error(
+                {"ignored_error_codes": [2107]},
+                2107,
+                "HMDS data farm connection is inactive but should be available upon demand.ushmds",
+            )
+        )
 
     def test_should_suppress_substring_in_message(self):
         self.assertTrue(
