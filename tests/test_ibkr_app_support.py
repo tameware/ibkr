@@ -709,6 +709,13 @@ class TestIbErrorFiltering(unittest.TestCase):
                 "HMDS data farm connection is inactive but should be available upon demand.ushmds",
             )
         )
+        self.assertTrue(
+            should_suppress_ib_error(
+                {"ignored_error_codes": [202]},
+                202,
+                "Order Canceled - reason:",
+            )
+        )
 
     def test_should_suppress_substring_in_message(self):
         self.assertTrue(
