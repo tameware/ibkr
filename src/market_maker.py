@@ -143,6 +143,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             config.get("min_inventory_before_offering", 100)
         )
         self.min_spread = float(config.get("min_spread", 0.20))
+        self.max_spread = float(config.get("max_spread", 4.00))
         self.inside_improve = float(config.get("inside_improve", 0.10))
         self.inventory_penalty_per_100 = float(
             config.get("inventory_penalty_per_100", 0.05)
@@ -1079,6 +1080,8 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         spread = ask - bid
         if spread < self.min_spread:
             return f"spread too small spread={spread:.2f} min={self.min_spread:.2f}"
+        if spread > self.max_spread:
+            return f"spread too wide spread={spread:.2f} max={self.max_spread:.2f}"
 
         if self.require_live_data and self.market_data_type not in (None, 1):
             return f"market data type not live type={self.market_data_type}"
@@ -1692,6 +1695,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_gross_shares", type=int)
     parser.add_argument("--min_inventory_before_offering", type=int)
     parser.add_argument("--min_spread", type=float)
+    parser.add_argument(
+        "--max_spread",
+        type=float,
+        help="Do not quote when NBBO spread exceeds this (default: 4.00)",
+    )
     parser.add_argument("--inside_improve", type=float)
     parser.add_argument("--inventory_penalty_per_100", type=float)
     parser.add_argument("--quote_refresh_seconds", type=float)

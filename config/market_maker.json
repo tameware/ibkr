@@ -18,6 +18,8 @@
     "//": "Daily share-turn cap (buy + sell fills)",
     "min_spread": 0.12,
     "//": "Only quote when NBBO spread is at least this wide (more edge per fill)",
+    "max_spread": 4.00,
+    "//": "Reject NBBO when spread exceeds this (stale/erroneous one-sided quotes)",
     "inside_improve": 0.00,
     "//": "Step inside spread; lower = more passive, less likely to get picked off",
     "inventory_penalty_per_100": 0.12,

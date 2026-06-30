@@ -492,6 +492,21 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertIsNotNone(reason)
         self.assertIn("spread too small", reason or "")
 
+    def test_market_invalid_reason_spread_too_wide(self):
+        now = 1_000_000.0
+        self.mm.max_spread = 4.00
+        self.mm.quote = QuoteState(
+            bid=44.72, ask=55.00, last_update_ts=now
+        )
+        self._sync_paired_nbbo_from_quote()
+        with patch("market_maker.time.time", return_value=now):
+            reason = self.mm.market_invalid_reason()
+        self.assertIsNotNone(reason)
+        self.assertIn("spread too wide", reason or "")
+
+    def test_default_max_spread_is_four(self):
+        self.assertEqual(MarketMaker(self.base_config).max_spread, 4.00)
+
     def test_us_regular_hours_during_session(self):
         ny = ZoneInfo("America/New_York")
         during = datetime.datetime(2026, 5, 11, 10, 30, 0, tzinfo=ny)
