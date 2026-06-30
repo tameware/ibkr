@@ -208,9 +208,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
 
         self.last_quote_eval = 0.0
         self._session_nbbo_logged = False
-        self._last_tick_size_log_key: Optional[
-            Tuple[int, int, Optional[float], Optional[float], int, int]
-        ] = None
+        self._last_nbbo_log_prices: Optional[Tuple[float, float]] = None
         self.start_time = time.time()
         self.last_nbbo_ok_ts = 0.0
         self.last_watchdog_log_ts = 0.0
@@ -423,7 +421,11 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             if self._session_nbbo_logged:
                 return
             self._session_nbbo_logged = True
+            bid = self.quote.bid
+            ask = self.quote.ask
         self.logger.info("%s (session start)", self._format_nbbo_for_log())
+        if bid is not None and ask is not None:
+            self._last_nbbo_log_prices = (round(float(bid), 2), round(float(ask), 2))
 
     def _on_coalesced_nbbo(self, bid: float, ask: float) -> None:
         """Update ``ref_price`` from coalesced bid/ask mid."""
@@ -436,10 +438,13 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             self.quote.last_update_ts = now
             self.last_nbbo_ok_ts = now
             if self.log_bid_ask_ticks:
-                log_msg = (
-                    f"NBBO coalesced bid={bid:.2f} ask={ask:.2f} "
-                    f"bid_sz={self.quote.bid_size} ask_sz={self.quote.ask_size}"
-                )
+                prices = (round(float(bid), 2), round(float(ask), 2))
+                if prices != self._last_nbbo_log_prices:
+                    self._last_nbbo_log_prices = prices
+                    log_msg = (
+                        f"NBBO coalesced bid={bid:.2f} ask={ask:.2f} "
+                        f"bid_sz={self.quote.bid_size} ask_sz={self.quote.ask_size}"
+                    )
         self._log_session_nbbo_once()
         if log_msg:
             self.logger.info(log_msg)
@@ -458,7 +463,6 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             return
         self.note_market_data_tick()
 
-        log_msg: Optional[str] = None
         updated = False
         with self.lock:
             if tickType == 0:
@@ -479,30 +483,6 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 and self.quote.bid < self.quote.ask
             ):
                 self.last_nbbo_ok_ts = now
-
-            if self.log_bid_ask_ticks:
-                key = (
-                    tickType,
-                    int(size),
-                    None
-                    if self.quote.bid is None
-                    else round(float(self.quote.bid), 6),
-                    None
-                    if self.quote.ask is None
-                    else round(float(self.quote.ask), 6),
-                    self.quote.bid_size,
-                    self.quote.ask_size,
-                )
-                if key != self._last_tick_size_log_key:
-                    self._last_tick_size_log_key = key
-                    log_msg = (
-                        f"NBBO size tick tickType={tickType} size={int(size)} "
-                        f"bid={self.quote.bid} ask={self.quote.ask} "
-                        f"bid_sz={self.quote.bid_size} ask_sz={self.quote.ask_size}"
-                    )
-
-        if log_msg:
-            self.logger.info(log_msg)
 
         if updated:
             self.maybe_manage_quotes()

@@ -847,6 +847,36 @@ class TestMarketMakerCore(unittest.TestCase):
         mmq.assert_called_once()
         self.assertEqual(self.mm.quote.bid_size, 100)
 
+    def test_tick_size_does_not_log_when_log_bid_ask_ticks_enabled(self):
+        self.mm.log_bid_ask_ticks = True
+        self.mm.market_data_req_id = 1001
+        self.mm.quote.bid = 50.05
+        self.mm.quote.ask = 50.70
+        with patch.object(self.mm, "maybe_manage_quotes"):
+            with patch.object(self.mm.logger, "info") as info:
+                self.mm.tickSize(1001, 0, 100)
+        info.assert_not_called()
+
+    def test_coalesced_nbbo_logs_only_on_price_change(self):
+        self.mm.log_bid_ask_ticks = True
+        self.mm.quote.bid_size = 100
+        self.mm.quote.ask_size = 200
+        with patch.object(self.mm, "maybe_manage_quotes"):
+            with patch.object(self.mm.logger, "info") as info:
+                self.mm._on_coalesced_nbbo(50.05, 50.70)
+                self.mm._on_coalesced_nbbo(50.05, 50.70)
+                self.mm.quote.bid_size = 500
+                self.mm._on_coalesced_nbbo(50.05, 50.70)
+                self.mm._on_coalesced_nbbo(50.06, 50.70)
+        coalesced = [
+            c
+            for c in info.call_args_list
+            if c.args and str(c.args[0]).startswith("NBBO coalesced")
+        ]
+        self.assertEqual(len(coalesced), 2)
+        self.assertIn("50.05", coalesced[0].args[0])
+        self.assertIn("50.06", coalesced[1].args[0])
+
     def test_tick_size_refreshes_staleness_timestamps_when_nbbo_valid(self):
         """Stale checks use last_update_ts / last_nbbo_ok_ts; size-only ticks must refresh them."""
         self.mm.market_data_req_id = 1001
