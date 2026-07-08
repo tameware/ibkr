@@ -72,6 +72,7 @@ from ibkr_app_support import (
     nbbo_coalesce_intervals_from_config,
     nbbo_mid_rounded,
     plan_working_order_reconcile,
+    price_move_exceeds_one_tick,
     self_trade_limits_from_nbbo,
     NbboThrottle,
     log_session_transition,
@@ -655,7 +656,7 @@ class Trader(
             old_a, self._digits
         ) == round(new_a, self._digits):
             return False
-        if abs(new_l - old_l) > 0.01:
+        if price_move_exceeds_one_tick(old_l, new_l, min_tick=self._tick):
             self.logger.info(
                 f"Order price change {action} id={oid} lmtPrice {old_l}->{new_l} "
                 f"auxPrice {old_a}->{new_a} (totalQty={total_qty}) [{self._format_nbbo_for_log()}]"

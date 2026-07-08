@@ -38,6 +38,7 @@ from ibkr_app_support import (
     meets_min_order_size,
     mid_delta_for_config,
     min_order_size_from_config,
+    price_move_exceeds_one_tick,
     nbbo_coalesce_intervals_from_config,
     plan_working_order_reconcile,
     self_trade_limits_from_nbbo,
@@ -97,6 +98,13 @@ class TestSelfTradeLimits(unittest.TestCase):
         )
         self.assertEqual(buy, 49.98)
         self.assertEqual(sell, 50.02)
+
+    def test_price_move_exceeds_one_tick(self):
+        tick = 0.01
+        self.assertFalse(price_move_exceeds_one_tick(45.01, 45.02, min_tick=tick))
+        self.assertFalse(price_move_exceeds_one_tick(45.02, 45.01, min_tick=tick))
+        self.assertTrue(price_move_exceeds_one_tick(45.01, 45.03, min_tick=tick))
+        self.assertFalse(price_move_exceeds_one_tick(45.01, 45.01, min_tick=tick))
 
     def test_mid_delta_at_least_one_tick(self):
         cfg = {**self.cfg, "mid_delta": 0.001}

@@ -843,6 +843,30 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertEqual(oids, [500, 500])
         self.mm.cancelOrder.assert_not_called()
 
+    def test_place_or_replace_suppresses_one_tick_price_change_log(self):
+        """Single min-tick moves must not emit Order price change (float-safe)."""
+        self.mm.next_order_id = 1
+        self.mm.quote.bid = 45.01
+        self.mm.quote.ask = 46.00
+        self.mm.place_or_replace_buy(100, 45.01)
+        with patch.object(self.mm.logger, "info") as info:
+            self.mm.place_or_replace_buy(100, 45.02)
+            self.mm.place_or_replace_buy(100, 45.01)
+        price_change_msgs = [
+            c for c in info.call_args_list if c[0] and "Order price change" in c[0][0]
+        ]
+        self.assertEqual(price_change_msgs, [])
+
+    def test_place_or_replace_logs_multi_tick_price_change(self):
+        self.mm.next_order_id = 1
+        self.mm.place_or_replace_buy(100, 45.01)
+        with patch.object(self.mm.logger, "info") as info:
+            self.mm.place_or_replace_buy(100, 45.03)
+        price_change_msgs = [
+            c for c in info.call_args_list if c[0] and "Order price change" in c[0][0]
+        ]
+        self.assertEqual(len(price_change_msgs), 1)
+
     def test_tick_price_updates_quote(self):
         self.mm.market_data_req_id = 1001
         with patch.object(self.mm, "maybe_manage_quotes"):

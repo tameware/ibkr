@@ -469,6 +469,16 @@ def price_tick_from_config(config: Dict[str, Any]) -> float:
     return 10.0 ** (-price_digits_from_config(config))
 
 
+def price_move_exceeds_one_tick(
+    old_px: float, new_px: float, *, min_tick: float
+) -> bool:
+    """True when ``new_px`` is more than one ``min_tick`` away from ``old_px``."""
+    tick = min_tick if min_tick > 0 else 0.01
+    old_ticks = round(float(old_px) / tick)
+    new_ticks = round(float(new_px) / tick)
+    return abs(new_ticks - old_ticks) > 1
+
+
 def mid_delta_for_config(config: Dict[str, Any], *, default: float = 0.10) -> float:
     """Minimum half-spread vs mid for self-trade guards (``mid_delta`` or legacy deltas)."""
     tick = price_tick_from_config(config)

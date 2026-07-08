@@ -48,6 +48,7 @@ from ibkr_app_support import (
     max_sell_shares,
     min_order_size_from_config,
     NbboThrottle,
+    price_move_exceeds_one_tick,
     trading_account_from_config,
     open_order_belongs_to_client,
     order_status_clients_match,
@@ -1417,7 +1418,9 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                     px,
                     self._format_nbbo_for_log(),
                 )
-        elif abs(float(px) - float(prior.price)) > 0.01:
+        elif price_move_exceeds_one_tick(
+            prior.price, px, min_tick=self._effective_min_tick()
+        ):
             self.logger.info(
                 "Order price change id=%s side=%s qty=%s px %.2f->%.2f [%s]",
                 oid,
