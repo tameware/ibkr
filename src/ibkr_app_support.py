@@ -1382,6 +1382,31 @@ def regular_session_open(
     )
 
 
+def inventory_penalty_last_hours_from_config(
+    config: Dict[str, Any], *, default: float = 1.0
+) -> float:
+    """Hours before ``market_close_hour`` when inventory skew applies (default 1)."""
+    return max(0.0, float(config.get("inventory_penalty_last_hours", default)))
+
+
+def inventory_penalty_session_active(
+    config: Dict[str, Any],
+    now: Optional[datetime.datetime] = None,
+) -> bool:
+    """True during the last ``inventory_penalty_last_hours`` before the regular close."""
+    hours = inventory_penalty_last_hours_from_config(config)
+    if hours <= 0:
+        return False
+    if not regular_session_open(config, now=now):
+        return False
+    now, _, _, _, mch = session_wall_clock(config, now=now)
+    close = now.replace(hour=mch, minute=0, second=0, microsecond=0)
+    if now >= close:
+        return False
+    window_start = close - datetime.timedelta(hours=hours)
+    return now >= window_start
+
+
 def log_session_transition(
     logger: logging.Logger,
     config: Dict[str, Any],

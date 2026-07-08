@@ -58,6 +58,8 @@ from ibkr_app_support import (
     NbboThrottle,
     make_stock_contract,
     log_session_transition,
+    inventory_penalty_last_hours_from_config,
+    inventory_penalty_session_active,
     merge_config,
     open_order_belongs_to_client,
     order_status_clients_match,
@@ -454,6 +456,36 @@ class TestRegularSession(unittest.TestCase):
             in_hours=True,
         )
         logger.info.assert_not_called()
+
+
+class TestInventoryPenaltySession(unittest.TestCase):
+    def setUp(self):
+        self.ny = ZoneInfo("America/New_York")
+
+    def test_default_last_hours_is_one(self):
+        self.assertEqual(inventory_penalty_last_hours_from_config({}), 1.0)
+
+    def test_active_only_in_last_hour_before_close(self):
+        cfg = {**_SESSION_CFG, "inventory_penalty_last_hours": 1.0}
+        mid_session = datetime.datetime(2026, 5, 11, 10, 30, 0, tzinfo=self.ny)
+        last_hour = datetime.datetime(2026, 5, 11, 15, 30, 0, tzinfo=self.ny)
+        just_before = datetime.datetime(2026, 5, 11, 14, 59, 0, tzinfo=self.ny)
+        self.assertFalse(
+            inventory_penalty_session_active(cfg, now=mid_session)
+        )
+        self.assertFalse(
+            inventory_penalty_session_active(cfg, now=just_before)
+        )
+        self.assertTrue(
+            inventory_penalty_session_active(cfg, now=last_hour)
+        )
+
+    def test_zero_hours_disables_penalty_window(self):
+        cfg = {**_SESSION_CFG, "inventory_penalty_last_hours": 0}
+        last_hour = datetime.datetime(2026, 5, 11, 15, 30, 0, tzinfo=self.ny)
+        self.assertFalse(
+            inventory_penalty_session_active(cfg, now=last_hour)
+        )
 
 
 class TestNbboThrottle(unittest.TestCase):

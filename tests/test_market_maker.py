@@ -570,6 +570,23 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertIsNotNone(sell_px)
         self.assertLess(buy_px, sell_px)
 
+    def test_inventory_penalty_skewed_only_in_last_hour_window(self):
+        self.mm.inside_improve = 0.0
+        self.mm.inventory_penalty_per_100 = 0.12
+        self.mm.quote.bid = 45.0
+        self.mm.quote.ask = 47.0
+        self._seed_pos(100, avg_cost=46.0)
+        with patch(
+            "market_maker.inventory_penalty_session_active", return_value=False
+        ):
+            buy_off, _ = self.mm.compute_desired_quotes()
+        with patch(
+            "market_maker.inventory_penalty_session_active", return_value=True
+        ):
+            buy_on, _ = self.mm.compute_desired_quotes()
+        self.assertAlmostEqual(buy_off, 45.0)
+        self.assertAlmostEqual(buy_on, 44.88)
+
     def test_desired_sizes(self):
         self._seed_pos(50)
         self.mm.base_qty = 100

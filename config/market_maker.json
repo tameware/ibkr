@@ -24,6 +24,8 @@
     "//": "Step inside spread; lower = more passive, less likely to get picked off",
     "inventory_penalty_per_100": 0.12,
     "//": "When long: lower bids, tighten offers to reduce inventory risk",
+    "inventory_penalty_last_hours": 1.0,
+    "//": "Apply inventory_penalty_per_100 only in the last N hours before close",
     "mid_delta": 0.06,
     "//": "Min half-width vs mid; higher = buy lower / sell higher (wider working spread)",
     "quote_refresh_seconds": 4.0,

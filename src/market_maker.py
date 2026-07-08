@@ -43,6 +43,7 @@ from ibkr_app_support import (
     clamp_sell_to_avoid_self_trade,
     load_merged_config,
     log_session_transition,
+    inventory_penalty_session_active,
     meets_min_order_size,
     max_sell_shares,
     min_order_size_from_config,
@@ -1158,7 +1159,10 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         sell_px = ask - min(self.inside_improve, spread * 0.25)
 
         long_hundreds = max(0, position_size) / 100.0
-        skew = long_hundreds * self.inventory_penalty_per_100
+        if inventory_penalty_session_active(self.config):
+            skew = long_hundreds * self.inventory_penalty_per_100
+        else:
+            skew = 0.0
 
         buy_px -= skew
         sell_px -= min(skew * 2.0, spread * 0.20)
@@ -1682,6 +1686,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--inside_improve", type=float)
     parser.add_argument("--inventory_penalty_per_100", type=float)
+    parser.add_argument(
+        "--inventory_penalty_last_hours",
+        type=float,
+        help=(
+            "Apply inventory skew only in the last N hours before market close "
+            "(default: 1.0; 0 disables)"
+        ),
+    )
     parser.add_argument("--quote_refresh_seconds", type=float)
     parser.add_argument("--max_market_stale_seconds", type=float)
 
