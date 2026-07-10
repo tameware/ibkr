@@ -4,3 +4,8 @@ backups/
 IBJts_10.44.01/
 META-INF/
 logs/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
