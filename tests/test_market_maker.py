@@ -806,6 +806,54 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.startup()
         self.assertEqual(self.mm._adoption_seen_sells, [])
 
+    def test_other_working_sell_exposure_excludes_amended_order(self):
+        self.mm._working_sell_qty_by_order = {2: 90, 10: 74}
+        self.assertEqual(self.mm._other_working_sell_exposure(exclude_order_id=10), 90)
+        self.assertEqual(self.mm._other_working_sell_exposure(), 164)
+
+    def test_open_order_records_working_sell_exposure(self):
+        self.mm.adoption_phase = True
+        self._submit_open_sell(10, 74)
+        self.assertEqual(self.mm._working_sell_qty_by_order, {10: 74})
+
+    def test_place_or_replace_sell_caps_qty_for_other_working_sells(self):
+        self._seed_pos(100)
+        self.mm.next_order_id = 500
+        self.mm.sell_order = None
+        self.mm._working_sell_qty_by_order = {2: 40}
+        self.mm.place_or_replace_sell(100, 50.0)
+        order = self.mm.placeOrder.call_args[0][2]
+        self.assertEqual(order.totalQuantity, 60)
+
+    def test_place_or_replace_sell_amend_excludes_own_order_from_cap(self):
+        self._seed_pos(100)
+        self.mm.next_order_id = 500
+        self.mm.sell_order = LiveOrder(
+            order_id=10,
+            side="SELL",
+            price=50.0,
+            qty=60,
+            remaining=60,
+            total_qty=60,
+        )
+        self.mm._working_sell_qty_by_order = {10: 60}
+        self.mm.place_or_replace_sell(80, 50.0)
+        order = self.mm.placeOrder.call_args[0][2]
+        self.assertEqual(order.totalQuantity, 80)
+
+    def test_place_or_replace_sell_skips_when_other_sells_cover_position(self):
+        self._seed_pos(74)
+        self.mm.next_order_id = 500
+        self.mm.sell_order = None
+        self.mm._working_sell_qty_by_order = {2: 90}
+        self.mm.place_or_replace_sell(74, 50.0)
+        self.mm.placeOrder.assert_not_called()
+
+    def test_startup_clears_working_sell_exposure_registry(self):
+        self.mm._working_sell_qty_by_order = {2: 90}
+        self.mm.startup()
+        self.assertEqual(self.mm._working_sell_qty_by_order, {})
+
     def test_should_keep_sell_adoption_prefers_larger_working_size(self):
         self._seed_pos(200)
         small = LiveOrder(

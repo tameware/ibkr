@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Dict, FrozenSet, List, Literal, Optional, Tuple, Union
 
 from ibapi.common import OrderId, TickerId
 from ibapi.contract import Contract
@@ -124,6 +124,10 @@ class QuotePipelineInvalidPair:
 class MarketMaker(ContractResolutionMixin, IbkrBotApp):
     """Two-sided limit quoter with NBBO tick-improve and inventory skew."""
 
+    _TERMINAL_ORDER_STATUSES: FrozenSet[str] = frozenset(
+        {"Filled", "Cancelled", "ApiCancelled", "Inactive"}
+    )
+
     def __init__(self, config: Dict[str, Any]):
         """Initialize :class:`MarketMaker`."""
         super().__init__(
@@ -219,6 +223,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         self.open_orders_snapshot_done = False
         self.adoption_phase = False
         self._adoption_seen_sells: List[LiveOrder] = []
+        self._working_sell_qty_by_order: Dict[int, int] = {}
         self._prev_us_regular_hours: bool | None = None
         self._last_order_update_log_key: Dict[int, Tuple[int, int, int, float]] = {}
 
@@ -309,6 +314,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             self.buy_order = None
             self.sell_order = None
             self._adoption_seen_sells = []
+            self._working_sell_qty_by_order = {}
 
         self.request_contract_details()
         self.reqPositions()
@@ -389,6 +395,8 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         """Cancel a duplicate adopted order that lost the adoption tie-break."""
         try:
             safe_cancel_order(self, live.order_id)
+            with self.lock:
+                self._drop_working_sell(live.order_id)
             self.logger.warning(
                 "Cancelling extra adopted order id=%s side=%s px=%.2f qty=%s status=%s",
                 live.order_id,
@@ -426,6 +434,26 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
 
         for seen in stragglers:
             self._cancel_adopted_extra(seen)
+
+    def _note_working_sell_qty(self, order_id: int, working: int, *, status: str) -> None:
+        """Track open sell size by order id for short-prevention caps."""
+        oid = int(order_id)
+        if working <= 0 or status in self._TERMINAL_ORDER_STATUSES:
+            self._working_sell_qty_by_order.pop(oid, None)
+        else:
+            self._working_sell_qty_by_order[oid] = int(working)
+
+    def _drop_working_sell(self, order_id: int) -> None:
+        self._working_sell_qty_by_order.pop(int(order_id), None)
+
+    def _other_working_sell_exposure(self, exclude_order_id: Optional[int] = None) -> int:
+        """Sum working sell qty excluding the order being amended."""
+        exclude = int(exclude_order_id) if exclude_order_id is not None else None
+        return sum(
+            qty
+            for oid, qty in self._working_sell_qty_by_order.items()
+            if exclude is None or oid != exclude
+        )
 
     def _format_nbbo_for_log(self) -> str:
         """Current NBBO snapshot for log lines (call under ``self.lock`` or accept race)."""
@@ -686,6 +714,10 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             total_qty=total_qty,
         )
 
+        if side == "SELL":
+            with self.lock:
+                self._note_working_sell_qty(orderId, live.qty, status=live.status)
+
         if not self.adoption_phase:
             prior_qty: Optional[int] = None
             with self.lock:
@@ -844,13 +876,16 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 else:
                     target.remaining = int(remaining)
 
-                if status in {"Filled", "Cancelled", "ApiCancelled", "Inactive"} and int(
+                if status in self._TERMINAL_ORDER_STATUSES and int(
                     remaining
                 ) == 0:
                     if target.side == "BUY":
                         self.buy_order = None
                     elif target.side == "SELL":
                         self.sell_order = None
+                    self._drop_working_sell(orderId)
+                elif target.side == "SELL":
+                    self._note_working_sell_qty(orderId, target.qty, status=status)
 
         if status == "Filled":
             self.logger.info(
@@ -1332,6 +1367,8 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                     self.buy_order = None
                 elif side == "SELL" and self.sell_order and self.sell_order.order_id == oid:
                     self.sell_order = None
+                if side == "SELL":
+                    self._drop_working_sell(oid)
 
             self.logger.info("Cancel order id=%s side=%s px=%.2f qty=%s", oid, side, px, qty)
         except Exception as e:
@@ -1345,7 +1382,11 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             prior = self.buy_order
         else:
             prior = self.sell_order
-            qty = min(qty, self.max_sellable_qty())
+            with self.lock:
+                exclude_id = prior.order_id if prior is not None else None
+                other_committed = self._other_working_sell_exposure(exclude_id)
+                sell_cap = max(0, self.max_sellable_qty() - other_committed)
+            qty = min(qty, sell_cap)
 
         if px is None:
             if prior:
@@ -1412,6 +1453,8 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 remaining=qty,
                 total_qty=ib_qty,
             )
+            with self.lock:
+                self._note_working_sell_qty(oid, qty, status="PendingSubmit")
         if prior is None:
             self.logger.info(
                 "Order placed id=%s side=%s qty=%s px=%.2f [%s]",
