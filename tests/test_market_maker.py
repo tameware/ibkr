@@ -854,6 +854,55 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.startup()
         self.assertEqual(self.mm._working_sell_qty_by_order, {})
 
+    def test_open_order_post_adoption_cancels_untracked_sell(self):
+        self.mm.adoption_phase = False
+        self.mm.sell_order = LiveOrder(
+            order_id=10,
+            side="SELL",
+            price=50.0,
+            qty=74,
+            remaining=74,
+            total_qty=74,
+        )
+        with patch("market_maker.safe_cancel_order") as cancel:
+            self._submit_open_sell(2, 90)
+        cancel.assert_called_once_with(self.mm, 2)
+        self.assertEqual(self.mm.sell_order.order_id, 10)
+
+    def test_open_order_post_adoption_keeps_tracked_sell(self):
+        self.mm.adoption_phase = False
+        self.mm.sell_order = LiveOrder(
+            order_id=10,
+            side="SELL",
+            price=50.0,
+            qty=74,
+            remaining=74,
+            total_qty=74,
+        )
+        with patch("market_maker.safe_cancel_order") as cancel:
+            self._submit_open_sell(10, 60)
+        cancel.assert_not_called()
+        self.assertEqual(self.mm.sell_order.qty, 60)
+
+    def test_open_order_post_adoption_cancels_sell_when_none_tracked(self):
+        self.mm.adoption_phase = False
+        self.mm.sell_order = None
+        with patch("market_maker.safe_cancel_order") as cancel:
+            self._submit_open_sell(2, 90)
+        cancel.assert_called_once_with(self.mm, 2)
+
+    def test_place_or_replace_sell_sets_tracked_order_before_place_order(self):
+        self._seed_pos(100)
+        self.mm.next_order_id = 500
+        self.mm.sell_order = None
+
+        def capture_place(oid, contract, order):
+            self.assertIsNotNone(self.mm.sell_order)
+            self.assertEqual(self.mm.sell_order.order_id, oid)
+
+        self.mm.placeOrder = Mock(side_effect=capture_place)
+        self.mm.place_or_replace_sell(50, 50.0)
+
     def test_should_keep_sell_adoption_prefers_larger_working_size(self):
         self._seed_pos(200)
         small = LiveOrder(

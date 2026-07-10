@@ -413,6 +413,26 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 e,
             )
 
+    def _cancel_orphan_open_sell(self, live: LiveOrder) -> None:
+        """Cancel a working sell that is not our tracked ``sell_order``."""
+        try:
+            safe_cancel_order(self, live.order_id)
+            with self.lock:
+                self._drop_working_sell(live.order_id)
+            self.logger.warning(
+                "Cancelling orphan sell id=%s px=%.2f qty=%s status=%s",
+                live.order_id,
+                live.price,
+                live.qty,
+                live.status,
+            )
+        except Exception as e:
+            self.logger.exception(
+                "Failed to cancel orphan sell id=%s: %s",
+                live.order_id,
+                e,
+            )
+
     def _record_adoption_seen_sell(self, live: LiveOrder) -> None:
         """Track every working sell reported during the open-order snapshot."""
         for i, seen in enumerate(self._adoption_seen_sells):
@@ -713,6 +733,16 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             remaining=remaining,
             total_qty=total_qty,
         )
+
+        if not self.adoption_phase:
+            if side == "SELL":
+                with self.lock:
+                    tracked_id = (
+                        self.sell_order.order_id if self.sell_order is not None else None
+                    )
+                if tracked_id != orderId:
+                    self._cancel_orphan_open_sell(live)
+                    return
 
         if side == "SELL":
             with self.lock:
@@ -1435,7 +1465,6 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             else qty
         )
         order = self.build_lmt_order(side, ib_qty, px)
-        self.placeOrder(oid, self.contract, order)
         if side == "BUY":
             self.buy_order = LiveOrder(
                 order_id=oid,
@@ -1455,6 +1484,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             )
             with self.lock:
                 self._note_working_sell_qty(oid, qty, status="PendingSubmit")
+        self.placeOrder(oid, self.contract, order)
         if prior is None:
             self.logger.info(
                 "Order placed id=%s side=%s qty=%s px=%.2f [%s]",
