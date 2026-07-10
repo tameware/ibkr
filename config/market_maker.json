@@ -16,7 +16,7 @@
     "//": "Don't go long more than this many shares.",
     "max_gross_shares": 5000,
     "//": "Daily share-turn cap (buy + sell fills)",
-    "min_spread": 0.12,
+    "min_spread": 0.25,
     "//": "Only quote when NBBO spread is at least this wide (more edge per fill)",
     "max_spread": 4.00,
     "//": "Reject NBBO when spread exceeds this (stale/erroneous one-sided quotes)",
