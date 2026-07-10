@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from ibapi.common import OrderId, TickerId
 from ibapi.contract import Contract
@@ -218,6 +218,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         self.target_conid: Optional[int] = None
         self.open_orders_snapshot_done = False
         self.adoption_phase = False
+        self._adoption_seen_sells: List[LiveOrder] = []
         self._prev_us_regular_hours: bool | None = None
         self._last_order_update_log_key: Dict[int, Tuple[int, int, int, float]] = {}
 
@@ -307,6 +308,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             self.adoption_phase = True
             self.buy_order = None
             self.sell_order = None
+            self._adoption_seen_sells = []
 
         self.request_contract_details()
         self.reqPositions()
@@ -402,6 +404,28 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 live.side,
                 e,
             )
+
+    def _record_adoption_seen_sell(self, live: LiveOrder) -> None:
+        """Track every working sell reported during the open-order snapshot."""
+        for i, seen in enumerate(self._adoption_seen_sells):
+            if seen.order_id == live.order_id:
+                self._adoption_seen_sells[i] = live
+                return
+        self._adoption_seen_sells.append(live)
+
+    def _cancel_adoption_sell_stragglers(self) -> None:
+        """Cancel working sells seen at startup except the one we kept."""
+        with self.lock:
+            keep_id = self.sell_order.order_id if self.sell_order is not None else None
+            stragglers = [
+                seen
+                for seen in self._adoption_seen_sells
+                if keep_id is None or seen.order_id != keep_id
+            ]
+            self._adoption_seen_sells = []
+
+        for seen in stragglers:
+            self._cancel_adopted_extra(seen)
 
     def _format_nbbo_for_log(self) -> str:
         """Current NBBO snapshot for log lines (call under ``self.lock`` or accept race)."""
@@ -698,6 +722,8 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         extra_to_cancel = None
 
         with self.lock:
+            if side == "SELL":
+                self._record_adoption_seen_sell(live)
             if side == "BUY":
                 incumbent = self.buy_order
                 if incumbent is None:
@@ -766,6 +792,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
 
     def openOrderEnd(self):
         """IB callback: open-order snapshot complete."""
+        self._cancel_adoption_sell_stragglers()
         with self.lock:
             self.open_orders_snapshot_done = True
             self.adoption_phase = False

@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 from zoneinfo import ZoneInfo
 
-from tests.ibapi_mocks import install_ibapi_mocks
+from tests.ibapi_mocks import MockContract, MockOrder, install_ibapi_mocks
 from tests.ledger_test_helpers import init_test_ledgers_dir
 
 install_ibapi_mocks(ticktype=False, order_cancel=True)
@@ -694,6 +694,117 @@ class TestMarketMakerCore(unittest.TestCase):
             status="Filled",
         )
         self.assertTrue(self.mm._should_keep_order(inc, cand))
+
+    def _submit_open_sell(
+        self,
+        order_id: int,
+        qty: int,
+        *,
+        price: float = 50.0,
+        filled: int = 0,
+        status: str = "Submitted",
+    ) -> None:
+        contract = MockContract()
+        contract.symbol = self.mm.contract.symbol
+        contract.secType = self.mm.contract.secType
+        contract.currency = self.mm.contract.currency
+        contract.primaryExchange = self.mm.contract.primaryExchange
+
+        order = MockOrder()
+        order.action = "SELL"
+        order.orderType = "LMT"
+        order.totalQuantity = qty
+        order.lmtPrice = price
+        order.clientId = self.mm.client_id
+
+        state = MagicMock()
+        state.filled = filled
+        state.remaining = qty - filled
+        state.status = status
+
+        self.mm.openOrder(order_id, contract, order, state)
+
+    def test_open_order_adoption_records_all_sells(self):
+        self.mm.adoption_phase = True
+        self.mm._adoption_seen_sells = []
+        self._submit_open_sell(2, 90)
+        self._submit_open_sell(10, 74)
+        ids = [s.order_id for s in self.mm._adoption_seen_sells]
+        self.assertEqual(sorted(ids), [2, 10])
+
+    def test_open_order_end_cancels_orphan_sells_not_adopted(self):
+        keeper = LiveOrder(
+            order_id=10,
+            side="SELL",
+            price=45.0,
+            qty=74,
+            remaining=74,
+            total_qty=74,
+        )
+        orphan = LiveOrder(
+            order_id=2,
+            side="SELL",
+            price=45.0,
+            qty=90,
+            remaining=90,
+            total_qty=90,
+        )
+        self.mm.sell_order = keeper
+        self.mm._adoption_seen_sells = [keeper, orphan]
+        with patch.object(self.mm, "_cancel_adopted_extra") as cancel:
+            self.mm.openOrderEnd()
+        cancel.assert_called_once_with(orphan)
+        self.assertEqual(self.mm._adoption_seen_sells, [])
+        self.assertFalse(self.mm.adoption_phase)
+        self.assertTrue(self.mm.open_orders_snapshot_done)
+
+    def test_open_order_end_does_not_cancel_adopted_sell(self):
+        keeper = LiveOrder(
+            order_id=10,
+            side="SELL",
+            price=45.0,
+            qty=74,
+            remaining=74,
+            total_qty=74,
+        )
+        self.mm.sell_order = keeper
+        self.mm._adoption_seen_sells = [keeper]
+        with patch.object(self.mm, "_cancel_adopted_extra") as cancel:
+            self.mm.openOrderEnd()
+        cancel.assert_not_called()
+        self.assertEqual(self.mm._adoption_seen_sells, [])
+
+    def test_open_order_end_cancels_all_seen_sells_when_none_adopted(self):
+        first = LiveOrder(
+            order_id=2,
+            side="SELL",
+            price=45.0,
+            qty=90,
+            remaining=90,
+            total_qty=90,
+        )
+        second = LiveOrder(
+            order_id=10,
+            side="SELL",
+            price=45.0,
+            qty=74,
+            remaining=74,
+            total_qty=74,
+        )
+        self.mm.sell_order = None
+        self.mm._adoption_seen_sells = [first, second]
+        with patch.object(self.mm, "_cancel_adopted_extra") as cancel:
+            self.mm.openOrderEnd()
+        self.assertEqual(cancel.call_count, 2)
+        cancel.assert_any_call(first)
+        cancel.assert_any_call(second)
+
+    def test_startup_resets_adoption_seen_sells(self):
+        self.mm._adoption_seen_sells = [
+            LiveOrder(order_id=1, side="SELL", price=1.0, qty=1)
+        ]
+        self.mm.startup()
+        self.assertEqual(self.mm._adoption_seen_sells, [])
 
     def test_should_keep_sell_adoption_prefers_larger_working_size(self):
         self._seed_pos(200)
