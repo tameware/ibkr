@@ -1771,10 +1771,17 @@ def run_bot(
     extra_daemon_threads: Optional[Sequence[DaemonThreadSpec]] = None,
     connect_timeout_seconds: Optional[float] = None,
     ready_label: str = "IBKR API ready",
+    reconnect: Optional[bool] = None,
+    reconnect_delay_seconds: Optional[float] = None,
 ) -> int:
     """Connect, start the API thread, wait for readiness, run ``main_loop``, then stop.
 
-    Returns 0 on normal completion, 1 if the ready wait times out.
+    When ``reconnect`` is enabled (argument or config ``reconnect``), a dropped IB
+    socket is treated as recoverable: the client is reset and connection is retried
+    until ``app.stop()`` sets ``shutdown_flag``.
+
+    Returns 0 on normal completion, 1 if the ready wait times out (and reconnect
+    is disabled).
     """
     host = str(config["host"])
     port = int(config["port"])
@@ -1784,21 +1791,28 @@ def run_bot(
         if connect_timeout_seconds is not None
         else config.get("connect_timeout_seconds", 30.0)
     )
+    reconnect_enabled = (
+        bool(reconnect)
+        if reconnect is not None
+        else cfg_bool(config, "reconnect", False)
+    )
+    delay = float(
+        reconnect_delay_seconds
+        if reconnect_delay_seconds is not None
+        else config.get("reconnect_delay_seconds", 5.0)
+    )
     logger = getattr(app, "logger", None)
 
-    if logger is not None:
-        logger.info(
-            "Connecting to IBKR host=%s port=%s client_id=%s",
-            host,
-            port,
-            client_id,
+    def should_stop() -> bool:
+        """True when the bot has been asked to shut down permanently."""
+        return bool(getattr(app, "shutdown_flag", False)) or bool(
+            getattr(app, "_stop_called", False)
         )
 
-    app.connect(host, port, client_id)
-
-    threading.Thread(target=app.run, name="IBAPI", daemon=True).start()
-
-    if extra_daemon_threads:
+    def start_extra_threads() -> None:
+        """Start optional daemon workers once for the process lifetime."""
+        if not extra_daemon_threads:
+            return
         for spec in extra_daemon_threads:
             if isinstance(spec, tuple):
                 name, target = spec
@@ -1806,25 +1820,62 @@ def run_bot(
                 name, target = "IBBotExtra", spec
             threading.Thread(target=target, name=name, daemon=True).start()
 
-    if not wait_for_ib_ready(
-        is_ready,
-        is_connected=app.isConnected,
-        timeout_seconds=timeout,
-    ):
+    def connect_once() -> bool:
+        """Connect and wait until ``is_ready``; return False on timeout."""
         if logger is not None:
-            logger.error(
-                "Timed out after %.0fs waiting for %s (connected=%s). "
-                "Check TWS/IB Gateway, API settings, host/port, and client_id=%s.",
-                timeout,
-                ready_label,
-                app.isConnected(),
+            logger.info(
+                "Connecting to IBKR host=%s port=%s client_id=%s",
+                host,
+                port,
                 client_id,
             )
+
+        app.connect(host, port, client_id)
+        threading.Thread(target=app.run, name="IBAPI", daemon=True).start()
+
+        if not wait_for_ib_ready(
+            is_ready,
+            is_connected=app.isConnected,
+            timeout_seconds=timeout,
+        ):
+            if logger is not None:
+                logger.error(
+                    "Timed out after %.0fs waiting for %s (connected=%s). "
+                    "Check TWS/IB Gateway, API settings, host/port, and client_id=%s.",
+                    timeout,
+                    ready_label,
+                    app.isConnected(),
+                    client_id,
+                )
+            try:
+                app.disconnect()
+            except Exception:
+                pass
+            return False
+        return True
+
+    def prepare_reconnect() -> None:
+        """Reset the IB client after a dropped socket before connecting again."""
+        if logger is not None:
+            logger.info(
+                "IBKR disconnected; reconnecting in %.1fs (client_id=%s)",
+                delay,
+                client_id,
+            )
+        time.sleep(delay)
+        if should_stop():
+            return
         try:
-            app.disconnect()
+            if hasattr(app, "reset"):
+                app.reset()
+        except Exception as e:
+            if logger is not None:
+                logger.warning("IB client reset before reconnect failed: %s", e)
+        try:
+            if hasattr(app, "api_ready"):
+                app.api_ready = False
         except Exception:
             pass
-        return 1
 
     def handle_sig(*_args: object) -> None:
         """Signal handler that requests graceful shutdown."""
@@ -1836,11 +1887,34 @@ def run_bot(
     signal.signal(signal.SIGINT, handle_sig)
     signal.signal(signal.SIGTERM, handle_sig)
 
+    extras_started = False
+    exit_code = 0
     try:
-        main_loop()
-    except KeyboardInterrupt:
-        handle_sig()
+        while not should_stop():
+            if extras_started:
+                prepare_reconnect()
+                if should_stop():
+                    break
+
+            if not connect_once():
+                if reconnect_enabled and not should_stop():
+                    extras_started = True
+                    continue
+                exit_code = 1
+                break
+
+            if not extras_started:
+                start_extra_threads()
+                extras_started = True
+
+            try:
+                main_loop()
+            except KeyboardInterrupt:
+                handle_sig()
+
+            if not reconnect_enabled or should_stop():
+                break
     finally:
         app.stop()
 
-    return 0
+    return exit_code

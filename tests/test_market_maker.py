@@ -1236,6 +1236,23 @@ class TestMarketMakerCore(unittest.TestCase):
             pb.assert_called_once()
             ps.assert_called_once()
 
+    def test_on_api_ready_runs_startup_on_every_connection(self):
+        self.mm.startup = Mock()
+        self.mm.on_api_ready(42)
+        self.mm.on_api_ready(43)
+        self.assertEqual(self.mm.startup.call_count, 2)
+        self.assertTrue(self.mm.connected_flag)
+        self.assertTrue(self.mm.started)
+
+    def test_connection_closed_clears_connected_without_shutdown(self):
+        self.mm.connected_flag = True
+        self.mm.shutdown_flag = False
+        self.mm._api_ready = True
+        self.mm.connectionClosed()
+        self.assertFalse(self.mm.connected_flag)
+        self.assertFalse(self.mm.api_ready)
+        self.assertFalse(self.mm.shutdown_flag)
+
     def test_stop_cancels_open_orders_when_flag_true(self):
         self.mm.cancel_open_orders_on_shutdown = True
         self.mm.buy_order = LiveOrder(order_id=1, side="BUY", price=10.0, qty=100)

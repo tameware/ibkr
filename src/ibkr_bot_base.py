@@ -562,9 +562,12 @@ class IbkrBotApp(EWrapper, EClient, ABC):
         self.logger.debug("IBKR connectAck received")
 
     def connectionClosed(self) -> None:
-        """IB callback: mark disconnected and run teardown hook."""
+        """IB callback: mark disconnected and run teardown hook.
+
+        Does not set ``shutdown_flag`` so the process can reconnect when IB
+        Gateway/TWS restarts; only ``stop()`` requests a full shutdown.
+        """
         self._api_ready = False
-        self.shutdown_flag = True
         self.logger.warning("IBKR connection closed (connectionClosed callback)")
         self.on_connection_closed()
 

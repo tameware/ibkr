@@ -314,14 +314,15 @@ class TestIbkrBotApp(unittest.TestCase):
         self.assertEqual(bot.next_order_id, 100)
         self.assertTrue(bot.startup_called)
 
-    def test_connection_closed_sets_shutdown(self):
+    def test_connection_closed_clears_api_ready_without_shutdown(self):
         bot = _StubBot(
             {"symbol": "X", "sec_type": "STK", "currency": "USD", "exchange": "SMART"}
         )
         bot._api_ready = True
+        bot.shutdown_flag = False
         bot.connectionClosed()
         self.assertFalse(bot.api_ready)
-        self.assertTrue(bot.shutdown_flag)
+        self.assertFalse(bot.shutdown_flag)
 
     def test_stop_disconnects(self):
         bot = _StubBot(

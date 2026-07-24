@@ -1,7 +1,9 @@
 {
   "ibkr": {
     "client_id": 2,
-    "account": ""
+    "account": "",
+    "reconnect": true,
+    "reconnect_delay_seconds": 5.0
   },
 
   "contract": {

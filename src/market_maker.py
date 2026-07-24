@@ -262,13 +262,12 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             self.next_order_id = order_id
 
     def on_api_ready(self, order_id: int) -> None:
-        """Mark connected and run ``startup`` on first ``nextValidId``."""
+        """Mark connected and run ``startup`` on each ``nextValidId`` (incl. reconnect)."""
         with self.lock:
             self.connected_flag = True
-        self.logger.info("Connected to IBKR. nextValidId=%s", order_id)
-        if not self.started:
             self.started = True
-            self.startup()
+        self.logger.info("Connected to IBKR. nextValidId=%s", order_id)
+        self.startup()
 
     def on_connection_closed(self) -> None:
         """Clear ``connected_flag`` when IB closes the socket."""
@@ -1867,7 +1866,7 @@ def main():
         run_bot(
             app,
             config,
-            is_ready=lambda: app.started,
+            is_ready=lambda: app.api_ready,
             main_loop=lambda: idle_until_shutdown(app),
             extra_daemon_threads=[("Watchdog", app.watchdog_loop)],
             ready_label="nextValidId",

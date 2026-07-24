@@ -872,6 +872,8 @@ class TestRunBot(unittest.TestCase):
     def test_run_bot_success_runs_main_loop_and_stops(self):
         app = MagicMock()
         app.logger = MagicMock()
+        app.shutdown_flag = False
+        app._stop_called = False
         app.isConnected.return_value = True
         app.api_ready = True
         ran = {"main": False}
@@ -896,6 +898,8 @@ class TestRunBot(unittest.TestCase):
     def test_run_bot_returns_one_on_ready_timeout(self):
         app = MagicMock()
         app.logger = MagicMock()
+        app.shutdown_flag = False
+        app._stop_called = False
         app.isConnected.return_value = False
         config = {"host": "127.0.0.1", "port": 7497, "client_id": 2}
 
@@ -908,11 +912,13 @@ class TestRunBot(unittest.TestCase):
         )
         self.assertEqual(code, 1)
         app.disconnect.assert_called_once()
-        app.stop.assert_not_called()
+        app.stop.assert_called()
 
     def test_run_bot_starts_extra_daemon_threads(self):
         app = MagicMock()
         app.logger = MagicMock()
+        app.shutdown_flag = False
+        app._stop_called = False
         app.isConnected.return_value = True
         started = threading.Event()
 
@@ -950,6 +956,84 @@ class TestRunBot(unittest.TestCase):
         app.shutdown_flag = False
         app.isConnected.return_value = False
         idle_until_shutdown(app, poll_seconds=0.02)
+
+    def test_run_bot_reconnects_after_disconnect(self):
+        app = MagicMock()
+        app.logger = MagicMock()
+        app.shutdown_flag = False
+        app._stop_called = False
+        app.api_ready = False
+        app.isConnected.return_value = True
+        connect_count = {"n": 0}
+        main_cycles = {"n": 0}
+
+        def connect(_host, _port, _client_id):
+            connect_count["n"] += 1
+            app.api_ready = True
+
+        app.connect.side_effect = connect
+
+        def is_ready():
+            return bool(app.api_ready)
+
+        def main_loop():
+            main_cycles["n"] += 1
+            if main_cycles["n"] == 1:
+                app.api_ready = False
+                app.isConnected.return_value = False
+                return
+            app.shutdown_flag = True
+
+        config = {
+            "host": "127.0.0.1",
+            "port": 7497,
+            "client_id": 1,
+            "reconnect": True,
+            "reconnect_delay_seconds": 0.01,
+        }
+        code = run_bot(
+            app,
+            config,
+            is_ready=is_ready,
+            main_loop=main_loop,
+            connect_timeout_seconds=1.0,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(connect_count["n"], 2)
+        self.assertEqual(main_cycles["n"], 2)
+        app.reset.assert_called()
+        app.stop.assert_called()
+
+    def test_run_bot_does_not_reconnect_when_disabled(self):
+        app = MagicMock()
+        app.logger = MagicMock()
+        app.shutdown_flag = False
+        app._stop_called = False
+        app.api_ready = True
+        app.isConnected.return_value = True
+        main_cycles = {"n": 0}
+
+        def main_loop():
+            main_cycles["n"] += 1
+            app.isConnected.return_value = False
+
+        config = {
+            "host": "127.0.0.1",
+            "port": 7497,
+            "client_id": 1,
+            "reconnect": False,
+        }
+        code = run_bot(
+            app,
+            config,
+            is_ready=lambda: True,
+            main_loop=main_loop,
+            connect_timeout_seconds=1.0,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(main_cycles["n"], 1)
+        app.connect.assert_called_once()
+        app.stop.assert_called()
 
 
 class TestIbClientOwnership(unittest.TestCase):
