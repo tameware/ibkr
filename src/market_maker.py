@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
-import logging.handlers
 import math
 import sys
 import threading
@@ -12,8 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, List, Literal, Optional, Tuple, Union
 
-from ibapi.common import OrderId, TickerId
-from ibapi.contract import Contract
+from ibapi.common import TickerId
 from ibapi.order import Order
 
 from ibkr_app_support import (
@@ -23,14 +20,12 @@ from ibkr_app_support import (
     add_ignore_ledger_argument,
     add_logging_arguments,
     add_min_order_size_argument,
-    add_never_sell_below_avg_cost_argument,
     add_session_hours_arguments,
     apply_order_account,
     average_cost_after_purchase,
     cfg_bool as _cfg_bool,
     execution_belongs_to_client,
     execution_fill_tuple,
-    flatten_config_sections,
     has_valid_nbbo,
     handle_ledger_ib_position,
     is_valid_quote_pair,
@@ -39,12 +34,9 @@ from ibkr_app_support import (
     idle_until_shutdown,
     clamp_buy_to_avoid_self_trade,
     clamp_quote_prices_to_avoid_self_trade,
-    clamp_sell_to_avg_cost_floor,
     clamp_sell_to_avoid_self_trade,
     load_merged_config,
     log_session_transition,
-    inventory_penalty_session_active,
-    meets_min_order_size,
     max_sell_shares,
     min_order_size_from_config,
     NbboThrottle,
@@ -58,6 +50,13 @@ from ibkr_app_support import (
     sync_attrs_from_ledger,
 )
 from ibkr_bot_base import ContractResolutionMixin, IbkrBotApp
+from quote_engine import (
+    DailyVolumeTracker,
+    QuoteInputs,
+    QuoteParams,
+    decide_quotes,
+    session_progress_fraction,
+)
 
 
 @dataclass
@@ -92,6 +91,9 @@ class QuoteMgmtSnapshot:
     gross_shares_traded: int
     avg_cost: float
     max_sell: int
+    bought_today: int
+    sold_today: int
+    session_progress: float
     last_quote_eval: float
     last_nbbo_snap: Optional[Tuple[Optional[float], Optional[float], int, int]]
     quote_bid: Optional[float]
@@ -107,9 +109,9 @@ class QuoteMgmtSnapshot:
 @dataclass(frozen=True)
 class QuoteDecision:
     buy_qty: int
-    buy_px: float
+    buy_px: Optional[float]
     sell_qty: int
-    sell_px: float
+    sell_px: Optional[float]
 
 
 @dataclass(frozen=True)
@@ -143,17 +145,18 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         self.account_filter = str(raw_acct).strip() or None
 
         self.base_qty = int(config.get("base_qty", 100))
-        self.max_position = int(config.get("max_position", 1000))
+        self.max_position = int(config.get("max_position", 300))
         self.max_gross_shares = int(config.get("max_gross_shares", 1500))
-        self.min_inventory_before_offering = int(
-            config.get("min_inventory_before_offering", 100)
-        )
         self.min_spread = float(config.get("min_spread", 0.20))
         self.max_spread = float(config.get("max_spread", 4.00))
-        self.inside_improve = float(config.get("inside_improve", 0.10))
-        self.inventory_penalty_per_100 = float(
-            config.get("inventory_penalty_per_100", 0.05)
+        self.daily_volume_target = int(config.get("daily_volume_target", 400))
+        self.min_profit_per_share = float(
+            config.get("min_profit_per_share", 0.03)
         )
+        self.commission_per_share = float(
+            config.get("commission_per_share", 0.005)
+        )
+        self.volume = DailyVolumeTracker(str(config["market_timezone"]))
         self.quote_refresh_seconds = float(config.get("quote_refresh_seconds", 3.0))
         self._nbbo_throttle = NbboThrottle(
             self.quote_refresh_seconds,
@@ -176,9 +179,6 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         )
         self.watchdog_repeat_seconds = float(
             config.get("watchdog_repeat_seconds", 60.0)
-        )
-        self.min_quote_spread_cents = float(
-            config.get("min_quote_spread_cents", 50.0)
         )
         self.min_tick = float(config.get("min_tick", 0.01))
         self.ignore_ledger = _cfg_bool(config, "ignore_ledger", False)
@@ -948,6 +948,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
 
         with self.lock:
             self.gross_shares_traded += shares
+            self.volume.record_fill(side, shares)
 
             if self.ignore_ledger:
                 self._apply_fill_to_trading_position(side, shares, px)
@@ -1013,84 +1014,6 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         t = self._effective_min_tick()
         n = round(x / t)
         return round(n * t, 10)
-
-    def _nbbo_tick_improve_with_nbbo(
-        self,
-        buy_px: float,
-        sell_px: float,
-        buy_qty: int,
-        sell_qty: int,
-        bid: float,
-        ask: float,
-        bid_size: int,
-        ask_size: int,
-    ) -> Tuple[float, float]:
-        """Like ``_nbbo_tick_improve_quotes`` but uses explicit NBBO depth (thread-safe snapshot)."""
-        tick = self._effective_min_tick()
-        min_width = self.min_quote_spread_cents / 100.0
-
-        bid_depth_ok = bid_size == 0 or bid_size > buy_qty
-        ask_depth_ok = ask_size == 0 or ask_size > sell_qty
-
-        if buy_qty > 0 and bid_depth_ok:
-            cand_buy = self._quantize_to_tick(buy_px + tick)
-            if (
-                cand_buy < ask
-                and cand_buy > bid
-                and sell_px - cand_buy >= min_width
-            ):
-                buy_px = cand_buy
-                self.logger.debug(
-                    "NBBO tick improve BUY: bid_sz=%s buy_qty=%s -> buy_px=%.4f",
-                    bid_size,
-                    buy_qty,
-                    buy_px,
-                )
-
-        if sell_qty > 0 and ask_depth_ok:
-            cand_sell = self._quantize_to_tick(sell_px - tick)
-            if (
-                cand_sell > bid
-                and cand_sell < ask
-                and cand_sell - buy_px >= min_width
-            ):
-                sell_px = cand_sell
-                self.logger.debug(
-                    "NBBO tick improve SELL: ask_sz=%s sell_qty=%s -> sell_px=%.4f",
-                    ask_size,
-                    sell_qty,
-                    sell_px,
-                )
-
-        return buy_px, sell_px
-
-    def _nbbo_tick_improve_quotes(
-        self,
-        buy_px: float,
-        sell_px: float,
-        buy_qty: int,
-        sell_qty: int,
-    ) -> Tuple[float, float]:
-        """Raise working bid / lower working ask by one minTick when NBBO size exceeds
-        our quote size on that side, only if our bid–ask width stays >=
-        min_quote_spread_cents (and quotes remain passive vs NBBO).
-
-        If bid_size / ask_size are still zero (no tickSize yet from IB), treat depth as
-        unknown and allow improvement so price-only NBBO streams still work."""
-        bid = self.quote.bid
-        ask = self.quote.ask
-        if bid is None or ask is None:
-            return buy_px, sell_px
-        return self._nbbo_tick_improve_with_nbbo(
-            buy_px,
-            sell_px,
-            buy_qty,
-            sell_qty,
-            bid,
-            ask,
-            self.quote.bid_size,
-            self.quote.ask_size,
-        )
 
     def _order_account(self) -> Optional[str]:
         """Account id for ``placeOrder`` (config or first ``position`` callback)."""
@@ -1241,59 +1164,17 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         """Market is valid."""
         return self.market_invalid_reason() is None
 
-    def _compute_desired_quotes_for(
-        self, bid: float, ask: float, position_size: int, avg_cost: float
-    ) -> Tuple[Optional[float], Optional[float]]:
-        """Compute desired quotes for."""
-        spread = ask - bid
-
-        buy_px = bid + min(self.inside_improve, spread * 0.25)
-        sell_px = ask - min(self.inside_improve, spread * 0.25)
-
-        long_hundreds = max(0, position_size) / 100.0
-        if inventory_penalty_session_active(self.config):
-            skew = long_hundreds * self.inventory_penalty_per_100
-        else:
-            skew = 0.0
-
-        buy_px -= skew
-        sell_px -= min(skew * 2.0, spread * 0.20)
-
-        if position_size > 0:
-            sell_px = clamp_sell_to_avg_cost_floor(sell_px, avg_cost, self.config)
-
-        buy_px = min(buy_px, ask - 0.02)
-        sell_px = max(sell_px, bid + 0.02)
-
-        buy_px = self.round_down_cent(buy_px)
-        sell_px = self.round_up_cent(sell_px)
-
-        buy_px, sell_px = clamp_quote_prices_to_avoid_self_trade(
-            buy_px, sell_px, self.config, bid=bid, ask=ask
+    def _quote_engine_params(self) -> QuoteParams:
+        """Engine parameters from live attributes (min tick may update at runtime)."""
+        return QuoteParams(
+            max_position=self.max_position,
+            lot_size=self.base_qty,
+            min_order_size=self.min_order_size,
+            daily_volume_target=self.daily_volume_target,
+            min_profit_per_share=self.min_profit_per_share,
+            commission_per_share=self.commission_per_share,
+            tick=self._effective_min_tick(),
         )
-
-        if buy_px >= sell_px:
-            return None, None
-
-        return buy_px, sell_px
-
-    def compute_desired_quotes(self):
-        """Desired bid/ask prices from inventory skew and NBBO, or None if invalid."""
-        bid = self.quote.bid
-        ask = self.quote.ask
-        if bid is None or ask is None:
-            return None, None
-        return self._compute_desired_quotes_for(bid, ask, self.position_size, self.avg_cost)
-
-    def _desired_sizes_for(self, position_size: int) -> Tuple[int, int]:
-        """Return ``(buy_qty, sell_qty)`` for the given position."""
-        buy_qty = min(self.base_qty, max(0, self.max_position - position_size))
-        sell_qty = self._max_sell_qty()
-        return buy_qty, sell_qty
-
-    def desired_sizes(self):
-        """Current ``(buy_qty, sell_qty)`` from live position state."""
-        return self._desired_sizes_for(self.position_size)
 
     def _sell_working_open_qty(self, live: LiveOrder) -> int:
         """Working size for a sell (prefer IB ``remaining``, else last ``qty``)."""
@@ -1549,6 +1430,9 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 gross_shares_traded=self.gross_shares_traded,
                 avg_cost=self.avg_cost,
                 max_sell=self._max_sell_qty(),
+                bought_today=self.volume.bought_today(),
+                sold_today=self.volume.sold_today(),
+                session_progress=session_progress_fraction(self.config),
                 last_quote_eval=self.last_quote_eval,
                 last_nbbo_snap=self._nbbo_throttle.last_key,
                 quote_bid=self.quote.bid,
@@ -1572,61 +1456,50 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         qb, qa = snap.quote_bid, snap.quote_ask
         if qb is None or qa is None:
             return QuotePipelineInvalidPair(True, qb, qa)
-
-        buy_px, sell_px = self._compute_desired_quotes_for(
-            float(qb), float(qa), snap.position_size, snap.avg_cost
-        )
         bid = float(qb)
         ask = float(qa)
 
-        if not self._quotes_pair_is_valid(buy_px, sell_px):
-            return QuotePipelineInvalidPair(True, buy_px, sell_px)
-
-        assert buy_px is not None and sell_px is not None
-
-        if not self._quotes_pair_is_valid(buy_px, sell_px):
-            return QuotePipelineInvalidPair(False, buy_px, sell_px)
-
-        buy_qty, sell_qty = self._desired_sizes_for(snap.position_size)
-
-        sell_qty = min(sell_qty, snap.max_sell)
-        if snap.max_sell <= 0:
-            sell_qty = 0
-
-        if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
-            sell_qty = 0
-
-        buy_px, sell_px = self._nbbo_tick_improve_with_nbbo(
-            buy_px,
-            sell_px,
-            buy_qty,
-            sell_qty,
-            bid,
-            ask,
-            snap.quote_bid_sz,
-            snap.quote_ask_sz,
+        proposal = decide_quotes(
+            self._quote_engine_params(),
+            QuoteInputs(
+                bid=bid,
+                ask=ask,
+                position=snap.position_size,
+                avg_cost=snap.avg_cost,
+                bought_today=snap.bought_today,
+                sold_today=snap.sold_today,
+                session_progress=snap.session_progress,
+            ),
         )
+        buy_qty = proposal.buy_qty
+        buy_px = proposal.buy_px
+        sell_qty = min(proposal.sell_qty, max(0, snap.max_sell))
+        sell_px = proposal.sell_px if sell_qty > 0 else None
 
-        buy_px, sell_px = clamp_quote_prices_to_avoid_self_trade(
-            buy_px, sell_px, self.config, bid=bid, ask=ask
-        )
-
-        if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
-            sell_qty = 0
+        if buy_px is not None and sell_px is not None:
+            if not self._quotes_pair_is_valid(buy_px, sell_px):
+                return QuotePipelineInvalidPair(True, buy_px, sell_px)
+            buy_px, sell_px = clamp_quote_prices_to_avoid_self_trade(
+                buy_px, sell_px, self.config, bid=bid, ask=ask
+            )
+            if buy_px >= sell_px:
+                sell_qty = 0
+                sell_px = None
 
         sw = snap.sell_work_px
-        if sw is not None and buy_qty > 0 and buy_px >= sw:
+        if sw is not None and buy_px is not None and buy_px >= sw:
             buy_px = self.round_down_cent(sw - 0.01)
 
         bw = snap.buy_work_px
-        if bw is not None and sell_qty > 0 and sell_px <= bw:
+        if bw is not None and sell_px is not None and sell_px <= bw:
             sell_px = self.round_up_cent(bw + 0.01)
 
-        if buy_qty > 0 and sell_qty > 0 and buy_px >= sell_px:
+        if buy_px is not None and sell_px is not None and buy_px >= sell_px:
             self.logger.warning(
                 "Final anti-self-trade guard triggered; suppressing sell quote."
             )
             sell_qty = 0
+            sell_px = None
 
         return QuoteDecision(
             buy_qty=buy_qty,
@@ -1777,24 +1650,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
     add_ib_connection_arguments(parser, include_account=True)
 
     parser.add_argument("--base_qty", type=int)
-    parser.add_argument("--max_position", type=int)
+    parser.add_argument(
+        "--max_position",
+        type=int,
+        help="Never hold more than this many shares (default: 300)",
+    )
     parser.add_argument("--max_gross_shares", type=int)
-    parser.add_argument("--min_inventory_before_offering", type=int)
     parser.add_argument("--min_spread", type=float)
     parser.add_argument(
         "--max_spread",
         type=float,
         help="Do not quote when NBBO spread exceeds this (default: 4.00)",
     )
-    parser.add_argument("--inside_improve", type=float)
-    parser.add_argument("--inventory_penalty_per_100", type=float)
     parser.add_argument(
-        "--inventory_penalty_last_hours",
+        "--daily_volume_target",
+        type=int,
+        help="Shares to buy and to sell per day; paces quote aggressiveness (default: 400)",
+    )
+    parser.add_argument(
+        "--min_profit_per_share",
         type=float,
-        help=(
-            "Apply inventory skew only in the last N hours before market close "
-            "(default: 1.0; 0 disables)"
-        ),
+        help="Minimum net profit per share; floors sells above avg cost (default: 0.03)",
+    )
+    parser.add_argument(
+        "--commission_per_share",
+        type=float,
+        help="Estimated commission per share, counted twice per round trip (default: 0.005)",
     )
     parser.add_argument("--quote_refresh_seconds", type=float)
     parser.add_argument("--max_market_stale_seconds", type=float)
@@ -1812,7 +1693,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         help="Cancel tracked BUY/SELL quotes before disconnect (default: false)",
     )
-    add_never_sell_below_avg_cost_argument(parser)
     add_ignore_ledger_argument(parser)
     add_min_order_size_argument(parser)
 
@@ -1826,7 +1706,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--nbbo_watchdog_seconds", type=float)
     parser.add_argument("--watchdog_repeat_seconds", type=float)
-    parser.add_argument("--min_quote_spread_cents", type=float)
     parser.add_argument("--min_tick", type=float)
     parser.add_argument(
         "--mid_delta",

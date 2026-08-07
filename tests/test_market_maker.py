@@ -205,111 +205,6 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(merged["extra"], "x")
 
 
-class TestNbboTickImprove(unittest.TestCase):
-    """NBBO one-tick improvement vs size and min quote width."""
-
-    def setUp(self):
-        self._log_patcher = patch(
-            "ibkr_bot_base.build_logger", return_value=MagicMock()
-        )
-        self._log_patcher.start()
-        self.addCleanup(self._log_patcher.stop)
-        self.ledgers_dir = init_test_ledgers_dir(self)
-        self.mm = MarketMaker(
-            {
-                "ledgers_dir": self.ledgers_dir,
-                "symbol": "FDX",
-                "sec_type": "STK",
-                "currency": "USD",
-                "exchange": "SMART",
-                "primary_exchange": "NYSE",
-                "console": False,
-                "min_quote_spread_cents": 50.0,
-                "min_tick": 0.01,
-                **_SESSION_CFG,
-            }
-        )
-
-    def test_improves_buy_when_bid_size_exceeds_order_and_width_ok(self):
-        self.mm.quote.bid = 100.0
-        self.mm.quote.ask = 102.0
-        self.mm.quote.bid_size = 500
-        self.mm.quote.ask_size = 40
-        nb, ns = self.mm._nbbo_tick_improve_quotes(
-            100.0, 101.0, buy_qty=100, sell_qty=50
-        )
-        self.assertAlmostEqual(nb, 100.01)
-        self.assertAlmostEqual(ns, 101.0)
-
-    def test_skips_buy_when_bid_size_not_greater_than_order(self):
-        self.mm.quote.bid = 100.0
-        self.mm.quote.ask = 102.0
-        self.mm.quote.bid_size = 100
-        self.mm.quote.ask_size = 40
-        nb, ns = self.mm._nbbo_tick_improve_quotes(
-            100.0, 101.0, buy_qty=100, sell_qty=50
-        )
-        self.assertAlmostEqual(nb, 100.0)
-        self.assertAlmostEqual(ns, 101.0)
-
-    def test_skips_buy_when_tick_would_narrow_below_min_cents(self):
-        self.mm.quote.bid = 100.0
-        self.mm.quote.ask = 101.0
-        self.mm.quote.bid_size = 500
-        self.mm.quote.ask_size = 500
-        nb, ns = self.mm._nbbo_tick_improve_quotes(
-            100.0, 100.50, buy_qty=100, sell_qty=50
-        )
-        self.assertAlmostEqual(nb, 100.0)
-        self.assertAlmostEqual(ns, 100.50)
-
-    def test_improves_sell_when_ask_size_exceeds_order(self):
-        self.mm.quote.bid = 98.0
-        self.mm.quote.ask = 100.0
-        self.mm.quote.bid_size = 50
-        self.mm.quote.ask_size = 400
-        nb, ns = self.mm._nbbo_tick_improve_quotes(
-            98.5, 100.0, buy_qty=50, sell_qty=80
-        )
-        self.assertAlmostEqual(nb, 98.5)
-        self.assertAlmostEqual(ns, 99.99)
-
-    def test_improves_sell_when_ask_size_still_zero_price_only_nbbo(self):
-        """IB often sends bid/ask prices before tickSize; depth unknown => allow step-in."""
-        self.mm.quote.bid = 50.12
-        self.mm.quote.ask = 50.80
-        self.mm.quote.bid_size = 0
-        self.mm.quote.ask_size = 0
-        nb, ns = self.mm._nbbo_tick_improve_quotes(
-            50.12, 50.80, buy_qty=0, sell_qty=218
-        )
-        self.assertAlmostEqual(nb, 50.12)
-        self.assertAlmostEqual(ns, 50.79)
-
-    def test_skips_sell_when_ask_size_known_and_not_greater_than_order(self):
-        self.mm.quote.bid = 50.12
-        self.mm.quote.ask = 50.80
-        self.mm.quote.ask_size = 200
-        nb, ns = self.mm._nbbo_tick_improve_quotes(
-            50.12, 50.80, buy_qty=0, sell_qty=218
-        )
-        self.assertAlmostEqual(nb, 50.12)
-        self.assertAlmostEqual(ns, 50.80)
-
-    def test_skips_further_sell_improve_when_ask_sz_not_gt_order_even_if_inside_spread(self):
-        """ask_depth_ok requires ask_sz > sell_qty (or unknown 0); thin top when already
-        stepped in must not lower sell another tick (OZ: 218 shares, ask_sz=200 at 50.71)."""
-        self.mm.quote.bid = 50.0
-        self.mm.quote.ask = 50.71
-        self.mm.quote.bid_size = 300
-        self.mm.quote.ask_size = 200
-        nb, ns = self.mm._nbbo_tick_improve_quotes(
-            50.0, 50.71, buy_qty=0, sell_qty=218
-        )
-        self.assertAlmostEqual(nb, 50.0)
-        self.assertAlmostEqual(ns, 50.71)
-
-
 class TestInvalidMarketCancelPolicy(unittest.TestCase):
     def test_missing_nbbo_does_not_cancel(self):
         mm = MarketMaker.__new__(MarketMaker)
@@ -381,8 +276,6 @@ class TestMarketMakerCore(unittest.TestCase):
             "base_qty": 100,
             "max_position": 1000,
             "min_spread": 0.05,
-            "inside_improve": 0.10,
-            "inventory_penalty_per_100": 0.05,
             "quote_refresh_seconds": 3.0,
             "max_market_stale_seconds": 60.0,
             "mid_delta": 0.01,
@@ -561,39 +454,92 @@ class TestMarketMakerCore(unittest.TestCase):
             self.mm._poll_session_hours()
         mock_cancel.assert_not_called()
 
-    def test_compute_desired_quotes_flat_position(self):
+    def _decision(self, progress=0.5):
+        """Snapshot + engine decision with a fixed session progress."""
+        with patch(
+            "market_maker.session_progress_fraction", return_value=progress
+        ):
+            snap = self.mm._capture_quote_mgmt_snapshot()
+        return self.mm._compute_quote_decision(snap)
+
+    def test_default_max_position_is_300(self):
+        cfg = {k: v for k, v in self.base_config.items() if k != "max_position"}
+        self.assertEqual(MarketMaker(cfg).max_position, 300)
+
+    def test_quote_decision_flat_position_buys_lot_and_quotes_no_sell(self):
         self.mm.quote.bid = 100.0
         self.mm.quote.ask = 101.0
         self._seed_pos(0, avg_cost=0.0)
-        buy_px, sell_px = self.mm.compute_desired_quotes()
-        self.assertIsNotNone(buy_px)
-        self.assertIsNotNone(sell_px)
-        self.assertLess(buy_px, sell_px)
+        d = self._decision()
+        self.assertEqual(d.buy_qty, 100)
+        self.assertEqual(d.sell_qty, 0)
+        self.assertIsNone(d.sell_px)
+        # Far behind pace (nothing bought at half-session): bid + 0.40*spread.
+        self.assertAlmostEqual(d.buy_px, 100.40)
 
-    def test_inventory_penalty_skewed_only_in_last_hour_window(self):
-        self.mm.inside_improve = 0.0
-        self.mm.inventory_penalty_per_100 = 0.12
-        self.mm.quote.bid = 45.0
-        self.mm.quote.ask = 47.0
-        self._seed_pos(100, avg_cost=46.0)
-        with patch(
-            "market_maker.inventory_penalty_session_active", return_value=False
-        ):
-            buy_off, _ = self.mm.compute_desired_quotes()
-        with patch(
-            "market_maker.inventory_penalty_session_active", return_value=True
-        ):
-            buy_on, _ = self.mm.compute_desired_quotes()
-        self.assertAlmostEqual(buy_off, 45.0)
-        self.assertAlmostEqual(buy_on, 44.88)
+    def test_quote_decision_on_schedule_joins_bid(self):
+        self.mm.quote.bid = 100.0
+        self.mm.quote.ask = 101.0
+        self._seed_pos(0, avg_cost=0.0)
+        self.mm.volume.record_fill("BUY", 200)
+        d = self._decision(progress=0.5)
+        self.assertAlmostEqual(d.buy_px, 100.00)
 
-    def test_desired_sizes(self):
-        self._seed_pos(50)
-        self.mm.base_qty = 100
-        self.mm.max_position = 200
-        b, s = self.mm.desired_sizes()
-        self.assertEqual(b, 100)
-        self.assertEqual(s, 50)
+    def test_quote_decision_sell_never_below_profit_floor(self):
+        self.mm.quote.bid = 100.0
+        self.mm.quote.ask = 101.0
+        self._seed_pos(100, avg_cost=100.80)
+        d = self._decision()
+        # Floor = avg_cost + 2*commission + min_profit = 100.84, above the
+        # far-behind pacing step of ask - 0.40*spread = 100.60.
+        self.assertEqual(d.sell_qty, 100)
+        self.assertAlmostEqual(d.sell_px, 100.84)
+
+    def test_quote_decision_caps_buy_qty_at_max_position(self):
+        self.mm.max_position = 300
+        self.mm.quote.bid = 100.0
+        self.mm.quote.ask = 101.0
+        self._seed_pos(250, avg_cost=100.0)
+        d = self._decision()
+        self.assertEqual(d.buy_qty, 50)
+
+    def test_quote_decision_no_buy_at_position_cap(self):
+        self.mm.max_position = 300
+        self.mm.quote.bid = 100.0
+        self.mm.quote.ask = 101.0
+        self._seed_pos(300, avg_cost=100.0)
+        d = self._decision()
+        self.assertEqual(d.buy_qty, 0)
+        self.assertIsNone(d.buy_px)
+
+    def test_quote_decision_never_sells_more_than_position(self):
+        self.mm.quote.bid = 100.0
+        self.mm.quote.ask = 101.0
+        self._seed_pos(50, avg_cost=99.0)
+        d = self._decision()
+        self.assertEqual(d.sell_qty, 50)
+
+    def test_exec_details_update_daily_volume_by_side(self):
+        self.mm.maybe_manage_quotes = Mock()
+        contract = MockContract()
+        contract.symbol = "FDX"
+        contract.secType = "STK"
+        contract.currency = "USD"
+        contract.primaryExchange = "NYSE"
+
+        def execution(side, shares, exec_id):
+            e = MagicMock()
+            e.side = side
+            e.shares = shares
+            e.price = 100.0
+            e.execId = exec_id
+            e.clientId = self.mm.client_id
+            return e
+
+        self.mm.execDetails(0, contract, execution("BOT", 60, "x-1"))
+        self.mm.execDetails(0, contract, execution("SLD", 25, "x-2"))
+        self.assertEqual(self.mm.volume.bought_today(), 60)
+        self.assertEqual(self.mm.volume.sold_today(), 25)
 
     def test_ignore_ledger_logs_flag_on_startup(self):
         cfg = {**self.base_config, "ignore_ledger": True}
@@ -615,8 +561,7 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertEqual(mm.position_size, 1000)
         self.assertAlmostEqual(mm.avg_cost, 48.22)
         self.assertEqual(mm.ledger.qty, 100)
-        _, sell_qty = mm.desired_sizes()
-        self.assertEqual(sell_qty, 1000)
+        self.assertEqual(mm.max_sellable_qty(), 1000)
 
     def test_apply_fill_sell_caps_at_position(self):
         """SELL fills cannot reduce position below zero (uses sold, not raw shares)."""
@@ -978,8 +923,8 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.place_or_replace_buy = Mock()
         self.mm.place_or_replace_sell = Mock()
 
-        with patch("market_maker.time.time", return_value=ts), patch.object(
-            self.mm, "_compute_desired_quotes_for", return_value=(50.0, 51.0)
+        with patch("market_maker.time.time", return_value=ts), patch(
+            "market_maker.session_progress_fraction", return_value=0.5
         ):
             self.mm.maybe_manage_quotes(force=False)
 
@@ -1206,15 +1151,17 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.place_or_replace_buy = Mock()
         self.mm.place_or_replace_sell = Mock()
 
-        with patch("market_maker.time.time", return_value=ts), patch.object(
-            self.mm, "_compute_desired_quotes_for", return_value=(50.0, 50.75)
+        with patch("market_maker.time.time", return_value=ts), patch(
+            "market_maker.session_progress_fraction", return_value=0.5
         ):
             self.mm.maybe_manage_quotes(force=False)
 
         self.mm.place_or_replace_sell.assert_called_once()
         sell_qty, sell_px = self.mm.place_or_replace_sell.call_args[0]
         self.assertEqual(sell_qty, 218)
-        self.assertAlmostEqual(sell_px, 50.76, delta=0.05)
+        # Profit floor: avg_cost 50.64 + 0.01 round-trip commission + 0.03
+        # minimum profit = 50.68 (the far-behind pacing step is lower).
+        self.assertAlmostEqual(sell_px, 50.68)
         self.assertLessEqual(sell_px, 50.77)
         self.mm.place_or_replace_buy.assert_called_once()
 
@@ -1297,6 +1244,33 @@ class TestArgParser(unittest.TestCase):
         self.assertEqual(args.port, 7497)
         self.assertEqual(args.base_qty, 50)
         self.assertEqual(args.mid_delta, 0.02)
+
+    def test_parse_new_strategy_args(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(
+            [
+                "--daily_volume_target",
+                "500",
+                "--min_profit_per_share",
+                "0.05",
+                "--commission_per_share",
+                "0.004",
+            ]
+        )
+        self.assertEqual(args.daily_volume_target, 500)
+        self.assertAlmostEqual(args.min_profit_per_share, 0.05)
+        self.assertAlmostEqual(args.commission_per_share, 0.004)
+
+    def test_removed_legacy_strategy_args_rejected(self):
+        parser = build_arg_parser()
+        for legacy in (
+            ["--inside_improve", "0.1"],
+            ["--inventory_penalty_per_100", "0.05"],
+            ["--min_inventory_before_offering", "100"],
+        ):
+            with self.subTest(arg=legacy[0]), patch("sys.stderr"), \
+                    self.assertRaises(SystemExit):
+                parser.parse_args(legacy)
 
 
 if __name__ == "__main__":
