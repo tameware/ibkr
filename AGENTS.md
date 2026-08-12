@@ -2,6 +2,10 @@
 
 These instructions have been created to help Cursor but are expected to be useful more broadly.
 
+# Code
+
+The code runs on a remote GCP server. The running version is at /Users/adamw/mnt/sideswap/src/ibkr/src/
+
 # Logs
 
 Latest logs can be found at /Users/adamw/mnt/sideswap/src/ibkr/logs.
