@@ -9,6 +9,7 @@ import json
 import logging
 import logging.handlers
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -1302,8 +1303,70 @@ def build_logger(
         ch.setLevel(getattr(logging, level_name, logging.INFO))
         logger.addHandler(ch)
 
+    log_startup_command_and_git(logger=logger)
     log_startup_timezones(config, logger=logger)
     return logger
+
+
+def get_git_startup_info() -> Optional[Dict[str, str]]:
+    """Return branch, full commit hash, and subject, or ``None`` if git is unavailable."""
+
+    def _run(args: Sequence[str]) -> Optional[str]:
+        try:
+            completed = subprocess.run(
+                ["git", *args],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except (FileNotFoundError, OSError):
+            return None
+        if completed.returncode != 0:
+            return None
+        return completed.stdout
+
+    branch_out = _run(["rev-parse", "--abbrev-ref", "HEAD"])
+    if branch_out is None:
+        return None
+    commit_out = _run(["log", "-1", "--format=%H%x00%s"])
+    if commit_out is None:
+        return None
+    parts = commit_out.rstrip("\n").split("\x00", 1)
+    if len(parts) != 2 or not parts[0]:
+        return None
+    return {
+        "branch": branch_out.strip(),
+        "commit": parts[0],
+        "description": parts[1],
+    }
+
+
+def log_startup_command_and_git(
+    *,
+    logger: Optional[logging.Logger] = None,
+    argv: Optional[Sequence[str]] = None,
+) -> None:
+    """Log the process command line and current git branch/commit/description."""
+    if argv is None:
+        argv = sys.argv
+
+    def emit(fmt: str, *args: object) -> None:
+        if logger is not None:
+            logger.info(fmt, *args)
+        else:
+            print(fmt % args, flush=True)
+
+    emit("Startup command line: %s", " ".join(str(a) for a in argv))
+    info = get_git_startup_info()
+    if info is None:
+        emit("Startup git: unavailable")
+        return
+    emit(
+        "Startup git branch=%s commit=%s description=%s",
+        info["branch"],
+        info["commit"],
+        info["description"],
+    )
 
 
 def log_startup_timezones(

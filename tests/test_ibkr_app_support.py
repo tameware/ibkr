@@ -53,7 +53,10 @@ from ibkr_app_support import (
     log_ib_error,
     apply_resolved_stock_contract,
     subscribe_stock_nbbo_market_data,
+    get_git_startup_info,
+    log_startup_command_and_git,
     log_startup_timezones,
+    build_logger,
     NbboCoalesceSink,
     NbboCoalescer,
     NbboThrottle,
@@ -402,6 +405,132 @@ class TestLogStartupTimezones(unittest.TestCase):
             log_startup_timezones(_SESSION_CFG, now=now)
         self.assertEqual(mock_print.call_count, 2)
         self.assertIn("market_timezone", mock_print.call_args_list[1][0][0])
+
+
+class TestGetGitStartupInfo(unittest.TestCase):
+    def test_returns_branch_commit_and_description(self):
+        def fake_run(args, **kwargs):
+            cmd = args[1:]
+            if cmd == ["rev-parse", "--abbrev-ref", "HEAD"]:
+                return types.SimpleNamespace(returncode=0, stdout="main\n", stderr="")
+            if cmd == ["log", "-1", "--format=%H%x00%s"]:
+                return types.SimpleNamespace(
+                    returncode=0,
+                    stdout="abc123def\x00fix the thing\n",
+                    stderr="",
+                )
+            raise AssertionError(f"unexpected git args: {args}")
+
+        with patch("ibkr_app_support.subprocess.run", side_effect=fake_run):
+            info = get_git_startup_info()
+
+        self.assertEqual(
+            info,
+            {
+                "branch": "main",
+                "commit": "abc123def",
+                "description": "fix the thing",
+            },
+        )
+
+    def test_returns_none_when_git_command_fails(self):
+        with patch(
+            "ibkr_app_support.subprocess.run",
+            return_value=types.SimpleNamespace(returncode=128, stdout="", stderr="fatal"),
+        ):
+            self.assertIsNone(get_git_startup_info())
+
+    def test_returns_none_when_git_is_missing(self):
+        with patch(
+            "ibkr_app_support.subprocess.run",
+            side_effect=FileNotFoundError("git"),
+        ):
+            self.assertIsNone(get_git_startup_info())
+
+
+class TestLogStartupCommandAndGit(unittest.TestCase):
+    def test_logs_command_line_branch_commit_and_description(self):
+        logger = MagicMock()
+        git_info = {
+            "branch": "feature/x",
+            "commit": "deadbeef",
+            "description": "wire startup logging",
+        }
+        with patch(
+            "ibkr_app_support.get_git_startup_info", return_value=git_info
+        ):
+            log_startup_command_and_git(
+                logger=logger,
+                argv=["python", "src/market_maker.py", "--symbol", "OZ"],
+            )
+
+        self.assertEqual(
+            logger.info.call_args_list[0][0],
+            ("Startup command line: %s", "python src/market_maker.py --symbol OZ"),
+        )
+        self.assertEqual(
+            logger.info.call_args_list[1][0],
+            (
+                "Startup git branch=%s commit=%s description=%s",
+                "feature/x",
+                "deadbeef",
+                "wire startup logging",
+            ),
+        )
+
+    def test_logs_unavailable_when_git_info_missing(self):
+        logger = MagicMock()
+        with patch("ibkr_app_support.get_git_startup_info", return_value=None):
+            log_startup_command_and_git(
+                logger=logger,
+                argv=["python", "src/peg_primary.py"],
+            )
+
+        self.assertEqual(
+            logger.info.call_args_list[0][0],
+            ("Startup command line: %s", "python src/peg_primary.py"),
+        )
+        self.assertEqual(
+            logger.info.call_args_list[1][0],
+            ("Startup git: unavailable",),
+        )
+
+    def test_prints_without_logger(self):
+        with patch("ibkr_app_support.get_git_startup_info", return_value=None), patch(
+            "builtins.print"
+        ) as mock_print:
+            log_startup_command_and_git(argv=["prog"])
+
+        self.assertEqual(mock_print.call_count, 2)
+        self.assertIn("command line", mock_print.call_args_list[0][0][0])
+        self.assertIn("unavailable", mock_print.call_args_list[1][0][0])
+
+    def test_build_logger_logs_command_and_git_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {
+                "log_dir": tmp,
+                "log_file": "startup.log",
+                "console": False,
+                "market_timezone": "America/New_York",
+                "market_open_hour": 9,
+                "market_open_minute": 30,
+                "market_close_hour": 16,
+            }
+            with patch(
+                "ibkr_app_support.log_startup_command_and_git"
+            ) as mock_cmd_git, patch(
+                "ibkr_app_support.log_startup_timezones"
+            ) as mock_tz:
+                logger = build_logger(
+                    config,
+                    logger_name="test_startup_identity",
+                    default_log_file="unused.log",
+                )
+            mock_cmd_git.assert_called_once_with(logger=logger)
+            mock_tz.assert_called_once_with(config, logger=logger)
+            for h in list(logger.handlers):
+                logger.removeHandler(h)
+                h.close()
 
 
 class TestRegularSession(unittest.TestCase):
