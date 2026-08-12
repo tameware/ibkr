@@ -2,14 +2,24 @@
 
 These instructions have been created to help Cursor but are expected to be useful more broadly.
 
+# Deployment
+
+The code runs on a remote GCP server. It's drive is mounted locally. Its git directory is mounted at
+`/Users/adamw/mnt/sideswap/src/ibkr/`
+Always let me know if this directory is not accessible.
+
 # Code
 
-The code runs on a remote GCP server. The running version is at /Users/adamw/mnt/sideswap/src/ibkr/src/
+The running version is at `/Users/adamw/mnt/sideswap/src/ibkr/src/`.
 
 # Logs
 
-Latest logs can be found at /Users/adamw/mnt/sideswap/src/ibkr/logs.
-Always let me know if this directory is not accessible.
+Latest logs can be found at `/Users/adamw/mnt/sideswap/src/ibkr/logs`.
+
+# Ledgers
+
+The market maker ledger file is
+`/Users/adamw/mnt/sideswap/src/ibkr/ledgers/market_maker_OZ.json`
 
 # Test-driven development
 
