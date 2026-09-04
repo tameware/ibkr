@@ -6,6 +6,8 @@ Encodes the strategy goals directly:
 * never let a buy fill push the position above ``max_position``,
 * floor every sell at avg_cost + round-trip commission + minimum profit,
   so a completed round trip is always net profitable,
+* pause buys when that profit floor sits above the NBBO ask (sell is stuck;
+  do not add inventory),
 * pace both sides toward a daily share-volume target: quote passively
   (join the bid / ask) when on schedule, and step toward the mid by
   fractions of the NBBO spread when behind.
@@ -195,6 +197,13 @@ def decide_quotes(params: QuoteParams, inp: QuoteInputs) -> QuoteProposal:
     buy_room = max(0, params.max_position - max(0, inp.position))
     buy_qty = min(params.lot_size, buy_room)
     if buy_qty < params.min_order_size:
+        buy_qty = 0
+    # Profit floor above the ask means the sell cannot fill; stop adding inventory.
+    if (
+        buy_qty > 0
+        and inp.avg_cost > 0
+        and inp.avg_cost + params.required_edge > inp.ask
+    ):
         buy_qty = 0
 
     sell_qty = max(0, inp.position)

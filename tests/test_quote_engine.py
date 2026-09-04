@@ -252,6 +252,38 @@ class TestDecideQuotesSellPricing(unittest.TestCase):
         )
         self.assertAlmostEqual(q.sell_px, 45.64)
 
+    def test_pauses_buys_when_profit_floor_above_ask(self):
+        # avg 45.60 + 0.04 edge = 45.64 > ask 45.30: sell is stuck; do not dig deeper.
+        q = decide_quotes(
+            _params(),
+            _inputs(position=100, avg_cost=45.60, bought_today=0, sold_today=0,
+                    session_progress=0.5),
+        )
+        self.assertEqual(q.buy_qty, 0)
+        self.assertIsNone(q.buy_px)
+        self.assertEqual(q.sell_qty, 100)
+        self.assertAlmostEqual(q.sell_px, 45.64)
+
+    def test_allows_buys_when_profit_floor_at_ask(self):
+        # Floor exactly at the ask is still marketable; buys stay available.
+        # avg 45.26 + 0.04 = 45.30 == ask.
+        q = decide_quotes(
+            _params(),
+            _inputs(position=100, avg_cost=45.26, bought_today=0,
+                    session_progress=0.5),
+        )
+        self.assertEqual(q.buy_qty, 100)
+        self.assertIsNotNone(q.buy_px)
+
+    def test_allows_buys_when_profit_floor_below_ask(self):
+        q = decide_quotes(
+            _params(),
+            _inputs(position=100, avg_cost=45.0, bought_today=0,
+                    session_progress=0.5),
+        )
+        self.assertEqual(q.buy_qty, 100)
+        self.assertIsNotNone(q.buy_px)
+
     def test_no_floor_when_avg_cost_unknown(self):
         q = decide_quotes(
             _params(),
