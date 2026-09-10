@@ -1,0 +1,56 @@
+{
+  "ibkr": {
+    "client_id": 5,
+    "account": "",
+    "reconnect": true,
+    "reconnect_delay_seconds": 5.0
+  },
+
+  "contract": {
+    "exchange": "SMART"
+  },
+
+  "strategy": {
+    "base_qty": 100,
+    "min_order_size": 10,
+    "//": "Max shares per buy order (capped by max_position - position)",
+    "max_position": 300,
+    "//": "Never hold more than this many shares (hard inventory cap)",
+    "max_gross_shares": 5000,
+    "daily_volume_target": 400,
+    "//": "Shares to buy per day; paces MM buy aggressiveness when flat",
+    "min_profit_per_share": 0.03,
+    "commission_per_share": 0.005,
+    "min_spread": 0.10,
+    "max_spread": 4.00,
+    "mid_delta": 0.02,
+    "quote_refresh_seconds": 4.0,
+    "max_market_stale_seconds": 1200,
+    "nbbo_coalesce_seconds": 6.0,
+
+    "sell_limit_multiplier": 0.98,
+    "//": "Protective PEG BEST sell limit = mid * multiplier (then floored by avg cost + edge)",
+    "min_compete_size": 50,
+    "mid_offset_whole": -0.01,
+    "mid_offset_half": -0.005,
+    "post_to_ats_seconds": 1,
+    "peg_exchange": "IBKRATS",
+    "//": "PEG BEST sells route here; contract/market data stay on SMART"
+  },
+
+  "risk": {
+    "cancel_on_invalid_market": true,
+    "require_live_data": false
+  },
+
+  "logging": {
+    "log_file": "mm_peg_best.log"
+  },
+
+  "diagnostics": {
+    "log_bid_ask_ticks": false,
+    "log_invalid_market_reasons": false,
+    "nbbo_watchdog_seconds": 300,
+    "watchdog_repeat_seconds": 600
+  }
+}
