@@ -1033,6 +1033,10 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         apply_order_account(o, self._order_account())
         return o
 
+    def contract_for_place_order(self, order: Order):
+        """Contract used with ``placeOrder`` (override to retarget exchange)."""
+        return self.contract
+
     def can_open_new_long(self) -> bool:
         """True if position and gross share caps allow another buy."""
         with self.lock:
@@ -1364,7 +1368,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             )
             with self.lock:
                 self._note_working_sell_qty(oid, qty, status="PendingSubmit")
-        self.placeOrder(oid, self.contract, order)
+        self.placeOrder(oid, self.contract_for_place_order(order), order)
         if prior is None:
             self.logger.info(
                 "Order placed id=%s side=%s qty=%s px=%.2f [%s]",

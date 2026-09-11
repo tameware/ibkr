@@ -35,7 +35,7 @@
     "mid_offset_half": -0.005,
     "post_to_ats_seconds": 1,
     "peg_exchange": "IBKRATS",
-    "//": "PEG BEST sells route here; contract/market data stay on SMART"
+    "//": "PEG BEST sells place with contract.exchange=IBKRATS (required for NotHeld); market data stays SMART"
   },
 
   "risk": {

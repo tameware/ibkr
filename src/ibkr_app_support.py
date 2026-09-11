@@ -1651,6 +1651,11 @@ def stock_contract_on_primary_exchange(contract: Any) -> Any:
 
 def stock_contract_on_smart_exchange(contract: Any) -> Any:
     """Copy ``contract`` but route market data through SMART (composite NBBO)."""
+    return stock_contract_with_exchange(contract, "SMART")
+
+
+def stock_contract_with_exchange(contract: Any, exchange: str) -> Any:
+    """Copy ``contract`` with ``exchange`` set (e.g. IBKRATS for NotHeld orders)."""
     from ibapi.contract import Contract
 
     routed = Contract()
@@ -1658,7 +1663,7 @@ def stock_contract_on_smart_exchange(contract: Any) -> Any:
     routed.symbol = str(getattr(contract, "symbol", "") or "")
     routed.secType = str(getattr(contract, "secType", "STK") or "STK")
     routed.currency = str(getattr(contract, "currency", "USD") or "USD")
-    routed.exchange = "SMART"
+    routed.exchange = str(exchange)
     routed.primaryExchange = str(getattr(contract, "primaryExchange", "") or "")
     routed.localSymbol = str(
         getattr(contract, "localSymbol", "") or routed.symbol

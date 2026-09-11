@@ -23,6 +23,7 @@ from ibkr_app_support import (
     load_merged_config,
     price_digits_from_config,
     run_bot,
+    stock_contract_with_exchange,
     sync_attrs_from_ledger,
 )
 from market_maker import (
@@ -84,6 +85,12 @@ class MmPegBest(MarketMaker):
         o.postToAts = self.post_to_ats_seconds
         apply_order_account(o, self._order_account())
         return o
+
+    def contract_for_place_order(self, order: Order):
+        """Route PEG BEST via IBKRATS so NotHeld is accepted (IB error 10297)."""
+        if getattr(order, "orderType", "") == "PEG BEST":
+            return stock_contract_with_exchange(self.contract, self.peg_exchange)
+        return self.contract
 
     def _peg_sell_protective_limit(self, bid: float, ask: float) -> float:
         """Protective sell limit from mid × multiplier, floored by cost + edge."""

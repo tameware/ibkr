@@ -150,13 +150,35 @@ class TestMmPegBest(unittest.TestCase):
         self.assertEqual(order.action, "SELL")
         self.assertEqual(order.totalQuantity, 150)
         self.assertEqual(order.exchange, "IBKRATS")
+        self.assertTrue(order.notHeld)
         self.assertEqual(order.minCompeteSize, 50)
         self.assertEqual(order.midOffsetAtWhole, -0.01)
         self.assertEqual(order.midOffsetAtHalf, -0.005)
         self.assertEqual(order.postToAts, 1)
+        # IB requires contract.exchange=IBKRATS for NotHeld (error 10297 otherwise).
+        peg_contract = peg_calls[0][0][1]
+        self.assertEqual(peg_contract.exchange, "IBKRATS")
+        self.assertEqual(self.bot.contract.exchange, "SMART")
         # Protective limit: mid 48.20 * 0.98 = 47.236 -> 47.24, floored by avg+edge
         # avg 47.55 + 0.04 = 47.59
         self.assertGreaterEqual(order.lmtPrice, 47.59)
+
+    def test_lmt_buy_still_places_on_smart_contract(self):
+        ts = 3_000_000.0
+        self._seed_pos(0, avg_cost=0.0)
+        self._set_nbbo(ts=ts)
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+        with patch("market_maker.time.time", return_value=ts):
+            self.bot.maybe_manage_quotes(force=True)
+        buy_calls = [
+            c
+            for c in self.bot.placeOrder.call_args_list
+            if c[0][2].orderType == "LMT" and c[0][2].action == "BUY"
+        ]
+        self.assertGreaterEqual(len(buy_calls), 1)
+        self.assertEqual(buy_calls[0][0][1].exchange, "SMART")
+        self.assertFalse(getattr(buy_calls[0][0][2], "notHeld", False))
 
     def test_quote_cycle_never_leaves_both_sides_working(self):
         ts = 3_000_000.0
