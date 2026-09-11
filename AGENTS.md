@@ -18,6 +18,27 @@ Latest logs can be found at `/Users/adamw/mnt/sideswap/src/ibkr/logs`.
 
 # Ledgers
 
+Strategy ledgers live under `/Users/adamw/mnt/sideswap/src/ibkr/ledgers/`
+(or `ledgers/` in the local checkout). Filename pattern:
+`{strategy}_{symbol}.json` (e.g. `market_maker_OZ.json`, `mm_peg_best_OZ.json`).
+
+Each file is a JSON object written by `PositionLedger` in `src/ibkr_app_support.py`.
+Field meanings are embedded in the file under `_docs` (rewritten on every `save()`).
+
+Notable keys:
+
+- `strategy_qty` – strategy book (from fills); legacy `qty` is migrated on load.
+- `avg_cost_per_share` – VWAP for `strategy_qty`; legacy `avg_cost` migrated on load.
+- `ib_snapshot_*` – last IB `position` callback (sell cap / reconciliation).
+
+Notes:
+
+- With `ignore_ledger=true`, trading uses IB position in memory; the file may still get
+  `ib_snapshot_*` updates while `strategy_qty` / `avg_cost_per_share` stay stale.
+- Sellable size is `min(strategy_qty, ib_snapshot_qty)` when a snapshot exists, else
+  `strategy_qty`.
+- Removed/ignored on save: `ib_snapshot_avg_cost` (IB avg cost is not stored).
+
 The market maker ledger file is
 `/Users/adamw/mnt/sideswap/src/ibkr/ledgers/market_maker_OZ.json`
 

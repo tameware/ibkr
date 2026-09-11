@@ -287,6 +287,56 @@ class TestPositionLedger(unittest.TestCase):
         payload = json.loads(reloaded.path.read_text(encoding="utf-8"))
         self.assertAlmostEqual(payload["avg_cost_per_share"], 99.5)
         self.assertNotIn("avg_cost", payload)
+        self.assertEqual(payload["strategy_qty"], 25)
+        self.assertNotIn("qty", payload)
+
+    def test_save_embeds_field_docs_in_ledger_file(self):
+        ledger = PositionLedger.open("midprice", self.config)
+        ledger.apply_fill("BUY", 10, 50.0, exec_id="doc1")
+        payload = json.loads(ledger.path.read_text(encoding="utf-8"))
+        docs = payload["_docs"]
+        self.assertIsInstance(docs, dict)
+        for key in (
+            "strategy",
+            "symbol",
+            "sec_type",
+            "client_id",
+            "account",
+            "strategy_qty",
+            "avg_cost_per_share",
+            "updated_at",
+            "last_exec_id",
+            "ib_snapshot_qty",
+            "ib_snapshot_account",
+            "ib_snapshot_at",
+        ):
+            self.assertIn(key, docs)
+            self.assertTrue(str(docs[key]).strip())
+        self.assertIn("strategy book", docs["strategy_qty"].lower())
+        self.assertIn("ib", docs["ib_snapshot_qty"].lower())
+
+    def test_open_ignores_stale_docs_and_rewrites_them(self):
+        path = ledger_path_for_strategy("peg_mid", self.config)
+        path.write_text(
+            json.dumps(
+                {
+                    "strategy": "peg_mid",
+                    "symbol": "FDX",
+                    "sec_type": "STK",
+                    "client_id": 7,
+                    "strategy_qty": 12,
+                    "avg_cost_per_share": 40.0,
+                    "_docs": {"strategy_qty": "stale"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        ledger = PositionLedger.open("peg_mid", self.config)
+        self.assertEqual(ledger.qty, 12)
+        ledger.save()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        self.assertNotEqual(payload["_docs"]["strategy_qty"], "stale")
+        self.assertIn("strategy book", payload["_docs"]["strategy_qty"].lower())
 
     def test_migrates_legacy_avg_cost_key(self):
         path = ledger_path_for_strategy("peg_mid", self.config)
@@ -305,10 +355,13 @@ class TestPositionLedger(unittest.TestCase):
         )
         ledger = PositionLedger.open("peg_mid", self.config)
         self.assertAlmostEqual(ledger.avg_cost_per_share, 42.5)
+        self.assertEqual(ledger.qty, 50)
         ledger.save()
         payload = json.loads(path.read_text(encoding="utf-8"))
         self.assertAlmostEqual(payload["avg_cost_per_share"], 42.5)
         self.assertNotIn("avg_cost", payload)
+        self.assertEqual(payload["strategy_qty"], 50)
+        self.assertNotIn("qty", payload)
 
     def test_handle_ledger_execution_filters_client(self):
         ledger = PositionLedger.open("peg_best", self.config)

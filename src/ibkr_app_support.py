@@ -218,10 +218,57 @@ def _write_avg_cost_per_share(data: Dict[str, Any], value: float) -> None:
     data.pop("avg_cost", None)
 
 
+def _read_strategy_qty(data: Dict[str, Any]) -> int:
+    """Read strategy book quantity (supports legacy ``qty``)."""
+    if "strategy_qty" in data:
+        return int(data["strategy_qty"])
+    return int(data.get("qty", 0))
+
+
+def _write_strategy_qty(data: Dict[str, Any], value: int) -> None:
+    """Write strategy book quantity; drop legacy ``qty``."""
+    data["strategy_qty"] = int(value)
+    data.pop("qty", None)
+
+
+# Descriptions embedded in each ledger JSON under ``_docs`` (rewritten on every save).
+LEDGER_FIELD_DOCS: Dict[str, str] = {
+    "strategy": "Bot/strategy name that owns this ledger (e.g. market_maker).",
+    "symbol": "Contract symbol (e.g. OZ).",
+    "sec_type": "IB security type (usually STK).",
+    "client_id": "IB API client id used by this strategy.",
+    "account": "IB account id when known/configured.",
+    "strategy_qty": (
+        "Strategy book: tracked long shares from this strategy's fills "
+        "(not IB's account position). Stale when ignore_ledger=true. "
+        "Sell size is capped by this."
+    ),
+    "avg_cost_per_share": (
+        "Volume-weighted average cost per share for strategy_qty; 0 when flat. "
+        "Legacy key avg_cost is migrated on load."
+    ),
+    "updated_at": "UTC ISO timestamp of the last save().",
+    "last_exec_id": "Last applied IB execId; used to ignore duplicate fill callbacks.",
+    "ib_snapshot_qty": (
+        "Last quantity from IB's position callback for this symbol "
+        "(sell cap / reconciliation). Not the strategy book when ignore_ledger is false."
+    ),
+    "ib_snapshot_account": "Account id on that IB position snapshot.",
+    "ib_snapshot_at": "UTC ISO timestamp of that IB position snapshot.",
+}
+
+
+def _apply_ledger_docs(data: Dict[str, Any]) -> None:
+    """Refresh embedded field documentation in the ledger payload."""
+    data["_docs"] = dict(LEDGER_FIELD_DOCS)
+
+
 def _normalize_ledger_data(data: Dict[str, Any]) -> None:
-    """Migrate legacy ``avg_cost`` to ``avg_cost_per_share``."""
+    """Migrate legacy keys and refresh embedded field docs."""
     data.pop("ib_snapshot_avg_cost", None)
     _write_avg_cost_per_share(data, _read_avg_cost_per_share(data))
+    _write_strategy_qty(data, _read_strategy_qty(data))
+    _apply_ledger_docs(data)
 
 
 def average_cost_after_purchase(
@@ -261,7 +308,17 @@ def ledger_path_for_strategy(
 
 
 class PositionLedger:
-    """Per-strategy position ledger persisted for parallel bot runs (one file per symbol)."""
+    """Per-strategy position ledger persisted for parallel bot runs (one file per symbol).
+
+    On-disk JSON includes a ``_docs`` map describing every field. Data fields:
+
+    * ``strategy`` / ``symbol`` / ``sec_type`` / ``client_id`` / ``account``
+    * ``strategy_qty`` – strategy book shares (legacy ``qty`` migrated on load)
+    * ``avg_cost_per_share`` – VWAP for ``strategy_qty`` (legacy ``avg_cost`` migrated)
+    * ``updated_at`` / ``last_exec_id``
+    * ``ib_snapshot_qty`` / ``ib_snapshot_account`` / ``ib_snapshot_at`` – last IB
+      ``position`` callback (sell cap; not strategy avg cost)
+    """
 
     def __init__(self, path: Path, data: Dict[str, Any]) -> None:
         """Initialize :class:`PositionLedger`."""
@@ -299,7 +356,7 @@ class PositionLedger:
                 "sec_type": str(config.get("sec_type", "STK")),
                 "client_id": cid,
                 "account": acct,
-                "qty": 0,
+                "strategy_qty": 0,
                 "avg_cost_per_share": 0.0,
                 "updated_at": None,
                 "last_exec_id": None,
@@ -327,8 +384,8 @@ class PositionLedger:
 
     @property
     def qty(self) -> int:
-        """Signed position quantity from the ledger."""
-        return int(self._data.get("qty", 0))
+        """Strategy book quantity (``strategy_qty`` on disk)."""
+        return _read_strategy_qty(self._data)
 
     @property
     def avg_cost(self) -> float:
@@ -386,7 +443,7 @@ class PositionLedger:
             if qty <= 0:
                 avg = 0.0 if qty == 0 else price
 
-        self._data["qty"] = int(qty)
+        _write_strategy_qty(self._data, qty)
         _write_avg_cost_per_share(self._data, avg)
         if exec_id:
             self._data["last_exec_id"] = str(exec_id)
@@ -402,7 +459,7 @@ class PositionLedger:
         self._data.pop("ib_snapshot_avg_cost", None)
 
     def save(self) -> None:
-        """Persist ledger state to disk."""
+        """Persist ledger state to disk (includes refreshed ``_docs``)."""
         _normalize_ledger_data(self._data)
         self._data.pop("ib_snapshot_avg_cost", None)
         self._data["updated_at"] = datetime.datetime.now(
@@ -451,7 +508,7 @@ def seed_ledger_position(
     """Align ledger, IB snapshot, and in-memory position for tests or manual resets."""
     q = max(0, int(qty)) if clamp_qty_nonneg else int(qty)
     ac = float(avg_cost) if q > 0 else 0.0
-    ledger._data["qty"] = q
+    _write_strategy_qty(ledger._data, q)
     _write_avg_cost_per_share(ledger._data, ac)
     ledger.record_ib_snapshot(account, q)
     ledger.save()
