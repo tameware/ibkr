@@ -17,7 +17,6 @@ from ibapi.order import Order, COMPETE_AGAINST_BEST_OFFSET_UP_TO_MID
 from ibkr_app_support import (
     PositionLedger,
     apply_order_account,
-    clamp_sell_to_avg_cost_floor,
     clamp_sell_to_avoid_self_trade,
     idle_until_shutdown,
     load_merged_config,
@@ -93,19 +92,16 @@ class MmPegBest(MarketMaker):
         return self.contract
 
     def _peg_sell_protective_limit(self, bid: float, ask: float) -> float:
-        """Protective sell limit from mid × multiplier, floored by cost + edge."""
+        """Protective sell limit from mid × multiplier (no avg-cost floor).
+
+        PEG BEST may sell below average cost; edge is recovered on cheaper buys.
+        """
         mid = (float(bid) + float(ask)) / 2.0
         digits = price_digits_from_config(self.config)
         limit = round(mid * self.sell_limit_multiplier, digits)
-        limit = clamp_sell_to_avoid_self_trade(
+        return clamp_sell_to_avoid_self_trade(
             limit, self.config, bid=bid, ask=ask, mid=mid
         )
-        limit = clamp_sell_to_avg_cost_floor(limit, self.avg_cost, self.config)
-        params = self._quote_engine_params()
-        if self.avg_cost > 0:
-            floor = self.avg_cost + params.required_edge
-            limit = max(limit, round(floor, digits))
-        return limit
 
     def place_or_replace_peg_sell(self, qty: int, px: Optional[float]) -> None:
         """Place or replace a PEG BEST sell using ``sell_order`` tracking."""

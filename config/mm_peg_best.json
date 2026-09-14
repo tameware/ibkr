@@ -29,7 +29,7 @@
     "nbbo_coalesce_seconds": 6.0,
 
     "sell_limit_multiplier": 0.98,
-    "//": "Protective PEG BEST sell limit = mid * multiplier (then floored by avg cost + edge)",
+    "//": "Protective PEG BEST sell limit = mid * multiplier (not floored by avg cost)",
     "min_compete_size": 50,
     "mid_offset_whole": -0.01,
     "mid_offset_half": -0.005,

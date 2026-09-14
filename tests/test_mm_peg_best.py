@@ -159,9 +159,36 @@ class TestMmPegBest(unittest.TestCase):
         peg_contract = peg_calls[0][0][1]
         self.assertEqual(peg_contract.exchange, "IBKRATS")
         self.assertEqual(self.bot.contract.exchange, "SMART")
-        # Protective limit: mid 48.20 * 0.98 = 47.236 -> 47.24, floored by avg+edge
-        # avg 47.55 + 0.04 = 47.59
-        self.assertGreaterEqual(order.lmtPrice, 47.59)
+        # Protective limit: mid 48.20 * 0.98 = 47.24, raised by self-trade
+        # floor mid + mid_delta = 48.21. Avg cost must not raise it further.
+        self.assertAlmostEqual(order.lmtPrice, 48.21)
+
+    def test_peg_sell_limit_not_floored_by_avg_cost(self):
+        """PEG BEST may sell below avg cost; profit comes from cheaper buys."""
+        self.bot.config["mid_delta"] = 0.0
+        self.bot.config["min_profit_per_share"] = 0.03
+        self.bot.config["commission_per_share"] = 0.005
+        ts = 3_000_000.0
+        self._seed_pos(100, avg_cost=47.91)
+        self._set_nbbo(bid=46.37, ask=47.91, ts=ts)
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+
+        with patch("market_maker.time.time", return_value=ts):
+            self.bot.maybe_manage_quotes(force=True)
+
+        peg_calls = [
+            c
+            for c in self.bot.placeOrder.call_args_list
+            if c[0][2].orderType == "PEG BEST"
+        ]
+        self.assertEqual(len(peg_calls), 1)
+        order = peg_calls[0][0][2]
+        # mid 47.14 * 0.98 = 46.20, raised by self-trade floor mid+tick = 47.15.
+        # Must not use avg_cost + required_edge (47.95).
+        self.assertAlmostEqual(order.lmtPrice, 47.15)
+        self.assertLess(order.lmtPrice, self.bot.avg_cost)
+        self.assertLess(order.lmtPrice, self.bot.avg_cost + 0.04)
 
     def test_lmt_buy_still_places_on_smart_contract(self):
         ts = 3_000_000.0
