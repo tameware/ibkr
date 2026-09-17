@@ -2,7 +2,8 @@
 """Hybrid bot: market-maker LMT buys when flat; PEG BEST sells when long.
 
 One side at a time. Buy sizing/pricing comes from ``quote_engine``; sells use
-IBKRATS PEG BEST with a protective limit floored by avg cost + required edge.
+IBKRATS PEG BEST with a protective limit (never below mid when mid_delta=0).
+PEG BEST limit changes cancel-and-replace (IB rejects in-place edits, error 105).
 """
 
 from __future__ import annotations
@@ -118,6 +119,10 @@ class MmPegBest(MarketMaker):
             self.place_or_replace_sell(qty, px)
         finally:
             self.build_lmt_order = prior_build  # type: ignore[method-assign]
+
+    def _replace_requires_new_order_id(self, order: Order) -> bool:
+        """Cancel+replace PEG BEST sells; IB rejects in-place limit edits (105)."""
+        return getattr(order, "orderType", "") == "PEG BEST"
 
     def openOrder(self, orderId, contract, order, orderState):
         """Adopt PEG BEST sells as well as LMT buys/sells."""

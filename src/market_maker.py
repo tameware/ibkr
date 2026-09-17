@@ -1338,7 +1338,6 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         if self.is_same_order(prior, side, qty, px):
             return
 
-        oid = prior.order_id if prior is not None else self.next_id()
         if prior is not None and side == "SELL":
             prior_qty = self._sell_working_open_qty(prior)
         else:
@@ -1349,6 +1348,16 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             else qty
         )
         order = self.build_lmt_order(side, ib_qty, px)
+
+        # PEG BEST (and similar) reject in-place limit edits with IB error 105.
+        if prior is not None and self._replace_requires_new_order_id(order):
+            self.cancel_live_order(prior)
+            prior = None
+            prior_qty = None
+            ib_qty = qty if side != "SELL" else self._sell_order_total_quantity(qty, None)
+            order = self.build_lmt_order(side, ib_qty, px)
+
+        oid = prior.order_id if prior is not None else self.next_id()
         if side == "BUY":
             self.buy_order = LiveOrder(
                 order_id=oid,
@@ -1422,6 +1431,14 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
     def place_or_replace_sell(self, qty: int, px: Optional[float]):
         """Place or replace sell."""
         self._place_or_replace_lmt("SELL", qty, px)
+
+    def _replace_requires_new_order_id(self, order: Order) -> bool:
+        """True when an existing working order must be cancelled before replace.
+
+        Default False keeps LMT modify-in-place. Subclasses override for order
+        types IB rejects on attribute/limit edits (e.g. PEG BEST → error 105).
+        """
+        return False
 
     def _capture_quote_mgmt_snapshot(self) -> QuoteMgmtSnapshot:
         """Capture quote mgmt snapshot."""

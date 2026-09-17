@@ -190,6 +190,42 @@ class TestMmPegBest(unittest.TestCase):
         self.assertLess(order.lmtPrice, self.bot.avg_cost)
         self.assertLess(order.lmtPrice, self.bot.avg_cost + 0.04)
 
+    def test_peg_sell_limit_change_cancels_then_places_new_id(self):
+        """IB rejects in-place PEG BEST limit edits (error 105); cancel+replace."""
+        ts = 3_000_000.0
+        self._seed_pos(100, avg_cost=47.0)
+        self._set_nbbo(bid=47.0, ask=48.0, ts=ts)
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+
+        with patch("market_maker.time.time", return_value=ts):
+            self.bot.maybe_manage_quotes(force=True)
+
+        self.assertIsNotNone(self.bot.sell_order)
+        first_id = self.bot.sell_order.order_id
+        first_px = self.bot.sell_order.price
+        self.bot.placeOrder.reset_mock()
+        self.bot.cancelOrder.reset_mock()
+
+        # Mid moves enough to change the protective limit.
+        self._set_nbbo(bid=46.0, ask=47.0, ts=ts + 10)
+        with patch("market_maker.time.time", return_value=ts + 10):
+            self.bot.maybe_manage_quotes(force=True)
+
+        cancel_ids = [c.args[0] for c in self.bot.cancelOrder.call_args_list]
+        self.assertIn(first_id, cancel_ids)
+
+        peg_calls = [
+            c
+            for c in self.bot.placeOrder.call_args_list
+            if c[0][2].orderType == "PEG BEST"
+        ]
+        self.assertEqual(len(peg_calls), 1)
+        new_id = peg_calls[0][0][0]
+        self.assertNotEqual(new_id, first_id)
+        self.assertNotAlmostEqual(peg_calls[0][0][2].lmtPrice, first_px)
+        self.assertEqual(self.bot.sell_order.order_id, new_id)
+
     def test_lmt_buy_still_places_on_smart_contract(self):
         ts = 3_000_000.0
         self._seed_pos(0, avg_cost=0.0)
