@@ -206,6 +206,43 @@ class TestDecideQuotesBuyPricing(unittest.TestCase):
         )
         self.assertAlmostEqual(q.buy_px, round(q.buy_px, 2))
 
+    def test_custom_buy_spread_fractions_reduce_far_behind_step(self):
+        # Far behind (deficit 200 > lot) with a 0.50 spread: default steps
+        # 40% (45.20); gentler fractions step only 20% -> 45.10.
+        q = decide_quotes(
+            _params(buy_spread_fractions=(0.0, 0.10, 0.20)),
+            _inputs(ask=45.50, bought_today=0, session_progress=0.5),
+        )
+        self.assertAlmostEqual(q.buy_px, 45.10)
+
+    def test_custom_buy_spread_fractions_apply_to_slightly_behind(self):
+        # Deficit 50 (<= lot), spread 0.30: bid + 0.10 * 0.30 = 45.03.
+        q = decide_quotes(
+            _params(buy_spread_fractions=(0.0, 0.10, 0.20)),
+            _inputs(bought_today=150, session_progress=0.5),
+        )
+        self.assertAlmostEqual(q.buy_px, 45.03)
+
+    def test_zero_buy_spread_fractions_always_join_bid(self):
+        q = decide_quotes(
+            _params(buy_spread_fractions=(0.0, 0.0, 0.0)),
+            _inputs(ask=45.50, bought_today=0, session_progress=0.5),
+        )
+        self.assertAlmostEqual(q.buy_px, 45.00)
+
+    def test_buy_spread_fractions_do_not_change_sell_pricing(self):
+        base = decide_quotes(
+            _params(),
+            _inputs(position=100, avg_cost=45.0, sold_today=0,
+                    session_progress=0.5),
+        )
+        gentle = decide_quotes(
+            _params(buy_spread_fractions=(0.0, 0.0, 0.0)),
+            _inputs(position=100, avg_cost=45.0, sold_today=0,
+                    session_progress=0.5),
+        )
+        self.assertAlmostEqual(base.sell_px, gentle.sell_px)
+
 
 class TestDecideQuotesSellPricing(unittest.TestCase):
     def test_on_schedule_joins_ask(self):
@@ -343,6 +380,21 @@ class TestQuoteParamsFromConfig(unittest.TestCase):
         self.assertEqual(p.lot_size, 100)
         self.assertEqual(p.daily_volume_target, 400)
         self.assertAlmostEqual(p.min_profit_per_share, 0.03)
+        self.assertEqual(p.buy_spread_fractions, (0.0, 0.25, 0.40))
+
+    def test_from_config_reads_buy_spread_fractions(self):
+        p = QuoteParams.from_config({"buy_spread_fractions": [0, 0.1, 0.2]})
+        self.assertEqual(p.buy_spread_fractions, (0.0, 0.1, 0.2))
+
+    def test_from_config_rejects_wrong_length_buy_spread_fractions(self):
+        with self.assertRaises(ValueError):
+            QuoteParams.from_config({"buy_spread_fractions": [0.0, 0.2]})
+
+    def test_from_config_rejects_out_of_range_buy_spread_fractions(self):
+        with self.assertRaises(ValueError):
+            QuoteParams.from_config({"buy_spread_fractions": [0.0, 0.2, 0.6]})
+        with self.assertRaises(ValueError):
+            QuoteParams.from_config({"buy_spread_fractions": [-0.1, 0.2, 0.4]})
 
     def test_buy_and_sell_pair_never_inverted_when_both_quoted(self):
         # Whatever the pacing state, a quoted pair must satisfy buy < sell.

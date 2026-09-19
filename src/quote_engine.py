@@ -27,6 +27,20 @@ from zoneinfo import ZoneInfo
 _URGENCY_SPREAD_FRACTION = (0.0, 0.25, 0.40)
 
 
+def _parse_spread_fractions(raw: Any) -> tuple[float, float, float]:
+    """Validate a 3-item ``[on_pace, slightly_behind, far_behind]`` list in [0, 0.5]."""
+    try:
+        values = tuple(float(v) for v in raw)
+    except TypeError as exc:
+        raise ValueError("buy_spread_fractions must be a list of 3 numbers") from exc
+    if len(values) != 3:
+        raise ValueError("buy_spread_fractions must have exactly 3 entries")
+    for v in values:
+        if not (0.0 <= v <= 0.5):
+            raise ValueError("buy_spread_fractions entries must be within [0, 0.5]")
+    return values  # type: ignore[return-value]
+
+
 def session_progress_fraction(
     config: Dict[str, Any],
     now: Optional[datetime.datetime] = None,
@@ -106,6 +120,9 @@ class QuoteParams:
     min_profit_per_share: float = 0.03
     commission_per_share: float = 0.005
     tick: float = 0.01
+    # Fraction of the spread to step above the bid when on pace / slightly
+    # behind / far behind. Smaller values keep buys further below mid.
+    buy_spread_fractions: tuple[float, float, float] = _URGENCY_SPREAD_FRACTION
 
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "QuoteParams":
@@ -121,6 +138,7 @@ class QuoteParams:
                 config.get("commission_per_share", 0.005)
             ),
             tick=float(config.get("min_tick", 0.01)),
+            buy_spread_fractions=buy_spread_fractions_from_config(config),
         )
 
     @property
@@ -170,10 +188,20 @@ def _pacing_urgency(target_so_far: float, done: int, lot: int) -> int:
     return 2
 
 
+def buy_spread_fractions_from_config(
+    config: Dict[str, Any],
+) -> tuple[float, float, float]:
+    """``buy_spread_fractions`` from config, or the engine default."""
+    raw = config.get("buy_spread_fractions")
+    if raw is None:
+        return _URGENCY_SPREAD_FRACTION
+    return _parse_spread_fractions(raw)
+
+
 def _buy_price(params: QuoteParams, inp: QuoteInputs, urgency: int) -> float:
     spread = inp.ask - inp.bid
     mid = (inp.bid + inp.ask) / 2.0
-    px = inp.bid + _URGENCY_SPREAD_FRACTION[urgency] * spread
+    px = inp.bid + params.buy_spread_fractions[urgency] * spread
     # Keep enough room that selling at avg_cost + required_edge stays near
     # the mid; on tight spreads fall back to joining the bid.
     px = min(px, mid - params.required_edge)

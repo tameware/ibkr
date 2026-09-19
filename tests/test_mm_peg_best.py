@@ -280,6 +280,19 @@ class TestMmPegBest(unittest.TestCase):
         self.assertGreaterEqual(len(buy_calls), 1)
         self.assertIsNone(self.bot.sell_order)
 
+    def test_buy_spread_fractions_from_config_reach_quote_engine(self):
+        cfg = {**self.base_config, "buy_spread_fractions": [0.0, 0.1, 0.2]}
+        bot = MmPegBest(cfg)
+        self.assertEqual(
+            bot._quote_engine_params().buy_spread_fractions, (0.0, 0.1, 0.2)
+        )
+
+    def test_buy_spread_fractions_default_when_absent(self):
+        self.assertEqual(
+            self.bot._quote_engine_params().buy_spread_fractions,
+            (0.0, 0.25, 0.40),
+        )
+
     def test_build_arg_parser_accepts_peg_and_mm_flags(self):
         parser = build_arg_parser()
         args = parser.parse_args(
