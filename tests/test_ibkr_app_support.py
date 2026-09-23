@@ -109,6 +109,20 @@ class TestSelfTradeLimits(unittest.TestCase):
         self.assertTrue(price_move_exceeds_one_tick(45.01, 45.03, min_tick=tick))
         self.assertFalse(price_move_exceeds_one_tick(45.01, 45.01, min_tick=tick))
 
+    def test_price_move_exceeds_ticks_threshold(self):
+        from ibkr_app_support import price_move_exceeds_ticks
+
+        tick = 0.01
+        # deadband 1: one-tick flips are not "exceeding"
+        self.assertFalse(price_move_exceeds_ticks(44.63, 44.64, min_tick=tick, ticks=1))
+        self.assertTrue(price_move_exceeds_ticks(44.63, 44.65, min_tick=tick, ticks=1))
+        # deadband 0: any tick move exceeds
+        self.assertTrue(price_move_exceeds_ticks(44.63, 44.64, min_tick=tick, ticks=0))
+        self.assertFalse(price_move_exceeds_ticks(44.63, 44.63, min_tick=tick, ticks=0))
+        # deadband 2: two-tick move does not exceed
+        self.assertFalse(price_move_exceeds_ticks(44.63, 44.65, min_tick=tick, ticks=2))
+        self.assertTrue(price_move_exceeds_ticks(44.63, 44.66, min_tick=tick, ticks=2))
+
     def test_mid_delta_at_least_one_tick(self):
         cfg = {**self.cfg, "mid_delta": 0.001}
         buy_cap, sell_floor = self_trade_limits_from_nbbo(100.00, 100.04, cfg)

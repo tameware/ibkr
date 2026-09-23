@@ -1276,11 +1276,15 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         if live_open_qty != qty:
             return False
 
-        if abs(live.price - px) > 1e-9:
+        if not self._prices_match_for_replace(live, px):
             return False
         if live.status in {"Cancelled", "ApiCancelled", "Inactive"}:
             return False
         return True
+
+    def _prices_match_for_replace(self, live: LiveOrder, px: float) -> bool:
+        """True when ``px`` is close enough to ``live.price`` to skip replace."""
+        return abs(live.price - px) <= 1e-9
 
     def cancel_live_order(self, live: Optional[LiveOrder]):
         """Cancel a tracked working order and clear local state."""

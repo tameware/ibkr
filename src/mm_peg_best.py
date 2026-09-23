@@ -6,7 +6,8 @@ Both sides may work at once. Buy sizing/pricing comes from ``quote_engine``
 limit (never below mid when mid_delta=0). The buy limit is always kept strictly
 below the PEG BEST limit, and sides are repriced in an order that preserves
 that gap, so the bot can never trade with itself.
-PEG BEST limit changes cancel-and-replace (IB rejects in-place edits, error 105).
+PEG BEST limit changes cancel-and-replace when the protective limit moves by
+more than ``peg_replace_deadband_ticks`` (IB rejects in-place edits, error 105).
 """
 
 from __future__ import annotations
@@ -26,11 +27,13 @@ from ibkr_app_support import (
     idle_until_shutdown,
     load_merged_config,
     price_digits_from_config,
+    price_move_exceeds_ticks,
     run_bot,
     stock_contract_with_exchange,
     sync_attrs_from_ledger,
 )
 from market_maker import (
+    LiveOrder,
     MarketMaker,
     QuoteDecision,
     QuotePipelineInvalidPair,
@@ -68,11 +71,18 @@ class MmPegBest(MarketMaker):
         self.post_to_ats_seconds = int(config.get("post_to_ats_seconds", 1))
         self.peg_exchange = str(config.get("peg_exchange", "IBKRATS"))
         self.tif = str(config.get("tif", "DAY"))
+        # Replace PEG BEST only when the protective limit moves by more than
+        # this many ticks (default 1 stops 44.63↔44.64 cancel+replace thrash).
+        self.peg_replace_deadband_ticks = max(
+            0, int(config.get("peg_replace_deadband_ticks", 1))
+        )
         self.logger.info(
-            "mm_peg_best hybrid ledger_qty=%s avg=%.4f peg_exchange=%s",
+            "mm_peg_best hybrid ledger_qty=%s avg=%.4f peg_exchange=%s "
+            "peg_replace_deadband_ticks=%s",
             self.ledger.qty,
             self.ledger.avg_cost_per_share,
             self.peg_exchange,
+            self.peg_replace_deadband_ticks,
         )
 
     def build_peg_best_sell(self, qty: int, limit_price: float) -> Order:
@@ -130,6 +140,17 @@ class MmPegBest(MarketMaker):
     def _replace_requires_new_order_id(self, order: Order) -> bool:
         """Cancel+replace PEG BEST sells; IB rejects in-place limit edits (105)."""
         return getattr(order, "orderType", "") == "PEG BEST"
+
+    def _prices_match_for_replace(self, live: LiveOrder, px: float) -> bool:
+        """PEG BEST sells: treat limit as unchanged within the tick deadband."""
+        if live.side == "SELL":
+            return not price_move_exceeds_ticks(
+                live.price,
+                px,
+                min_tick=self._effective_min_tick(),
+                ticks=self.peg_replace_deadband_ticks,
+            )
+        return super()._prices_match_for_replace(live, px)
 
     def openOrder(self, orderId, contract, order, orderState):
         """Adopt PEG BEST sells as well as LMT buys/sells."""
@@ -304,6 +325,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--peg_exchange",
         type=str,
         help="Exchange for PEG BEST sell orders (default: IBKRATS)",
+    )
+    parser.add_argument(
+        "--peg_replace_deadband_ticks",
+        type=int,
+        help="Cancel+replace PEG BEST only when limit moves by more than this many ticks",
     )
     return parser
 

@@ -32,6 +32,8 @@
 
     "sell_limit_multiplier": 1.0,
     "//": "Protective PEG BEST sell limit = mid * multiplier (not floored by avg cost)",
+    "peg_replace_deadband_ticks": 1,
+    "//": "Cancel+replace PEG BEST only when protective limit moves by more than this many ticks",
     "min_compete_size": 50,
     "mid_offset_whole": 0.0,
     "mid_offset_half": 0.005,

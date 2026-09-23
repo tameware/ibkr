@@ -404,6 +404,57 @@ class TestMmPegBest(unittest.TestCase):
         self.assertNotAlmostEqual(peg_calls[0][0][2].lmtPrice, first_px)
         self.assertEqual(self.bot.sell_order.order_id, new_id)
 
+    def _place_peg_sell(self, qty: int, px: float) -> int:
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+        self._seed_pos(max(qty, self.bot.position_size), avg_cost=47.0)
+        # Wide NBBO below the protective limits so self-trade clamp does not move px.
+        self._set_nbbo(bid=40.0, ask=41.0)
+        self.bot.place_or_replace_peg_sell(qty, px)
+        self.assertIsNotNone(self.bot.sell_order)
+        self.assertAlmostEqual(self.bot.sell_order.price, px)
+        return self.bot.sell_order.order_id
+
+    def test_peg_sell_one_tick_limit_move_does_not_cancel_replace(self):
+        """Default deadband=1: 44.63↔44.64 must not thrash cancel+replace."""
+        self.assertEqual(self.bot.peg_replace_deadband_ticks, 1)
+        oid = self._place_peg_sell(100, 44.63)
+        self.bot.placeOrder.reset_mock()
+        with patch("market_maker.safe_cancel_order") as cancel:
+            self.bot.place_or_replace_peg_sell(100, 44.64)
+            cancel.assert_not_called()
+        self.bot.placeOrder.assert_not_called()
+        self.assertEqual(self.bot.sell_order.order_id, oid)
+        self.assertAlmostEqual(self.bot.sell_order.price, 44.63)
+
+    def test_peg_sell_two_tick_limit_move_cancels_and_replaces(self):
+        oid = self._place_peg_sell(100, 44.63)
+        self.bot.placeOrder.reset_mock()
+        with patch("market_maker.safe_cancel_order") as cancel:
+            self.bot.place_or_replace_peg_sell(100, 44.65)
+            cancel.assert_called_once()
+            self.assertEqual(cancel.call_args[0][1], oid)
+        peg_calls = self._peg_calls()
+        self.assertEqual(len(peg_calls), 1)
+        self.assertNotEqual(peg_calls[0][0][0], oid)
+        self.assertAlmostEqual(peg_calls[0][0][2].lmtPrice, 44.65)
+
+    def test_peg_sell_qty_change_replaces_within_price_deadband(self):
+        oid = self._place_peg_sell(100, 44.63)
+        self._seed_pos(200, avg_cost=47.0)
+        self.bot.placeOrder.reset_mock()
+        with patch("market_maker.safe_cancel_order") as cancel:
+            self.bot.place_or_replace_peg_sell(200, 44.64)
+            cancel.assert_called_once()
+            self.assertEqual(cancel.call_args[0][1], oid)
+        peg_calls = self._peg_calls()
+        self.assertEqual(len(peg_calls), 1)
+        self.assertEqual(peg_calls[0][0][2].totalQuantity, 200)
+
+    def test_peg_replace_deadband_ticks_from_config(self):
+        bot = MmPegBest({**self.base_config, "peg_replace_deadband_ticks": 2})
+        self.assertEqual(bot.peg_replace_deadband_ticks, 2)
+
     def test_lmt_buy_still_places_on_smart_contract(self):
         ts = 3_000_000.0
         self._seed_pos(0, avg_cost=0.0)

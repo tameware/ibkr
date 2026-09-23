@@ -527,14 +527,22 @@ def price_tick_from_config(config: Dict[str, Any]) -> float:
     return 10.0 ** (-price_digits_from_config(config))
 
 
+def price_move_exceeds_ticks(
+    old_px: float, new_px: float, *, min_tick: float, ticks: int
+) -> bool:
+    """True when ``new_px`` is more than ``ticks`` min-ticks away from ``old_px``."""
+    tick = min_tick if min_tick > 0 else 0.01
+    threshold = max(0, int(ticks))
+    old_n = round(float(old_px) / tick)
+    new_n = round(float(new_px) / tick)
+    return abs(new_n - old_n) > threshold
+
+
 def price_move_exceeds_one_tick(
     old_px: float, new_px: float, *, min_tick: float
 ) -> bool:
     """True when ``new_px`` is more than one ``min_tick`` away from ``old_px``."""
-    tick = min_tick if min_tick > 0 else 0.01
-    old_ticks = round(float(old_px) / tick)
-    new_ticks = round(float(new_px) / tick)
-    return abs(new_ticks - old_ticks) > 1
+    return price_move_exceeds_ticks(old_px, new_px, min_tick=min_tick, ticks=1)
 
 
 def mid_delta_for_config(config: Dict[str, Any], *, default: float = 0.10) -> float:
