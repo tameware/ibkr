@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Hybrid bot: market-maker LMT buys when flat; PEG BEST sells when long.
+"""Hybrid bot: market-maker LMT buys; PEG BEST sells whenever long.
 
-One side at a time. Buy sizing/pricing comes from ``quote_engine``; sells use
-IBKRATS PEG BEST with a protective limit (never below mid when mid_delta=0).
+Both sides may work at once. Buy sizing/pricing comes from ``quote_engine``
+(capped by ``max_position``); sells use IBKRATS PEG BEST with a protective
+limit (never below mid when mid_delta=0). The buy limit is always kept strictly
+below the PEG BEST limit, and sides are repriced in an order that preserves
+that gap, so the bot can never trade with itself.
 PEG BEST limit changes cancel-and-replace (IB rejects in-place edits, error 105).
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import sys
 import time
 from typing import Any, Dict, Optional
@@ -35,7 +39,10 @@ from market_maker import (
 
 
 class MmPegBest(MarketMaker):
-    """Flat: quote_engine LMT buy. Long: PEG BEST sell. Never both."""
+    """quote_engine LMT buy while room remains; PEG BEST sell while long.
+
+    Both may work simultaneously; the buy limit stays strictly below the sell.
+    """
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize hybrid bot; rebind ledger to ``mm_peg_best``."""
@@ -136,8 +143,15 @@ class MmPegBest(MarketMaker):
         return super().openOrder(orderId, contract, order, orderState)
 
     def _compute_quote_decision(self, snap):
-        """Buy-only decision from the engine (LMT sells never used)."""
-        result = super()._compute_quote_decision(snap)
+        """Buy-only decision from the engine (LMT sells never used).
+
+        The base clamps the buy under the *working* sell from the snapshot; here
+        the sell may be replaced first, so that clamp is stale. ``_quote_two_sided``
+        clamps against the new PEG BEST limit instead.
+        """
+        result = super()._compute_quote_decision(
+            dataclasses.replace(snap, sell_work_px=None)
+        )
         if isinstance(result, QuotePipelineInvalidPair):
             return result
         return QuoteDecision(
@@ -147,8 +161,53 @@ class MmPegBest(MarketMaker):
             sell_px=None,
         )
 
+    def _buy_limit_strictly_below(
+        self, buy_px: Optional[float], sell_limit: float
+    ) -> Optional[float]:
+        """Clamp ``buy_px`` at least one tick under ``sell_limit`` (no self-trade)."""
+        if buy_px is None:
+            return None
+        if float(buy_px) < float(sell_limit):
+            return float(buy_px)
+        digits = price_digits_from_config(self.config)
+        clamped = self._quantize_to_tick(
+            float(sell_limit) - self._effective_min_tick()
+        )
+        clamped = round(clamped, digits)
+        return clamped if clamped > 0 else None
+
+    def _quote_two_sided(
+        self,
+        sellable: int,
+        sell_limit: float,
+        buy_qty: int,
+        buy_px: Optional[float],
+    ) -> None:
+        """Place/replace both sides so buy < sell limit holds at every step.
+
+        Whichever side is moving *away* from the other goes first: a buy that
+        would sit at/above the new sell limit is lowered before the sell is
+        replaced; otherwise the sell is (re)placed before the buy is raised.
+        """
+        buy_px = self._buy_limit_strictly_below(buy_px, sell_limit)
+        buy_active = buy_qty > 0 and buy_px is not None
+        working_buy = self.buy_order.price if self.buy_order else None
+
+        def _buy() -> None:
+            self.place_or_replace_buy(buy_qty, buy_px if buy_active else None)
+
+        def _sell() -> None:
+            self.place_or_replace_peg_sell(sellable, sell_limit)
+
+        if working_buy is not None and working_buy >= sell_limit:
+            _buy()
+            _sell()
+        else:
+            _sell()
+            _buy()
+
     def maybe_manage_quotes(self, force=False):
-        """Exclusive: PEG BEST sell when long; otherwise quote_engine LMT buy."""
+        """Long: PEG BEST sell plus quote_engine LMT buy (buy < sell limit)."""
         now = time.time()
         snap = self._capture_quote_mgmt_snapshot()
 
@@ -188,28 +247,28 @@ class MmPegBest(MarketMaker):
         if qb is None or qa is None:
             return
 
+        pipeline = self._compute_quote_decision(snap)
+        if isinstance(pipeline, QuotePipelineInvalidPair):
+            msg = (
+                "Computed invalid quotes buy=%s sell=%s; cancelling."
+                if pipeline.after_compute
+                else "Quotes invalid after NBBO clamp buy=%s sell=%s; cancelling."
+            )
+            self._abort_quotes_on_invalid_pair(
+                pipeline.buy_px, pipeline.sell_px, msg
+            )
+            with self.lock:
+                self._nbbo_throttle.mark_ran(nbbo_key)
+            return
+        buy_qty = pipeline.buy_qty
+        buy_px = pipeline.buy_px if buy_qty > 0 else None
+
         if sellable > 0:
-            self.place_or_replace_buy(0, None)
             limit = self._peg_sell_protective_limit(float(qb), float(qa))
-            self.place_or_replace_peg_sell(sellable, limit)
+            self._quote_two_sided(sellable, limit, buy_qty, buy_px)
         else:
             self.place_or_replace_peg_sell(0, None)
-            pipeline = self._compute_quote_decision(snap)
-            if isinstance(pipeline, QuotePipelineInvalidPair):
-                msg = (
-                    "Computed invalid quotes buy=%s sell=%s; cancelling."
-                    if pipeline.after_compute
-                    else "Quotes invalid after NBBO clamp buy=%s sell=%s; cancelling."
-                )
-                self._abort_quotes_on_invalid_pair(
-                    pipeline.buy_px, pipeline.sell_px, msg
-                )
-                with self.lock:
-                    self._nbbo_throttle.mark_ran(nbbo_key)
-                return
-            buy_qty = pipeline.buy_qty
-            buy_px = pipeline.buy_px
-            self.place_or_replace_buy(buy_qty, buy_px if buy_qty > 0 else None)
+            self.place_or_replace_buy(buy_qty, buy_px)
 
         with self.lock:
             self._nbbo_throttle.mark_ran(nbbo_key)

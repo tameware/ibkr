@@ -123,7 +123,21 @@ class TestMmPegBest(unittest.TestCase):
         self.assertEqual(order.totalQuantity, 100)
         self.assertIsNone(self.bot.sell_order)
 
-    def test_long_cancels_buy_and_places_peg_best_sell(self):
+    def _peg_calls(self):
+        return [
+            c
+            for c in self.bot.placeOrder.call_args_list
+            if c[0][2].orderType == "PEG BEST"
+        ]
+
+    def _buy_calls(self):
+        return [
+            c
+            for c in self.bot.placeOrder.call_args_list
+            if c[0][2].orderType == "LMT" and c[0][2].action == "BUY"
+        ]
+
+    def test_long_keeps_working_buy_and_places_peg_best_sell(self):
         ts = 3_000_000.0
         self._seed_pos(150, avg_cost=47.55)
         self._set_nbbo(bid=48.0, ask=48.40, ts=ts)
@@ -136,9 +150,11 @@ class TestMmPegBest(unittest.TestCase):
         with patch("market_maker.time.time", return_value=ts):
             self.bot.maybe_manage_quotes(force=True)
 
-        # Buy cancelled
+        # Buy stays working (repriced in place, never cancelled).
         cancel_ids = [c.args[0] for c in self.bot.cancelOrder.call_args_list]
-        self.assertIn(50, cancel_ids)
+        self.assertNotIn(50, cancel_ids)
+        self.assertIsNotNone(self.bot.buy_order)
+        self.assertEqual(self.bot.buy_order.order_id, 50)
 
         peg_calls = [
             c
@@ -162,6 +178,148 @@ class TestMmPegBest(unittest.TestCase):
         # Protective limit: mid 48.20 * 0.98 = 47.24, raised by self-trade
         # floor mid + mid_delta = 48.21. Avg cost must not raise it further.
         self.assertAlmostEqual(order.lmtPrice, 48.21)
+        self.assertLess(self.bot.buy_order.price, order.lmtPrice)
+
+    def test_long_quotes_both_sides_with_buy_strictly_below_sell_limit(self):
+        ts = 3_000_000.0
+        self._seed_pos(150, avg_cost=47.55)
+        self._set_nbbo(bid=48.0, ask=48.40, ts=ts)
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+
+        with patch("market_maker.time.time", return_value=ts):
+            self.bot.maybe_manage_quotes(force=True)
+
+        self.assertIsNotNone(self.bot.buy_order)
+        self.assertIsNotNone(self.bot.sell_order)
+        self.assertEqual(self.bot.buy_order.side, "BUY")
+        self.assertEqual(self.bot.sell_order.side, "SELL")
+        self.assertLess(self.bot.buy_order.price, self.bot.sell_order.price)
+
+        buy_calls = self._buy_calls()
+        self.assertEqual(len(buy_calls), 1)
+        buy = buy_calls[0][0][2]
+        # Engine buy: bid + 0.40*spread = 48.16 (capped at mid - edge = 48.16).
+        self.assertAlmostEqual(buy.lmtPrice, 48.16)
+        # Room to max_position (300 - 150) still allows a full lot.
+        self.assertEqual(buy.totalQuantity, 100)
+        self.assertEqual(buy_calls[0][0][1].exchange, "SMART")
+
+        peg_calls = self._peg_calls()
+        self.assertEqual(len(peg_calls), 1)
+        self.assertEqual(peg_calls[0][0][2].totalQuantity, 150)
+
+    def test_buy_limit_strictly_below_leaves_lower_buy_unchanged(self):
+        self.assertAlmostEqual(
+            self.bot._buy_limit_strictly_below(48.16, 48.21), 48.16
+        )
+
+    def test_buy_limit_strictly_below_moves_touching_buy_one_tick_under(self):
+        self.assertAlmostEqual(
+            self.bot._buy_limit_strictly_below(48.21, 48.21), 48.20
+        )
+
+    def test_buy_limit_strictly_below_moves_crossing_buy_one_tick_under(self):
+        self.assertAlmostEqual(
+            self.bot._buy_limit_strictly_below(48.90, 48.21), 48.20
+        )
+
+    def test_buy_limit_strictly_below_none_passthrough(self):
+        self.assertIsNone(self.bot._buy_limit_strictly_below(None, 48.21))
+
+    def test_buy_limit_strictly_below_returns_none_when_no_room_above_zero(self):
+        self.assertIsNone(self.bot._buy_limit_strictly_below(0.01, 0.01))
+
+    def test_long_zero_edge_buy_and_sell_straddle_mid_by_one_tick(self):
+        """With zero edge and 0.5 fractions the engine buy wants mid; both sides
+        must still end one tick apart on either side of mid, never touching."""
+        cfg = {
+            **self.base_config,
+            "mid_delta": 0.0,
+            "min_profit_per_share": 0.0,
+            "commission_per_share": 0.0,
+            "buy_spread_fractions": [0.5, 0.5, 0.5],
+            "sell_limit_multiplier": 1.0,
+        }
+        bot = MmPegBest(cfg)
+        self.bot = bot
+        bot.cancelOrder = Mock()
+        bot.placeOrder = Mock()
+        bot.isConnected = Mock(return_value=True)
+        bot.serverVersion = Mock(return_value=157)
+        bot.next_order_id = 1000
+        bot.connected_flag = True
+        bot.shutdown_flag = False
+        bot.open_orders_snapshot_done = True
+        ts = 3_000_000.0
+        self._seed_pos(100, avg_cost=48.0)
+        self._set_nbbo(bid=48.0, ask=48.40, ts=ts)
+
+        with patch("market_maker.time.time", return_value=ts):
+            bot.maybe_manage_quotes(force=True)
+
+        peg_calls = self._peg_calls()
+        self.assertEqual(len(peg_calls), 1)
+        self.assertAlmostEqual(peg_calls[0][0][2].lmtPrice, 48.21)
+        buy_calls = self._buy_calls()
+        self.assertEqual(len(buy_calls), 1)
+        self.assertAlmostEqual(buy_calls[0][0][2].lmtPrice, 48.19)
+        self.assertLess(bot.buy_order.price, bot.sell_order.price)
+
+    def test_long_at_max_position_places_sell_only(self):
+        ts = 3_000_000.0
+        self._seed_pos(300, avg_cost=47.55)
+        self._set_nbbo(bid=48.0, ask=48.40, ts=ts)
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+
+        with patch("market_maker.time.time", return_value=ts):
+            self.bot.maybe_manage_quotes(force=True)
+
+        self.assertEqual(len(self._peg_calls()), 1)
+        self.assertEqual(len(self._buy_calls()), 0)
+        self.assertIsNone(self.bot.buy_order)
+        self.assertIsNotNone(self.bot.sell_order)
+
+    def _quote_two_sided_then_move_nbbo(self, bid: float, ask: float):
+        ts = 3_000_000.0
+        self._seed_pos(150, avg_cost=47.55)
+        self._set_nbbo(bid=48.0, ask=48.40, ts=ts)
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+        with patch("market_maker.time.time", return_value=ts):
+            self.bot.maybe_manage_quotes(force=True)
+        self.assertAlmostEqual(self.bot.buy_order.price, 48.16)
+        self.assertAlmostEqual(self.bot.sell_order.price, 48.21)
+        self.bot.placeOrder.reset_mock()
+        self.bot.cancelOrder.reset_mock()
+
+        self._set_nbbo(bid=bid, ask=ask, ts=ts + 10)
+        with patch("market_maker.time.time", return_value=ts + 10):
+            self.bot.maybe_manage_quotes(force=True)
+        return [c[0][2] for c in self.bot.placeOrder.call_args_list]
+
+    def test_falling_mid_lowers_buy_before_replacing_sell(self):
+        """New sell limit (47.71) is below the working buy (48.16): buy moves first."""
+        placed = self._quote_two_sided_then_move_nbbo(bid=47.50, ask=47.90)
+
+        self.assertEqual([o.action for o in placed], ["BUY", "SELL"])
+        self.assertEqual(placed[0].orderType, "LMT")
+        self.assertAlmostEqual(placed[0].lmtPrice, 47.66)
+        self.assertEqual(placed[1].orderType, "PEG BEST")
+        self.assertAlmostEqual(placed[1].lmtPrice, 47.71)
+        self.assertLess(self.bot.buy_order.price, self.bot.sell_order.price)
+
+    def test_rising_mid_replaces_sell_before_raising_buy(self):
+        """New buy (48.66) is above the working sell limit (48.21): sell moves first."""
+        placed = self._quote_two_sided_then_move_nbbo(bid=48.50, ask=48.90)
+
+        self.assertEqual([o.action for o in placed], ["SELL", "BUY"])
+        self.assertEqual(placed[0].orderType, "PEG BEST")
+        self.assertAlmostEqual(placed[0].lmtPrice, 48.71)
+        self.assertEqual(placed[1].orderType, "LMT")
+        self.assertAlmostEqual(placed[1].lmtPrice, 48.66)
+        self.assertLess(self.bot.buy_order.price, self.bot.sell_order.price)
 
     def test_peg_sell_limit_not_floored_by_avg_cost(self):
         """PEG BEST may sell below avg cost; profit comes from cheaper buys."""
@@ -243,18 +401,7 @@ class TestMmPegBest(unittest.TestCase):
         self.assertEqual(buy_calls[0][0][1].exchange, "SMART")
         self.assertFalse(getattr(buy_calls[0][0][2], "notHeld", False))
 
-    def test_quote_cycle_never_leaves_both_sides_working(self):
-        ts = 3_000_000.0
-        self._seed_pos(100, avg_cost=47.0)
-        self._set_nbbo(ts=ts)
-        with patch("market_maker.time.time", return_value=ts):
-            self.bot.maybe_manage_quotes(force=True)
-
-        self.assertIsNone(self.bot.buy_order)
-        self.assertIsNotNone(self.bot.sell_order)
-        self.assertEqual(self.bot.sell_order.side, "SELL")
-
-    def test_flat_after_long_cancels_sell_and_resumes_lmt_buy(self):
+    def test_flat_after_long_cancels_sell_and_keeps_lmt_buy_working(self):
         ts = 3_000_000.0
         self._seed_pos(100, avg_cost=47.0)
         self._set_nbbo(ts=ts)
@@ -263,7 +410,9 @@ class TestMmPegBest(unittest.TestCase):
         with patch("market_maker.time.time", return_value=ts):
             self.bot.maybe_manage_quotes(force=True)
         self.assertIsNotNone(self.bot.sell_order)
+        self.assertIsNotNone(self.bot.buy_order)
         sell_id = self.bot.sell_order.order_id
+        buy_id = self.bot.buy_order.order_id
 
         self._seed_pos(0, avg_cost=0.0)
         self.bot.placeOrder.reset_mock()
@@ -272,13 +421,10 @@ class TestMmPegBest(unittest.TestCase):
 
         cancel_ids = [c.args[0] for c in self.bot.cancelOrder.call_args_list]
         self.assertIn(sell_id, cancel_ids)
-        buy_calls = [
-            c
-            for c in self.bot.placeOrder.call_args_list
-            if c[0][2].action == "BUY" and c[0][2].orderType == "LMT"
-        ]
-        self.assertGreaterEqual(len(buy_calls), 1)
+        self.assertNotIn(buy_id, cancel_ids)
         self.assertIsNone(self.bot.sell_order)
+        self.assertIsNotNone(self.bot.buy_order)
+        self.assertEqual(self.bot.buy_order.order_id, buy_id)
 
     def test_buy_spread_fractions_from_config_reach_quote_engine(self):
         cfg = {**self.base_config, "buy_spread_fractions": [0.0, 0.1, 0.2]}
