@@ -156,7 +156,10 @@ class TestFlattenConfig(unittest.TestCase):
         self.assertEqual(out["client_id"], 4)
         self.assertEqual(out["exchange"], "IBKRATS")
         self.assertEqual(out["log_file"], "peg_best.log")
-        self.assertEqual(out["ignored_error_codes"], [202, 2103, 2104, 2106, 2107, 2108, 2158])
+        self.assertEqual(
+            out["ignored_error_codes"],
+            [202, 2103, 2104, 2106, 2107, 2108, 2158, 10148, 104],
+        )
 
 
 class TestHelpers(unittest.TestCase):
@@ -835,6 +838,56 @@ class TestMarketMakerCore(unittest.TestCase):
         with patch("market_maker.safe_cancel_order") as cancel:
             self._submit_open_sell(2, 90)
         cancel.assert_called_once_with(self.mm, 2)
+
+    def test_open_order_post_adoption_skips_cancel_of_filled_orphan_sell(self):
+        self.mm.adoption_phase = False
+        self.mm.sell_order = LiveOrder(
+            order_id=10, side="SELL", price=50.0, qty=74, remaining=74, total_qty=74
+        )
+        with patch("market_maker.safe_cancel_order") as cancel:
+            self._submit_open_sell(2, 90, status="Filled", filled=90)
+        cancel.assert_not_called()
+
+    def test_open_order_post_adoption_skips_cancel_of_pending_cancel_orphan(self):
+        self.mm.adoption_phase = False
+        self.mm.sell_order = LiveOrder(
+            order_id=10, side="SELL", price=50.0, qty=74, remaining=74, total_qty=74
+        )
+        with patch("market_maker.safe_cancel_order") as cancel:
+            self._submit_open_sell(2, 90, status="PendingCancel")
+        cancel.assert_not_called()
+
+    def test_cancel_live_order_skips_ib_cancel_when_already_filled(self):
+        live = LiveOrder(
+            order_id=7, side="BUY", price=48.0, qty=100, status="Filled"
+        )
+        self.mm.buy_order = live
+        with patch("market_maker.safe_cancel_order") as cancel:
+            self.mm.cancel_live_order(live)
+        cancel.assert_not_called()
+        self.assertIsNone(self.mm.buy_order)
+
+    def test_cancel_live_order_skips_ib_cancel_when_pending_cancel(self):
+        live = LiveOrder(
+            order_id=8, side="SELL", price=50.0, qty=50, status="PendingCancel"
+        )
+        self.mm.sell_order = live
+        self.mm._working_sell_qty_by_order[8] = 50
+        with patch("market_maker.safe_cancel_order") as cancel:
+            self.mm.cancel_live_order(live)
+        cancel.assert_not_called()
+        self.assertIsNone(self.mm.sell_order)
+        self.assertNotIn(8, self.mm._working_sell_qty_by_order)
+
+    def test_cancel_live_order_still_cancels_submitted(self):
+        live = LiveOrder(
+            order_id=9, side="BUY", price=48.0, qty=100, status="Submitted"
+        )
+        self.mm.buy_order = live
+        with patch("market_maker.safe_cancel_order") as cancel:
+            self.mm.cancel_live_order(live)
+        cancel.assert_called_once_with(self.mm, 9)
+        self.assertIsNone(self.mm.buy_order)
 
     def test_place_or_replace_sell_sets_tracked_order_before_place_order(self):
         self._seed_pos(100)

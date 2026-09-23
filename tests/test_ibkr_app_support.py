@@ -939,6 +939,20 @@ class TestIbErrorFiltering(unittest.TestCase):
             )
         )
 
+    def test_should_suppress_cancel_race_codes_10148_and_104(self):
+        """Filled/cancelled cancel races (10148) and modify-filled (104) are noise."""
+        cfg = {"ignored_error_codes": [10148, 104]}
+        self.assertTrue(
+            should_suppress_ib_error(
+                cfg,
+                10148,
+                "OrderId 898 that needs to be cancelled cannot be cancelled, state: Filled.",
+            )
+        )
+        self.assertTrue(
+            should_suppress_ib_error(cfg, 104, "Cannot modify a filled order.")
+        )
+
     def test_should_suppress_substring_in_message(self):
         self.assertTrue(
             should_suppress_ib_error(self._CFG, 10000, "Error: HMDS connection issue")

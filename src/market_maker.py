@@ -130,6 +130,10 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
     _TERMINAL_ORDER_STATUSES: FrozenSet[str] = frozenset(
         {"Filled", "Cancelled", "ApiCancelled", "Inactive"}
     )
+    # Do not send cancelOrder for these (avoids IB error 10148).
+    _NON_CANCELLABLE_ORDER_STATUSES: FrozenSet[str] = _TERMINAL_ORDER_STATUSES | frozenset(
+        {"PendingCancel"}
+    )
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize :class:`MarketMaker`."""
@@ -416,6 +420,18 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
 
     def _cancel_orphan_open_sell(self, live: LiveOrder) -> None:
         """Cancel a working sell that is not our tracked ``sell_order``."""
+        if live.status in self._NON_CANCELLABLE_ORDER_STATUSES:
+            with self.lock:
+                self._drop_working_sell(live.order_id)
+            self.logger.debug(
+                "Skipping cancel of non-cancellable orphan sell id=%s "
+                "px=%.2f qty=%s status=%s",
+                live.order_id,
+                live.price,
+                live.qty,
+                live.status,
+            )
+            return
         try:
             safe_cancel_order(self, live.order_id)
             with self.lock:
@@ -1276,9 +1292,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         px = live.price
         qty = live.qty
 
-        try:
-            safe_cancel_order(self, oid)
-
+        def _clear_local() -> None:
             with self.lock:
                 if side == "BUY" and self.buy_order and self.buy_order.order_id == oid:
                     self.buy_order = None
@@ -1287,6 +1301,21 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 if side == "SELL":
                     self._drop_working_sell(oid)
 
+        if live.status in self._NON_CANCELLABLE_ORDER_STATUSES:
+            _clear_local()
+            self.logger.debug(
+                "Skip cancel; order already %s id=%s side=%s px=%.2f qty=%s",
+                live.status,
+                oid,
+                side,
+                px,
+                qty,
+            )
+            return
+
+        try:
+            safe_cancel_order(self, oid)
+            _clear_local()
             self.logger.info("Cancel order id=%s side=%s px=%.2f qty=%s", oid, side, px, qty)
         except Exception as e:
             self.logger.exception("Cancel failed for order id=%s side=%s: %s", oid, side, e)

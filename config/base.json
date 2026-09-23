@@ -34,7 +34,8 @@
   },
 
   "risk": {
-    "ignored_error_codes": [202, 2103, 2104, 2106, 2107, 2108, 2158],
+    "ignored_error_codes": [202, 2103, 2104, 2106, 2107, 2108, 2158, 10148, 104],
+    "//": "10148/104: cancel or modify races when the order already filled/cancelled",
     "ignore_error_substrings": ["data farm connection is broken"],
     "cancel_open_orders_on_shutdown": false
   },
