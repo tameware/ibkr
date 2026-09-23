@@ -301,6 +301,30 @@ class TestDecideQuotesSellPricing(unittest.TestCase):
         self.assertEqual(q.sell_qty, 100)
         self.assertAlmostEqual(q.sell_px, 45.64)
 
+    def test_pause_buys_when_sell_stuck_defaults_on(self):
+        self.assertTrue(_params().pause_buys_when_sell_stuck)
+
+    def test_keeps_buying_above_market_when_stuck_pause_disabled(self):
+        # Same stuck case as above, but the bot sells via PEG BEST without an
+        # avg-cost floor, so it may keep adding inventory at lower prices.
+        q = decide_quotes(
+            _params(pause_buys_when_sell_stuck=False),
+            _inputs(position=100, avg_cost=45.60, bought_today=0, sold_today=0,
+                    session_progress=0.5),
+        )
+        self.assertEqual(q.buy_qty, 100)
+        self.assertIsNotNone(q.buy_px)
+        self.assertLess(q.buy_px, 45.15)  # still below mid - edge
+        self.assertEqual(q.sell_qty, 100)
+
+    def test_disabled_stuck_pause_still_respects_max_position(self):
+        q = decide_quotes(
+            _params(pause_buys_when_sell_stuck=False),
+            _inputs(position=300, avg_cost=45.60, session_progress=0.5),
+        )
+        self.assertEqual(q.buy_qty, 0)
+        self.assertIsNone(q.buy_px)
+
     def test_allows_buys_when_profit_floor_at_ask(self):
         # Floor exactly at the ask is still marketable; buys stay available.
         # avg 45.26 + 0.04 = 45.30 == ask.

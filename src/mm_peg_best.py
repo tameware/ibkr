@@ -161,6 +161,16 @@ class MmPegBest(MarketMaker):
             sell_px=None,
         )
 
+    def _quote_engine_params(self):
+        """Engine params without the stuck-sell buy pause.
+
+        PEG BEST sells carry no avg-cost floor, so being long above the market
+        never blocks the sell; keep buying lower to average down.
+        """
+        return dataclasses.replace(
+            super()._quote_engine_params(), pause_buys_when_sell_stuck=False
+        )
+
     def _buy_limit_strictly_below(
         self, buy_px: Optional[float], sell_limit: float
     ) -> Optional[float]:

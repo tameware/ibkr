@@ -266,6 +266,26 @@ class TestMmPegBest(unittest.TestCase):
         self.assertAlmostEqual(buy_calls[0][0][2].lmtPrice, 48.19)
         self.assertLess(bot.buy_order.price, bot.sell_order.price)
 
+    def test_quote_engine_params_disable_stuck_sell_buy_pause(self):
+        self.assertFalse(self.bot._quote_engine_params().pause_buys_when_sell_stuck)
+
+    def test_long_above_market_still_quotes_buy_below_sell_limit(self):
+        """avg_cost above the ask must not suppress the buy (no avg-cost sell floor)."""
+        ts = 3_000_000.0
+        self._seed_pos(150, avg_cost=49.50)
+        self._set_nbbo(bid=48.0, ask=48.40, ts=ts)
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+
+        with patch("market_maker.time.time", return_value=ts):
+            self.bot.maybe_manage_quotes(force=True)
+
+        buy_calls = self._buy_calls()
+        self.assertEqual(len(buy_calls), 1)
+        self.assertAlmostEqual(buy_calls[0][0][2].lmtPrice, 48.16)
+        self.assertEqual(len(self._peg_calls()), 1)
+        self.assertLess(self.bot.buy_order.price, self.bot.sell_order.price)
+
     def test_long_at_max_position_places_sell_only(self):
         ts = 3_000_000.0
         self._seed_pos(300, avg_cost=47.55)

@@ -7,7 +7,8 @@ Encodes the strategy goals directly:
 * floor every sell at avg_cost + round-trip commission + minimum profit,
   so a completed round trip is always net profitable,
 * pause buys when that profit floor sits above the NBBO ask (sell is stuck;
-  do not add inventory),
+  do not add inventory) -- optional via ``pause_buys_when_sell_stuck``, off
+  for bots whose sells are not floored at avg cost,
 * pace both sides toward a daily share-volume target: quote passively
   (join the bid / ask) when on schedule, and step toward the mid by
   fractions of the NBBO spread when behind.
@@ -123,6 +124,10 @@ class QuoteParams:
     # Fraction of the spread to step above the bid when on pace / slightly
     # behind / far behind. Smaller values keep buys further below mid.
     buy_spread_fractions: tuple[float, float, float] = _URGENCY_SPREAD_FRACTION
+    # Stop adding inventory when avg_cost + required_edge sits above the ask
+    # (the LMT sell cannot fill). Bots whose sells are not floored at avg cost
+    # (PEG BEST) disable this so they can keep buying lower.
+    pause_buys_when_sell_stuck: bool = True
 
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "QuoteParams":
@@ -228,7 +233,8 @@ def decide_quotes(params: QuoteParams, inp: QuoteInputs) -> QuoteProposal:
         buy_qty = 0
     # Profit floor above the ask means the sell cannot fill; stop adding inventory.
     if (
-        buy_qty > 0
+        params.pause_buys_when_sell_stuck
+        and buy_qty > 0
         and inp.avg_cost > 0
         and inp.avg_cost + params.required_edge > inp.ask
     ):
