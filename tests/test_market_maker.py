@@ -535,6 +535,46 @@ class TestMarketMakerCore(unittest.TestCase):
         d = self._decision()
         self.assertAlmostEqual(d.buy_px, 100.64)
 
+    def _working_sell(self, px: float) -> None:
+        self.mm.sell_order = LiveOrder(
+            order_id=78, side="SELL", price=px, qty=100, status="Submitted",
+            remaining=100, total_qty=100,
+        )
+
+    def test_quote_decision_does_not_undercut_own_ask(self):
+        """NBBO ask == our working sell: stepping down would chase ourselves."""
+        self._seed_pos(100, avg_cost=100.0)
+        self._working_sell(100.60)
+        self.mm.quote.bid = 100.0
+        self.mm.quote.ask = 100.60
+        d = self._decision()  # far behind -> engine wants ask - 0.40*spread = 100.36
+        self.assertAlmostEqual(d.sell_px, 100.60)
+
+    def test_quote_decision_does_not_step_below_working_sell_when_ask_above_it(self):
+        """Own order momentarily absent from NBBO: still never price below it."""
+        self._seed_pos(100, avg_cost=100.0)
+        self._working_sell(100.60)
+        self.mm.quote.bid = 100.0
+        self.mm.quote.ask = 100.70
+        d = self._decision()  # engine: 100.70 - 0.28 = 100.42
+        self.assertAlmostEqual(d.sell_px, 100.60)
+
+    def test_quote_decision_reprices_down_when_someone_undercuts_us(self):
+        self._seed_pos(100, avg_cost=100.0)
+        self._working_sell(100.60)
+        self.mm.quote.bid = 100.0
+        self.mm.quote.ask = 100.50
+        d = self._decision()  # engine: 100.50 - 0.40*0.50 = 100.30
+        self.assertAlmostEqual(d.sell_px, 100.30)
+
+    def test_quote_decision_raises_sell_when_market_rises_above_working_sell(self):
+        self._seed_pos(100, avg_cost=100.0)
+        self._working_sell(100.60)
+        self.mm.quote.bid = 100.70
+        self.mm.quote.ask = 100.80
+        d = self._decision()  # engine: 100.80 - 0.04 = 100.76 > 100.60 -> follow up
+        self.assertAlmostEqual(d.sell_px, 100.76)
+
     def test_quote_decision_sell_never_below_profit_floor(self):
         self.mm.quote.bid = 100.0
         self.mm.quote.ask = 101.0

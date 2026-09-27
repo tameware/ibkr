@@ -1523,6 +1523,23 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             return buy_px
         return min(buy_px, working_buy_px)
 
+    @staticmethod
+    def _never_undercut_own_ask(
+        sell_px: Optional[float], ask: float, working_sell_px: Optional[float]
+    ) -> Optional[float]:
+        """Floor a sell at the working sell unless a competing ask sits below it.
+
+        Mirror of :meth:`_never_improve_on_own_bid`: when our offer is the NBBO
+        ask, stepping a fraction of the spread below it chases our own order
+        downward. Only an ask strictly below our working price is external.
+        Raising is always allowed.
+        """
+        if sell_px is None or working_sell_px is None:
+            return sell_px
+        if ask < working_sell_px - 1e-9:
+            return sell_px
+        return max(sell_px, working_sell_px)
+
     def _compute_quote_decision(
         self, snap: QuoteMgmtSnapshot
     ) -> Union[QuoteDecision, QuotePipelineInvalidPair]:
@@ -1551,6 +1568,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         )
         sell_qty = min(proposal.sell_qty, max(0, snap.max_sell))
         sell_px = proposal.sell_px if sell_qty > 0 else None
+        sell_px = self._never_undercut_own_ask(sell_px, ask, snap.sell_work_px)
 
         if buy_px is not None and sell_px is not None:
             if not self._quotes_pair_is_valid(buy_px, sell_px):
