@@ -488,6 +488,53 @@ class TestMarketMakerCore(unittest.TestCase):
         d = self._decision(progress=0.5)
         self.assertAlmostEqual(d.buy_px, 100.00)
 
+    def _working_buy(self, px: float) -> None:
+        self.mm.buy_order = LiveOrder(
+            order_id=77, side="BUY", price=px, qty=100, status="Submitted"
+        )
+
+    def test_quote_decision_does_not_improve_on_own_bid(self):
+        """NBBO bid == our working buy: stepping in would chase ourselves."""
+        self._seed_pos(0, avg_cost=0.0)
+        self._working_buy(100.40)
+        self.mm.quote.bid = 100.40
+        self.mm.quote.ask = 101.0
+        d = self._decision()  # far behind -> engine wants bid + 0.40*spread
+        self.assertAlmostEqual(d.buy_px, 100.40)
+
+    def test_quote_decision_does_not_step_above_working_buy_when_bid_below_it(self):
+        """Own order momentarily absent from NBBO: still never price above it."""
+        self._seed_pos(0, avg_cost=0.0)
+        self._working_buy(100.40)
+        self.mm.quote.bid = 100.30
+        self.mm.quote.ask = 101.0
+        d = self._decision()  # engine: 100.30 + 0.28 = 100.58
+        self.assertAlmostEqual(d.buy_px, 100.40)
+
+    def test_quote_decision_reprices_up_when_someone_outbids_us(self):
+        self._seed_pos(0, avg_cost=0.0)
+        self._working_buy(100.40)
+        self.mm.quote.bid = 100.50
+        self.mm.quote.ask = 101.0
+        d = self._decision()  # engine: 100.50 + 0.40*0.50 = 100.70
+        self.assertAlmostEqual(d.buy_px, 100.70)
+
+    def test_quote_decision_lowers_buy_when_market_falls_below_working_buy(self):
+        self._seed_pos(0, avg_cost=0.0)
+        self._working_buy(100.40)
+        self.mm.quote.bid = 100.30
+        self.mm.quote.ask = 100.35
+        d = self._decision()  # engine floors at bid: 100.30 < 100.40 -> follow down
+        self.assertAlmostEqual(d.buy_px, 100.30)
+
+    def test_quote_decision_without_working_buy_steps_in_normally(self):
+        self._seed_pos(0, avg_cost=0.0)
+        self.mm.buy_order = None
+        self.mm.quote.bid = 100.40
+        self.mm.quote.ask = 101.0
+        d = self._decision()
+        self.assertAlmostEqual(d.buy_px, 100.64)
+
     def test_quote_decision_sell_never_below_profit_floor(self):
         self.mm.quote.bid = 100.0
         self.mm.quote.ask = 101.0

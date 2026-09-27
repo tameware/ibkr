@@ -1506,6 +1506,23 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 ),
             )
 
+    @staticmethod
+    def _never_improve_on_own_bid(
+        buy_px: Optional[float], bid: float, working_buy_px: Optional[float]
+    ) -> Optional[float]:
+        """Cap a buy at the working buy unless a competing bid sits above it.
+
+        In thin books our own bid becomes the NBBO bid; stepping a fraction of
+        the spread above it every cycle chases our own order upward. Only a
+        bid strictly above our working price is external and may be improved on.
+        Lowering is always allowed.
+        """
+        if buy_px is None or working_buy_px is None:
+            return buy_px
+        if bid > working_buy_px + 1e-9:
+            return buy_px
+        return min(buy_px, working_buy_px)
+
     def _compute_quote_decision(
         self, snap: QuoteMgmtSnapshot
     ) -> Union[QuoteDecision, QuotePipelineInvalidPair]:
@@ -1529,7 +1546,9 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             ),
         )
         buy_qty = proposal.buy_qty
-        buy_px = proposal.buy_px
+        buy_px = self._never_improve_on_own_bid(
+            proposal.buy_px, bid, snap.buy_work_px
+        )
         sell_qty = min(proposal.sell_qty, max(0, snap.max_sell))
         sell_px = proposal.sell_px if sell_qty > 0 else None
 

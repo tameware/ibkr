@@ -286,6 +286,37 @@ class TestMmPegBest(unittest.TestCase):
         self.assertEqual(len(self._peg_calls()), 1)
         self.assertLess(self.bot.buy_order.price, self.bot.sell_order.price)
 
+    def test_buy_does_not_chase_its_own_bid_in_thin_book(self):
+        """Reproduces the 44.20->44.38->44.54->... chase: our bid becomes the
+        NBBO bid and the engine steps above it again every cycle."""
+        ts = 3_000_000.0
+        self._seed_pos(0, avg_cost=0.0)
+        self._set_nbbo(bid=44.01, ask=46.00, ts=ts)
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+        with patch("market_maker.time.time", return_value=ts):
+            self.bot.maybe_manage_quotes(force=True)
+        self.assertAlmostEqual(self.bot.buy_order.price, 44.80)
+        buy_id = self.bot.buy_order.order_id
+        self.bot.placeOrder.reset_mock()
+
+        # Our order is now the best bid. Several cycles must not move it up.
+        for i in range(1, 4):
+            self._set_nbbo(bid=44.80, ask=46.00, ts=ts + 10 * i)
+            with patch("market_maker.time.time", return_value=ts + 10 * i):
+                self.bot.maybe_manage_quotes(force=True)
+        self.assertEqual(len(self._buy_calls()), 0)
+        self.assertEqual(self.bot.buy_order.order_id, buy_id)
+        self.assertAlmostEqual(self.bot.buy_order.price, 44.80)
+
+        # A genuine competing bid above ours may be stepped over.
+        self._set_nbbo(bid=44.90, ask=46.00, ts=ts + 100)
+        with patch("market_maker.time.time", return_value=ts + 100):
+            self.bot.maybe_manage_quotes(force=True)
+        buy_calls = self._buy_calls()
+        self.assertEqual(len(buy_calls), 1)
+        self.assertAlmostEqual(buy_calls[0][0][2].lmtPrice, 45.34)
+
     def test_long_at_max_position_places_sell_only(self):
         ts = 3_000_000.0
         self._seed_pos(300, avg_cost=47.55)
