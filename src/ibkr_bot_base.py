@@ -177,7 +177,11 @@ class ContractResolutionMixin:
         self._market_data_subscribed_ts = 0.0
         self._market_data_last_tick_ts = 0.0
         self._market_data_fallback_attempted = False
-        self._market_data_route = "auto"
+        # ``market_data_route``: "auto" (primary listing when it differs from
+        # SMART), "smart" (consolidated NBBO), or "primary". Watchdog recovery
+        # may still alternate routes when the NBBO is genuinely stale.
+        route = str(config.get("market_data_route", "auto") or "auto").strip().lower()
+        self._market_data_route = route if route in ("auto", "smart", "primary") else "auto"
         self._market_data_use_delayed = False
         self._watchdog_resubscribe_count = 0
         self._last_watchdog_resubscribe_ts = 0.0

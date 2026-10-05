@@ -560,6 +560,12 @@ class TestMmPegBest(unittest.TestCase):
         self.assertEqual(args.daily_volume_target, 400)
         self.assertEqual(args.min_compete_size, 25)
 
+    def test_repo_config_pins_market_data_to_consolidated_book(self):
+        from ibkr_app_support import load_config_file
+
+        cfg = load_config_file("config/mm_peg_best.json")
+        self.assertEqual(str(cfg.get("market_data_route")).lower(), "smart")
+
     def test_default_config_path(self):
         parser = build_arg_parser()
         args = parser.parse_args([])

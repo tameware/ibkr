@@ -457,6 +457,35 @@ class TestMarketMakerCore(unittest.TestCase):
             self.mm._poll_session_hours()
         mock_cancel.assert_not_called()
 
+    def test_watchdog_tick_reports_nbbo_ok_while_quote_is_fresh(self):
+        """A valid NBBO younger than max_market_stale_seconds must not trigger
+        market-data recovery (which resubscribes and flips SMART/primary)."""
+        self.mm.max_market_stale_seconds = 1200.0
+        self.mm.last_nbbo_ok_ts = 1_000_000.0
+        with patch.object(self.mm, "maybe_watchdog_recover_market_data") as rec, \
+                patch.object(self.mm, "maybe_recover_stalled_market_data") as stall, \
+                patch.object(self.mm, "_poll_session_hours"):
+            self.mm._watchdog_tick(now=1_000_000.0 + 600.0)
+        rec.assert_called_once_with(nbbo_ok=True)
+        stall.assert_not_called()
+
+    def test_watchdog_tick_reports_nbbo_stale_after_max_market_stale_seconds(self):
+        self.mm.max_market_stale_seconds = 1200.0
+        self.mm.last_nbbo_ok_ts = 1_000_000.0
+        with patch.object(self.mm, "maybe_watchdog_recover_market_data") as rec, \
+                patch.object(self.mm, "_poll_session_hours"):
+            self.mm._watchdog_tick(now=1_000_000.0 + 1200.0)
+        rec.assert_called_once_with(nbbo_ok=False)
+
+    def test_watchdog_tick_recovers_when_no_valid_nbbo_ever(self):
+        self.mm.last_nbbo_ok_ts = 0.0
+        with patch.object(self.mm, "maybe_watchdog_recover_market_data") as rec, \
+                patch.object(self.mm, "maybe_recover_stalled_market_data") as stall, \
+                patch.object(self.mm, "_poll_session_hours"):
+            self.mm._watchdog_tick(now=self.mm.start_time + 5.0)
+        rec.assert_called_once_with(nbbo_ok=False)
+        stall.assert_called_once()
+
     def _decision(self, progress=0.5):
         """Snapshot + engine decision with a fixed session progress."""
         with patch(

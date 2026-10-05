@@ -212,6 +212,38 @@ class TestContractResolutionMixin(unittest.TestCase):
         routed = bot.market_data_contract()
         self.assertEqual(routed.exchange, "AMEX")
 
+    def _bot_with_primary(self, **cfg):
+        bot = _MktDataStub(
+            {"symbol": "OZ", "sec_type": "STK", "currency": "USD", "exchange": "SMART", **cfg}
+        )
+        from ibapi.contract import Contract
+
+        bot.contract = Contract()
+        bot.contract.conId = 1
+        bot.contract.symbol = "OZ"
+        bot.contract.secType = "STK"
+        bot.contract.currency = "USD"
+        bot.contract.exchange = "SMART"
+        bot.contract.primaryExchange = "AMEX"
+        bot._market_data_contract = bot.contract
+        return bot
+
+    def test_market_data_route_config_smart_pins_consolidated_book(self):
+        bot = self._bot_with_primary(market_data_route="smart")
+        self.assertEqual(bot.market_data_contract().exchange, "SMART")
+
+    def test_market_data_route_config_primary_pins_listing(self):
+        bot = self._bot_with_primary(market_data_route="primary")
+        self.assertEqual(bot.market_data_contract().exchange, "AMEX")
+
+    def test_market_data_route_config_is_case_insensitive(self):
+        bot = self._bot_with_primary(market_data_route="SMART")
+        self.assertEqual(bot.market_data_contract().exchange, "SMART")
+
+    def test_market_data_route_config_invalid_falls_back_to_auto(self):
+        bot = self._bot_with_primary(market_data_route="bogus")
+        self.assertEqual(bot.market_data_contract().exchange, "AMEX")
+
     def test_maybe_watchdog_recover_resubscribes_and_polls_snapshot(self):
         bot = _MktDataStub(
             {

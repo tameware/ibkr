@@ -1682,58 +1682,65 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         """Background loop: session hours, stale-quote cancel, and quote refresh."""
         while not self.shutdown_flag:
             time.sleep(1.0)
-            self._poll_session_hours()
-            now = time.time()
+            self._watchdog_tick(now=time.time())
 
-            with self.lock:
-                bid = self.quote.bid
-                ask = self.quote.ask
-                bid_sz = self.quote.bid_size
-                ask_sz = self.quote.ask_size
-                last_update_ts = self.quote.last_update_ts
-                last_nbbo_ok_ts = self.last_nbbo_ok_ts
-                market_data_type = self.market_data_type
+    def _watchdog_tick(self, *, now: float) -> None:
+        """One watchdog pass: log NBBO health and run market-data recovery only
+        when the quote is genuinely missing or older than ``max_market_stale_seconds``.
 
-                since_start = now - self.start_time
+        Recovery resubscribes and alternates SMART/primary routing, so calling it
+        while the NBBO is merely quiet (thin names) flips venues every cycle.
+        """
+        self._poll_session_hours()
 
-                if last_nbbo_ok_ts <= 0:
-                    if (
-                        since_start >= self.nbbo_watchdog_seconds
-                        and (now - self.last_watchdog_log_ts) >= self.watchdog_repeat_seconds
-                    ):
-                        age = None if last_update_ts <= 0 else (now - last_update_ts)
-                        self.logger.warning(
-                            "NBBO watchdog: no valid bid/ask yet after %.1fs; bid=%s ask=%s "
-                            "bid_sz=%s ask_sz=%s last_quote_age=%s marketDataType=%s",
-                            since_start,
-                            bid,
-                            ask,
-                            bid_sz,
-                            ask_sz,
-                            f"{age:.1f}s" if age is not None else "never",
-                            market_data_type,
-                        )
-                        self.last_watchdog_log_ts = now
-                    self.maybe_recover_stalled_market_data()
-                    self.maybe_watchdog_recover_market_data(nbbo_ok=False)
-                else:
-                    age_ok = now - last_nbbo_ok_ts
-                    if (
-                        age_ok >= self.max_market_stale_seconds
-                        and (now - self.last_watchdog_log_ts) >= self.watchdog_repeat_seconds
-                    ):
-                        self.logger.warning(
-                            "NBBO watchdog: last valid NBBO is stale age=%.1fs bid=%s ask=%s "
-                            "bid_sz=%s ask_sz=%s marketDataType=%s",
-                            age_ok,
-                            bid,
-                            ask,
-                            bid_sz,
-                            ask_sz,
-                            market_data_type,
-                        )
-                        self.last_watchdog_log_ts = now
-                    self.maybe_watchdog_recover_market_data(nbbo_ok=False)
+        with self.lock:
+            bid = self.quote.bid
+            ask = self.quote.ask
+            bid_sz = self.quote.bid_size
+            ask_sz = self.quote.ask_size
+            last_update_ts = self.quote.last_update_ts
+            last_nbbo_ok_ts = self.last_nbbo_ok_ts
+            market_data_type = self.market_data_type
+
+            since_start = now - self.start_time
+
+            if last_nbbo_ok_ts <= 0:
+                if (
+                    since_start >= self.nbbo_watchdog_seconds
+                    and (now - self.last_watchdog_log_ts) >= self.watchdog_repeat_seconds
+                ):
+                    age = None if last_update_ts <= 0 else (now - last_update_ts)
+                    self.logger.warning(
+                        "NBBO watchdog: no valid bid/ask yet after %.1fs; bid=%s ask=%s "
+                        "bid_sz=%s ask_sz=%s last_quote_age=%s marketDataType=%s",
+                        since_start,
+                        bid,
+                        ask,
+                        bid_sz,
+                        ask_sz,
+                        f"{age:.1f}s" if age is not None else "never",
+                        market_data_type,
+                    )
+                    self.last_watchdog_log_ts = now
+                self.maybe_recover_stalled_market_data()
+                self.maybe_watchdog_recover_market_data(nbbo_ok=False)
+                return
+
+            age_ok = now - last_nbbo_ok_ts
+            stale = age_ok >= self.max_market_stale_seconds
+            if stale and (now - self.last_watchdog_log_ts) >= self.watchdog_repeat_seconds:
+                self.logger.warning(
+                    "NBBO watchdog: last valid NBBO is stale age=%.1fs bid=%s ask=%s "
+                    "bid_sz=%s ask_sz=%s marketDataType=%s",
+                    age_ok,
+                    bid,
+                    ask,
+                    bid_sz,
+                    ask_sz,
+                    market_data_type,
+                )
+                self.last_watchdog_log_ts = now
+            self.maybe_watchdog_recover_market_data(nbbo_ok=not stale)
 
 def build_arg_parser() -> argparse.ArgumentParser:
     """Build the argparse parser for this bot script."""
