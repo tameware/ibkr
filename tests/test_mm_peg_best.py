@@ -317,6 +317,37 @@ class TestMmPegBest(unittest.TestCase):
         self.assertEqual(len(buy_calls), 1)
         self.assertAlmostEqual(buy_calls[0][0][2].lmtPrice, 45.34)
 
+    def test_peg_sell_at_or_below_open_buy_is_refused(self):
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+        self._seed_pos(100, avg_cost=47.0)
+        self._set_nbbo(bid=40.0, ask=41.0)
+        self.bot.buy_order = LiveOrder(
+            order_id=60, side="BUY", price=44.00, qty=100, status="Submitted"
+        )
+        self.bot.place_or_replace_peg_sell(100, 44.00)
+        self.assertEqual(len(self._peg_calls()), 0)
+        self.assertIsNone(self.bot.sell_order)
+        self.bot.place_or_replace_peg_sell(100, 43.90)
+        self.assertEqual(len(self._peg_calls()), 0)
+        self.bot.place_or_replace_peg_sell(100, 44.01)
+        self.assertEqual(len(self._peg_calls()), 1)
+
+    def test_buy_at_or_above_open_peg_sell_limit_is_refused(self):
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+        self._seed_pos(100, avg_cost=47.0)
+        self._set_nbbo(bid=48.0, ask=49.0)  # mid 48.5; sell limit below mid is fine for the test
+        self.bot.sell_order = LiveOrder(
+            order_id=61, side="SELL", price=48.20, qty=100, status="Submitted",
+            remaining=100, total_qty=100,
+        )
+        self.bot.place_or_replace_buy(100, 48.20)
+        self.assertEqual(len(self._buy_calls()), 0)
+        self.assertIsNone(self.bot.buy_order)
+        self.bot.place_or_replace_buy(100, 48.19)
+        self.assertEqual(len(self._buy_calls()), 1)
+
     def test_long_at_max_position_places_sell_only(self):
         ts = 3_000_000.0
         self._seed_pos(300, avg_cost=47.55)

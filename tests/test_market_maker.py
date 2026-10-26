@@ -1005,6 +1005,106 @@ class TestMarketMakerCore(unittest.TestCase):
         cancel.assert_called_once_with(self.mm, 9)
         self.assertIsNone(self.mm.buy_order)
 
+    # --- hard cross guard at the placement layer -------------------------
+    # NBBO 100.00/101.00, mid_delta 0.01 -> self-trade clamps are buy<=100.49,
+    # sell>=100.51; the open orders below sit inside those so only the hard
+    # guard decides.
+
+    def _arm_placement(self) -> None:
+        self.mm.quote.bid = 100.0
+        self.mm.quote.ask = 101.0
+        self._sync_paired_nbbo_from_quote()
+        self.mm.next_order_id = 900
+        self.mm.isConnected = Mock(return_value=True)
+        self.mm.serverVersion = Mock(return_value=157)
+
+    def _open_sell(self, px: float, oid: int = 41) -> LiveOrder:
+        live = LiveOrder(
+            order_id=oid, side="SELL", price=px, qty=100, status="Submitted",
+            remaining=100, total_qty=100,
+        )
+        self.mm.sell_order = live
+        return live
+
+    def _open_buy(self, px: float, oid: int = 42) -> LiveOrder:
+        live = LiveOrder(order_id=oid, side="BUY", price=px, qty=100, status="Submitted")
+        self.mm.buy_order = live
+        return live
+
+    def test_buy_at_open_sell_price_is_refused_not_clamped(self):
+        self._arm_placement()
+        self._seed_pos(0, avg_cost=0.0)
+        self._open_sell(100.30)
+        self.mm.place_or_replace_buy(100, 100.30)
+        self.mm.placeOrder.assert_not_called()
+        self.assertIsNone(self.mm.buy_order)
+        self.mm.logger.warning.assert_called()
+
+    def test_buy_above_open_sell_is_refused(self):
+        self._arm_placement()
+        self._seed_pos(0, avg_cost=0.0)
+        self._open_sell(100.30)
+        self.mm.place_or_replace_buy(100, 100.45)
+        self.mm.placeOrder.assert_not_called()
+        self.assertIsNone(self.mm.buy_order)
+
+    def test_buy_one_tick_below_open_sell_is_placed(self):
+        self._arm_placement()
+        self._seed_pos(0, avg_cost=0.0)
+        self._open_sell(100.30)
+        self.mm.place_or_replace_buy(100, 100.29)
+        self.mm.placeOrder.assert_called_once()
+        self.assertAlmostEqual(self.mm.buy_order.price, 100.29)
+
+    def test_sell_at_open_buy_price_is_refused_not_clamped(self):
+        self._arm_placement()
+        self._seed_pos(100, avg_cost=100.0)
+        self._open_buy(100.70)
+        self.mm.place_or_replace_sell(100, 100.70)
+        self.mm.placeOrder.assert_not_called()
+        self.assertIsNone(self.mm.sell_order)
+        self.mm.logger.warning.assert_called()
+
+    def test_sell_below_open_buy_is_refused(self):
+        self._arm_placement()
+        self._seed_pos(100, avg_cost=100.0)
+        self._open_buy(100.70)
+        self.mm.place_or_replace_sell(100, 100.60)
+        self.mm.placeOrder.assert_not_called()
+        self.assertIsNone(self.mm.sell_order)
+
+    def test_sell_one_tick_above_open_buy_is_placed(self):
+        self._arm_placement()
+        self._seed_pos(100, avg_cost=100.0)
+        self._open_buy(100.70)
+        self.mm.place_or_replace_sell(100, 100.71)
+        self.mm.placeOrder.assert_called_once()
+        self.assertAlmostEqual(self.mm.sell_order.price, 100.71)
+
+    def test_crossing_buy_replace_keeps_safe_working_buy(self):
+        """Refusing the new price must not disturb a legal resting order."""
+        self._arm_placement()
+        self._seed_pos(0, avg_cost=0.0)
+        self._open_sell(100.30)
+        prior = self._open_buy(100.20)
+        with patch("market_maker.safe_cancel_order") as cancel:
+            self.mm.place_or_replace_buy(100, 100.35)
+        self.mm.placeOrder.assert_not_called()
+        cancel.assert_not_called()
+        self.assertIs(self.mm.buy_order, prior)
+
+    def test_crossing_buy_replace_cancels_working_buy_that_also_crosses(self):
+        """If the resting buy itself sits at/above the open sell, pull it."""
+        self._arm_placement()
+        self._seed_pos(0, avg_cost=0.0)
+        self._open_sell(100.30)
+        self._open_buy(100.30, oid=42)
+        with patch("market_maker.safe_cancel_order") as cancel:
+            self.mm.place_or_replace_buy(100, 100.35)
+        self.mm.placeOrder.assert_not_called()
+        cancel.assert_called_once_with(self.mm, 42)
+        self.assertIsNone(self.mm.buy_order)
+
     def test_place_or_replace_sell_sets_tracked_order_before_place_order(self):
         self._seed_pos(100)
         self.mm.next_order_id = 500

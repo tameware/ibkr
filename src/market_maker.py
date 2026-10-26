@@ -1324,6 +1324,38 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         except Exception as e:
             self.logger.exception("Cancel failed for order id=%s side=%s: %s", oid, side, e)
 
+    def _would_cross_open_order(self, side: str, px: float) -> bool:
+        """True when ``px`` sits at/above our open sell (BUY) or at/below our open buy (SELL)."""
+        if side == "BUY":
+            other = self.sell_order
+            return other is not None and float(px) >= float(other.price) - 1e-9
+        other = self.buy_order
+        return other is not None and float(px) <= float(other.price) + 1e-9
+
+    def _refuse_crossing_order(
+        self, side: str, qty: int, px: float, prior: Optional[LiveOrder]
+    ) -> None:
+        """Log and drop a crossing order; pull ``prior`` only if it crosses too."""
+        other = self.sell_order if side == "BUY" else self.buy_order
+        self.logger.warning(
+            "Refusing %s qty=%s px=%.2f: would cross open %s id=%s px=%.2f [%s]",
+            side,
+            qty,
+            px,
+            other.side if other else "?",
+            other.order_id if other else None,
+            other.price if other else float("nan"),
+            self._format_nbbo_for_log(),
+        )
+        if prior is not None and self._would_cross_open_order(side, prior.price):
+            self.logger.warning(
+                "Working %s id=%s px=%.2f also crosses; cancelling it.",
+                side,
+                prior.order_id,
+                prior.price,
+            )
+            self.cancel_live_order(prior)
+
     def _place_or_replace_lmt(
         self, side: Literal["BUY", "SELL"], qty: int, px: Optional[float]
     ) -> None:
@@ -1356,15 +1388,17 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         else:
             px = clamp_sell_to_avoid_self_trade(px, self.config, bid=bid, ask=ask)
 
-        if side == "BUY":
-            if not self.can_open_new_long():
-                if self.buy_order:
-                    self.cancel_live_order(self.buy_order)
-                return
-            if self.sell_order and px >= self.sell_order.price:
-                px = self.round_down_cent(self.sell_order.price - 0.01)
-        elif self.buy_order and px <= self.buy_order.price:
-            px = self.round_up_cent(self.buy_order.price + 0.01)
+        if side == "BUY" and not self.can_open_new_long():
+            if self.buy_order:
+                self.cancel_live_order(self.buy_order)
+            return
+
+        # Hard override: never send a buy at/above the open sell, nor a sell
+        # at/below the open buy. Refuse (do not clamp) and warn: a crossing
+        # price reaching this layer means the quote pipeline ran on bad data.
+        if self._would_cross_open_order(side, px):
+            self._refuse_crossing_order(side, qty, px, prior)
+            return
 
         if px <= 0 or qty <= 0:
             if prior:
