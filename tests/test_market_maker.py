@@ -314,10 +314,123 @@ class TestMarketMakerCore(unittest.TestCase):
         )
 
     def _sync_paired_nbbo_from_quote(self) -> None:
-        """Align ``_nbbo`` with ``quote`` and mark paired (for tests that set quote directly)."""
+        """Align ``_nbbo`` with ``quote`` and mark paired (for tests that set quote directly).
+
+        Also records two valid-NBBO updates so the buy freshness gate sees a
+        confirmed quote, as a healthy live feed would produce.
+        """
         self.mm._nbbo.bid = self.mm.quote.bid
         self.mm._nbbo.ask = self.mm.quote.ask
         self.mm._nbbo.satisfy_pair_for_quoting()
+        ts = self.mm.quote.last_update_ts or 1_000_000.0
+        self.mm._note_nbbo_ok(ts - 1.0)
+        self.mm._note_nbbo_ok(ts)
+
+    # --- buy freshness gate --------------------------------------------------
+
+    def test_nbbo_confirmed_for_buy_requires_two_updates_in_window(self):
+        self.mm.buy_place_min_nbbo_updates = 2
+        self.mm.buy_place_nbbo_window_seconds = 120.0
+        self.mm._nbbo_ok_history.clear()
+        self.assertFalse(self.mm._nbbo_confirmed_for_buy(now=1000.0))
+        self.mm._note_nbbo_ok(1000.0)
+        self.assertFalse(self.mm._nbbo_confirmed_for_buy(now=1000.0))
+        self.mm._note_nbbo_ok(1030.0)
+        self.assertTrue(self.mm._nbbo_confirmed_for_buy(now=1030.0))
+
+    def test_nbbo_confirmed_for_buy_ignores_updates_outside_window(self):
+        self.mm.buy_place_min_nbbo_updates = 2
+        self.mm.buy_place_nbbo_window_seconds = 120.0
+        self.mm._nbbo_ok_history.clear()
+        self.mm._note_nbbo_ok(1000.0)
+        self.mm._note_nbbo_ok(1010.0)
+        self.assertTrue(self.mm._nbbo_confirmed_for_buy(now=1100.0))
+        self.assertFalse(self.mm._nbbo_confirmed_for_buy(now=1125.0))
+
+    def test_nbbo_confirmed_for_buy_disabled_when_min_updates_zero(self):
+        self.mm.buy_place_min_nbbo_updates = 0
+        self.mm._nbbo_ok_history.clear()
+        self.assertTrue(self.mm._nbbo_confirmed_for_buy(now=1000.0))
+
+    def test_buy_freshness_defaults_from_config(self):
+        self.assertEqual(self.mm.buy_place_min_nbbo_updates, 2)
+        self.assertAlmostEqual(self.mm.buy_place_nbbo_window_seconds, 120.0)
+        mm = MarketMaker(
+            {**self.base_config, "buy_place_min_nbbo_updates": 3,
+             "buy_place_nbbo_window_seconds": 45}
+        )
+        self.assertEqual(mm.buy_place_min_nbbo_updates, 3)
+        self.assertAlmostEqual(mm.buy_place_nbbo_window_seconds, 45.0)
+
+    def test_gate_blocks_new_buy_on_unconfirmed_nbbo(self):
+        self.mm._nbbo_ok_history.clear()
+        self.mm._note_nbbo_ok(1000.0)
+        self.mm.buy_order = None
+        self.assertEqual(
+            self.mm._gate_buy_on_nbbo_freshness(100, 100.40, now=1000.0), (0, None)
+        )
+
+    def test_gate_blocks_raising_working_buy_on_unconfirmed_nbbo(self):
+        self.mm._nbbo_ok_history.clear()
+        self.mm._note_nbbo_ok(1000.0)
+        self.mm.buy_order = LiveOrder(
+            order_id=5, side="BUY", price=100.20, qty=100, status="Submitted"
+        )
+        qty, px = self.mm._gate_buy_on_nbbo_freshness(100, 100.40, now=1000.0)
+        self.assertEqual(qty, 100)
+        self.assertAlmostEqual(px, 100.20)
+
+    def test_gate_allows_lowering_working_buy_on_unconfirmed_nbbo(self):
+        self.mm._nbbo_ok_history.clear()
+        self.mm._note_nbbo_ok(1000.0)
+        self.mm.buy_order = LiveOrder(
+            order_id=5, side="BUY", price=100.20, qty=100, status="Submitted"
+        )
+        qty, px = self.mm._gate_buy_on_nbbo_freshness(100, 100.10, now=1000.0)
+        self.assertEqual(qty, 100)
+        self.assertAlmostEqual(px, 100.10)
+
+    def test_gate_passes_through_when_nbbo_confirmed(self):
+        self.mm._nbbo_ok_history.clear()
+        self.mm._note_nbbo_ok(990.0)
+        self.mm._note_nbbo_ok(1000.0)
+        self.mm.buy_order = None
+        self.assertEqual(
+            self.mm._gate_buy_on_nbbo_freshness(100, 100.40, now=1000.0), (100, 100.40)
+        )
+
+    def test_gate_passes_through_cancel_requests(self):
+        self.mm._nbbo_ok_history.clear()
+        self.assertEqual(
+            self.mm._gate_buy_on_nbbo_freshness(0, None, now=1000.0), (0, None)
+        )
+
+    def test_quote_cycle_does_not_place_buy_on_single_nbbo_snapshot(self):
+        """One valid NBBO after a dead feed must not trigger a buy; the next
+        update confirms the market and the buy goes out."""
+        ts = 1_000_000.0
+        self._seed_pos(0, avg_cost=0.0)
+        self.mm.next_order_id = 700
+        self.mm.isConnected = Mock(return_value=True)
+        self.mm.serverVersion = Mock(return_value=157)
+        self.mm.connected_flag = True
+        self.mm.open_orders_snapshot_done = True
+        with patch("market_maker.time.time", return_value=ts):
+            self.mm._on_coalesced_nbbo(100.0, 101.0)
+        self.mm.quote.bid_size = 100
+        self.mm.quote.ask_size = 100
+        self.mm.placeOrder.reset_mock()
+        with patch("market_maker.time.time", return_value=ts + 1):
+            self.mm.maybe_manage_quotes(force=True)
+        self.mm.placeOrder.assert_not_called()
+        self.assertIsNone(self.mm.buy_order)
+
+        with patch("market_maker.time.time", return_value=ts + 20):
+            self.mm._on_coalesced_nbbo(100.0, 101.0)
+        with patch("market_maker.time.time", return_value=ts + 21):
+            self.mm.maybe_manage_quotes(force=True)
+        buys = [c for c in self.mm.placeOrder.call_args_list if c[0][2].action == "BUY"]
+        self.assertEqual(len(buys), 1)
 
     def _clear_pair_gate(self) -> None:
         """Skip paired-NBBO gate so quote-only invalid-NBBO tests can run."""
@@ -1183,6 +1296,8 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.quote.bid_size = 100
         self.mm.quote.ask_size = 100
         self.mm.quote.last_update_ts = ts
+        self.mm._note_nbbo_ok(ts - 1.0)  # confirmed NBBO (live feed)
+        self.mm._note_nbbo_ok(ts)
         self.mm.quote_refresh_seconds = 3.0
         self.mm._nbbo_throttle = NbboThrottle(3.0, clock=lambda: ts)
         self.mm._nbbo_throttle.mark_ran((50.0, 51.0, 100, 100))

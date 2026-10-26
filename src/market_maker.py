@@ -8,7 +8,8 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, FrozenSet, List, Literal, Optional, Tuple, Union
+from collections import deque
+from typing import Any, Deque, Dict, FrozenSet, List, Literal, Optional, Tuple, Union
 
 from ibapi.common import TickerId
 from ibapi.order import Order
@@ -224,6 +225,16 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         self.start_time = time.time()
         self.last_nbbo_ok_ts = 0.0
         self.last_watchdog_log_ts = 0.0
+        # Buy freshness gate: a new or raised buy needs at least this many valid
+        # NBBO updates inside the window. One snapshot after a dead feed is not
+        # a market; IB pegs our sells to the live book we cannot see.
+        self.buy_place_min_nbbo_updates = int(
+            config.get("buy_place_min_nbbo_updates", 2)
+        )
+        self.buy_place_nbbo_window_seconds = float(
+            config.get("buy_place_nbbo_window_seconds", 120.0)
+        )
+        self._nbbo_ok_history: Deque[float] = deque(maxlen=256)
 
         self.target_conid: Optional[int] = None
         self.open_orders_snapshot_done = False
@@ -518,6 +529,52 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         if bid is not None and ask is not None:
             self._last_nbbo_log_prices = (round(float(bid), 2), round(float(ask), 2))
 
+    def _note_nbbo_ok(self, now: float) -> None:
+        """Record a valid NBBO update (caller holds ``self.lock`` or is single-threaded)."""
+        self.last_nbbo_ok_ts = now
+        self._nbbo_ok_history.append(float(now))
+
+    def _nbbo_confirmed_for_buy(self, *, now: float) -> bool:
+        """True when enough valid NBBO updates arrived inside the freshness window."""
+        need = int(self.buy_place_min_nbbo_updates)
+        if need <= 0:
+            return True
+        cutoff = float(now) - float(self.buy_place_nbbo_window_seconds)
+        recent = sum(1 for ts in self._nbbo_ok_history if ts >= cutoff)
+        return recent >= need
+
+    def _gate_buy_on_nbbo_freshness(
+        self, buy_qty: int, buy_px: Optional[float], *, now: float
+    ) -> Tuple[int, Optional[float]]:
+        """Suppress new/raised buys until the NBBO is confirmed; lowering is free.
+
+        Returns the ``(qty, px)`` to hand to :meth:`place_or_replace_buy`.
+        """
+        if buy_px is None or buy_qty <= 0:
+            return buy_qty, buy_px
+        with self.lock:
+            confirmed = self._nbbo_confirmed_for_buy(now=now)
+            working = self.buy_order.price if self.buy_order else None
+        if confirmed:
+            return buy_qty, buy_px
+        if working is None:
+            self.logger.info(
+                "Buy held: NBBO not confirmed (%s valid updates in %.0fs needed) [%s]",
+                self.buy_place_min_nbbo_updates,
+                self.buy_place_nbbo_window_seconds,
+                self._format_nbbo_for_log(),
+            )
+            return 0, None
+        if float(buy_px) > float(working):
+            self.logger.info(
+                "Buy raise held at %.2f (wanted %.2f): NBBO not confirmed [%s]",
+                working,
+                buy_px,
+                self._format_nbbo_for_log(),
+            )
+            return buy_qty, float(working)
+        return buy_qty, buy_px
+
     def _on_coalesced_nbbo(self, bid: float, ask: float) -> None:
         """Update ``ref_price`` from coalesced bid/ask mid."""
         log_msg = None
@@ -527,7 +584,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             self._nbbo.satisfy_pair_for_quoting()
             now = time.time()
             self.quote.last_update_ts = now
-            self.last_nbbo_ok_ts = now
+            self._note_nbbo_ok(now)
             if self.log_bid_ask_ticks:
                 prices = (round(float(bid), 2), round(float(ask), 2))
                 if prices != self._last_nbbo_log_prices:
@@ -573,7 +630,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
                 and self.quote.ask is not None
                 and self.quote.bid < self.quote.ask
             ):
-                self.last_nbbo_ok_ts = now
+                self._note_nbbo_ok(now)
 
         if updated:
             self.maybe_manage_quotes()
@@ -1702,11 +1759,12 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             return
 
         buy_qty = pipeline.buy_qty
-        buy_px = pipeline.buy_px
+        buy_px = pipeline.buy_px if pipeline.buy_qty > 0 else None
         sell_qty = pipeline.sell_qty
         sell_px = pipeline.sell_px
+        buy_qty, buy_px = self._gate_buy_on_nbbo_freshness(buy_qty, buy_px, now=now)
 
-        self.place_or_replace_buy(buy_qty, buy_px if buy_qty > 0 else None)
+        self.place_or_replace_buy(buy_qty, buy_px)
         self.place_or_replace_sell(sell_qty, sell_px if sell_qty > 0 else None)
 
         with self.lock:

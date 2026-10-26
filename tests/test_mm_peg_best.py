@@ -105,6 +105,9 @@ class TestMmPegBest(unittest.TestCase):
         self.bot._nbbo.bid = bid
         self.bot._nbbo.ask = ask
         self.bot._nbbo.satisfy_pair_for_quoting()
+        # Two valid updates: a confirmed NBBO, as a live feed produces.
+        self.bot._note_nbbo_ok(ts - 1.0)
+        self.bot._note_nbbo_ok(ts)
 
     def test_ledger_strategy_name_is_mm_peg_best(self):
         self.assertEqual(self.bot.ledger._data.get("strategy"), "mm_peg_best")
@@ -346,6 +349,29 @@ class TestMmPegBest(unittest.TestCase):
         self.assertEqual(len(self._buy_calls()), 0)
         self.assertIsNone(self.bot.buy_order)
         self.bot.place_or_replace_buy(100, 48.19)
+        self.assertEqual(len(self._buy_calls()), 1)
+
+    def test_single_nbbo_snapshot_places_peg_sell_but_not_buy(self):
+        """Reproduces 2026-10-26: one snapshot after a dead feed. The sell is
+        pegged live by IB so it may go out; the buy must wait for confirmation."""
+        ts = 3_000_000.0
+        self._seed_pos(150, avg_cost=47.55)
+        self._set_nbbo(bid=48.0, ask=48.40, ts=ts)
+        self.bot._nbbo_ok_history.clear()
+        self.bot._note_nbbo_ok(ts)  # exactly one valid update
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+
+        with patch("market_maker.time.time", return_value=ts):
+            self.bot.maybe_manage_quotes(force=True)
+
+        self.assertEqual(len(self._peg_calls()), 1)
+        self.assertEqual(len(self._buy_calls()), 0)
+        self.assertIsNone(self.bot.buy_order)
+
+        self.bot._note_nbbo_ok(ts + 15)
+        with patch("market_maker.time.time", return_value=ts + 15):
+            self.bot.maybe_manage_quotes(force=True)
         self.assertEqual(len(self._buy_calls()), 1)
 
     def test_long_at_max_position_places_sell_only(self):
