@@ -11,7 +11,10 @@ Encodes the strategy goals directly:
   for bots whose sells are not floored at avg cost,
 * pace both sides toward a daily share-volume target: quote passively
   (join the bid / ask) when on schedule, and step toward the mid by
-  fractions of the NBBO spread when behind.
+  fractions of the NBBO spread when behind,
+* skew the buy below the bid as inventory builds
+  (``inventory_skew_spreads_per_lot``) and pull it entirely once the
+  position reaches ``inventory_pull_lots`` lots -- off by default.
 
 Everything here is deterministic and free of IB API dependencies.
 """
@@ -40,6 +43,13 @@ def _parse_spread_fractions(raw: Any) -> tuple[float, float, float]:
         if not (0.0 <= v <= 0.5):
             raise ValueError("buy_spread_fractions entries must be within [0, 0.5]")
     return values  # type: ignore[return-value]
+
+
+def _non_negative_float(config: Dict[str, Any], key: str, default: float) -> float:
+    value = float(config.get(key, default))
+    if value < 0.0:
+        raise ValueError(f"{key} must be >= 0")
+    return value
 
 
 def session_progress_fraction(
@@ -128,6 +138,12 @@ class QuoteParams:
     # (the LMT sell cannot fill). Bots whose sells are not floored at avg cost
     # (PEG BEST) disable this so they can keep buying lower.
     pause_buys_when_sell_stuck: bool = True
+    # Inventory skew: lower the buy by this many NBBO spreads per lot held
+    # (fractional lots count pro rata). Fills at the best bid in a thin book
+    # are mostly sweeps; adding to an existing long compounds that.
+    inventory_skew_spreads_per_lot: float = 0.0
+    # Pull the buy entirely once position >= this many lots (0 = never).
+    inventory_pull_lots: float = 0.0
 
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "QuoteParams":
@@ -144,6 +160,7 @@ class QuoteParams:
             ),
             tick=float(config.get("min_tick", 0.01)),
             buy_spread_fractions=buy_spread_fractions_from_config(config),
+            **inventory_skew_from_config(config),
         )
 
     @property
@@ -203,6 +220,18 @@ def buy_spread_fractions_from_config(
     return _parse_spread_fractions(raw)
 
 
+def inventory_skew_from_config(config: Dict[str, Any]) -> Dict[str, float]:
+    """``inventory_skew_spreads_per_lot`` / ``inventory_pull_lots`` (>= 0, default 0)."""
+    return {
+        "inventory_skew_spreads_per_lot": _non_negative_float(
+            config, "inventory_skew_spreads_per_lot", 0.0
+        ),
+        "inventory_pull_lots": _non_negative_float(
+            config, "inventory_pull_lots", 0.0
+        ),
+    }
+
+
 def _buy_price(params: QuoteParams, inp: QuoteInputs, urgency: int) -> float:
     spread = inp.ask - inp.bid
     mid = (inp.bid + inp.ask) / 2.0
@@ -211,7 +240,18 @@ def _buy_price(params: QuoteParams, inp: QuoteInputs, urgency: int) -> float:
     # the mid; on tight spreads fall back to joining the bid.
     px = min(px, mid - params.required_edge)
     px = max(px, inp.bid)
+    # Inventory skew applies after the bid floor: it is the one case where
+    # the buy is meant to sit below the best bid.
+    lots_held = max(0, inp.position) / params.lot_size
+    px -= params.inventory_skew_spreads_per_lot * lots_held * spread
+    px = max(px, params.tick)
     return _quantize_down(px, params.tick)
+
+
+def _inventory_pulls_buy(params: QuoteParams, inp: QuoteInputs) -> bool:
+    if params.inventory_pull_lots <= 0.0:
+        return False
+    return inp.position >= params.inventory_pull_lots * params.lot_size - 1e-9
 
 
 def _sell_price(params: QuoteParams, inp: QuoteInputs, urgency: int) -> float:
@@ -230,6 +270,8 @@ def decide_quotes(params: QuoteParams, inp: QuoteInputs) -> QuoteProposal:
     buy_room = max(0, params.max_position - max(0, inp.position))
     buy_qty = min(params.lot_size, buy_room)
     if buy_qty < params.min_order_size:
+        buy_qty = 0
+    if _inventory_pulls_buy(params, inp):
         buy_qty = 0
     # Profit floor above the ask means the sell cannot fill; stop adding inventory.
     if (

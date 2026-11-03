@@ -57,6 +57,7 @@ from quote_engine import (
     QuoteParams,
     buy_spread_fractions_from_config,
     decide_quotes,
+    inventory_skew_from_config,
     session_progress_fraction,
 )
 
@@ -163,6 +164,9 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             config.get("commission_per_share", 0.005)
         )
         self.buy_spread_fractions = buy_spread_fractions_from_config(config)
+        _skew = inventory_skew_from_config(config)
+        self.inventory_skew_spreads_per_lot = _skew["inventory_skew_spreads_per_lot"]
+        self.inventory_pull_lots = _skew["inventory_pull_lots"]
         self.volume = DailyVolumeTracker(str(config["market_timezone"]))
         self.quote_refresh_seconds = float(config.get("quote_refresh_seconds", 3.0))
         self._nbbo_throttle = NbboThrottle(
@@ -1254,6 +1258,8 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             commission_per_share=self.commission_per_share,
             tick=self._effective_min_tick(),
             buy_spread_fractions=self.buy_spread_fractions,
+            inventory_skew_spreads_per_lot=self.inventory_skew_spreads_per_lot,
+            inventory_pull_lots=self.inventory_pull_lots,
         )
 
     def _sell_working_open_qty(self, live: LiveOrder) -> int:

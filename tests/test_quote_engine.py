@@ -244,6 +244,125 @@ class TestDecideQuotesBuyPricing(unittest.TestCase):
         self.assertAlmostEqual(base.sell_px, gentle.sell_px)
 
 
+class TestDecideQuotesInventorySkew(unittest.TestCase):
+    """Buys back off the bid as inventory builds; pull entirely past a cap.
+
+    Rationale: fills at the best bid in an illiquid name are mostly sweeps,
+    and adding to a position that is already long compounds the adverse
+    selection. Defaults keep the skew off so other bots are unchanged.
+    """
+
+    # On schedule (bought 200 of 200 due) so the urgency step is zero and the
+    # bid is the baseline; spread is 0.30.
+    def _on_pace(self, **overrides) -> QuoteInputs:
+        return _inputs(bought_today=200, session_progress=0.5, **overrides)
+
+    def test_skew_off_by_default_keeps_buy_at_bid_when_long(self):
+        q = decide_quotes(_params(), self._on_pace(position=100))
+        self.assertAlmostEqual(q.buy_px, 45.00)
+
+    def test_flat_position_is_not_skewed(self):
+        q = decide_quotes(
+            _params(inventory_skew_spreads_per_lot=1.0),
+            self._on_pace(position=0),
+        )
+        self.assertAlmostEqual(q.buy_px, 45.00)
+
+    def test_one_lot_held_lowers_buy_by_one_spread(self):
+        q = decide_quotes(
+            _params(inventory_skew_spreads_per_lot=1.0),
+            self._on_pace(position=100),
+        )
+        self.assertAlmostEqual(q.buy_px, 44.70)
+
+    def test_partial_lot_lowers_buy_proportionally(self):
+        q = decide_quotes(
+            _params(inventory_skew_spreads_per_lot=1.0),
+            self._on_pace(position=50),
+        )
+        self.assertAlmostEqual(q.buy_px, 44.85)
+
+    def test_skew_scales_with_spreads_per_lot(self):
+        q = decide_quotes(
+            _params(inventory_skew_spreads_per_lot=0.5),
+            self._on_pace(position=100),
+        )
+        self.assertAlmostEqual(q.buy_px, 44.85)
+
+    def test_skew_applies_after_urgency_step_and_cap(self):
+        # Far behind: step 45.12 capped to mid - edge = 45.11, then one
+        # spread (0.30) lower for the lot held.
+        q = decide_quotes(
+            _params(inventory_skew_spreads_per_lot=1.0),
+            _inputs(position=100, bought_today=0, session_progress=0.5),
+        )
+        self.assertAlmostEqual(q.buy_px, 44.81)
+
+    def test_skewed_buy_is_quantized_down_to_tick(self):
+        # 17 shares = 0.17 lot -> 0.051 below bid -> 44.949 -> 44.94.
+        q = decide_quotes(
+            _params(inventory_skew_spreads_per_lot=1.0),
+            self._on_pace(position=17),
+        )
+        self.assertAlmostEqual(q.buy_px, 44.94)
+
+    def test_skewed_buy_never_below_one_tick(self):
+        q = decide_quotes(
+            _params(inventory_skew_spreads_per_lot=1.0),
+            self._on_pace(bid=0.05, ask=0.35, position=200),
+        )
+        self.assertAlmostEqual(q.buy_px, 0.01)
+
+    def test_skew_does_not_change_sell_pricing(self):
+        base = decide_quotes(
+            _params(), self._on_pace(position=100, avg_cost=44.0)
+        )
+        skewed = decide_quotes(
+            _params(inventory_skew_spreads_per_lot=1.0),
+            self._on_pace(position=100, avg_cost=44.0),
+        )
+        self.assertAlmostEqual(base.sell_px, skewed.sell_px)
+        self.assertEqual(base.sell_qty, skewed.sell_qty)
+
+    def test_buy_pulled_at_inventory_pull_lots(self):
+        q = decide_quotes(
+            _params(inventory_pull_lots=2.0), self._on_pace(position=200)
+        )
+        self.assertEqual(q.buy_qty, 0)
+        self.assertIsNone(q.buy_px)
+
+    def test_buy_kept_just_below_inventory_pull_lots(self):
+        q = decide_quotes(
+            _params(inventory_pull_lots=2.0), self._on_pace(position=199)
+        )
+        self.assertEqual(q.buy_qty, 100)
+        self.assertIsNotNone(q.buy_px)
+
+    def test_inventory_pull_lots_may_be_fractional(self):
+        pulled = decide_quotes(
+            _params(inventory_pull_lots=1.5), self._on_pace(position=150)
+        )
+        kept = decide_quotes(
+            _params(inventory_pull_lots=1.5), self._on_pace(position=149)
+        )
+        self.assertEqual(pulled.buy_qty, 0)
+        self.assertEqual(kept.buy_qty, 100)
+
+    def test_inventory_pull_disabled_when_zero(self):
+        q = decide_quotes(
+            _params(inventory_pull_lots=0.0), self._on_pace(position=200)
+        )
+        self.assertEqual(q.buy_qty, 100)
+
+    def test_inventory_pull_does_not_touch_sell(self):
+        q = decide_quotes(
+            _params(inventory_pull_lots=2.0),
+            self._on_pace(position=200, avg_cost=44.0),
+        )
+        self.assertEqual(q.sell_qty, 200)
+        self.assertIsNotNone(q.sell_px)
+
+
 class TestDecideQuotesSellPricing(unittest.TestCase):
     def test_on_schedule_joins_ask(self):
         q = decide_quotes(
@@ -419,6 +538,24 @@ class TestQuoteParamsFromConfig(unittest.TestCase):
             QuoteParams.from_config({"buy_spread_fractions": [0.0, 0.2, 0.6]})
         with self.assertRaises(ValueError):
             QuoteParams.from_config({"buy_spread_fractions": [-0.1, 0.2, 0.4]})
+
+    def test_inventory_skew_defaults_off(self):
+        p = QuoteParams.from_config({})
+        self.assertAlmostEqual(p.inventory_skew_spreads_per_lot, 0.0)
+        self.assertAlmostEqual(p.inventory_pull_lots, 0.0)
+
+    def test_from_config_reads_inventory_skew(self):
+        p = QuoteParams.from_config(
+            {"inventory_skew_spreads_per_lot": 1.0, "inventory_pull_lots": 2}
+        )
+        self.assertAlmostEqual(p.inventory_skew_spreads_per_lot, 1.0)
+        self.assertAlmostEqual(p.inventory_pull_lots, 2.0)
+
+    def test_from_config_rejects_negative_inventory_skew(self):
+        with self.assertRaises(ValueError):
+            QuoteParams.from_config({"inventory_skew_spreads_per_lot": -0.5})
+        with self.assertRaises(ValueError):
+            QuoteParams.from_config({"inventory_pull_lots": -1})
 
     def test_buy_and_sell_pair_never_inverted_when_both_quoted(self):
         # Whatever the pacing state, a quoted pair must satisfy buy < sell.

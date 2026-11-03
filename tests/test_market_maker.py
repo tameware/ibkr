@@ -362,6 +362,25 @@ class TestMarketMakerCore(unittest.TestCase):
         self.assertEqual(mm.buy_place_min_nbbo_updates, 3)
         self.assertAlmostEqual(mm.buy_place_nbbo_window_seconds, 45.0)
 
+    def test_quote_engine_params_carry_inventory_skew_from_config(self):
+        self.assertAlmostEqual(
+            self.mm._quote_engine_params().inventory_skew_spreads_per_lot, 0.0
+        )
+        self.assertAlmostEqual(
+            self.mm._quote_engine_params().inventory_pull_lots, 0.0
+        )
+        mm = MarketMaker(
+            {**self.base_config, "inventory_skew_spreads_per_lot": 1.0,
+             "inventory_pull_lots": 2}
+        )
+        params = mm._quote_engine_params()
+        self.assertAlmostEqual(params.inventory_skew_spreads_per_lot, 1.0)
+        self.assertAlmostEqual(params.inventory_pull_lots, 2.0)
+
+    def test_market_maker_rejects_negative_inventory_skew_config(self):
+        with self.assertRaises(ValueError):
+            MarketMaker({**self.base_config, "inventory_pull_lots": -1})
+
     def test_gate_blocks_new_buy_on_unconfirmed_nbbo(self):
         self.mm._nbbo_ok_history.clear()
         self.mm._note_nbbo_ok(1000.0)

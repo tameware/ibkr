@@ -374,6 +374,39 @@ class TestMmPegBest(unittest.TestCase):
             self.bot.maybe_manage_quotes(force=True)
         self.assertEqual(len(self._buy_calls()), 1)
 
+    def test_inventory_skew_backs_buy_off_bid_when_long(self):
+        # Far behind pace with a 0.40 spread: unskewed buy is 48.16 (mid-edge
+        # cap); one lot held and one spread per lot -> 47.76.
+        ts = 3_000_000.0
+        self.bot.inventory_skew_spreads_per_lot = 1.0
+        self._seed_pos(100, avg_cost=47.55)
+        self._set_nbbo(bid=48.0, ask=48.40, ts=ts)
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+
+        with patch("market_maker.time.time", return_value=ts):
+            self.bot.maybe_manage_quotes(force=True)
+
+        self.assertEqual(len(self._peg_calls()), 1)
+        buys = self._buy_calls()
+        self.assertEqual(len(buys), 1)
+        self.assertAlmostEqual(buys[0][0][2].lmtPrice, 47.76)
+
+    def test_inventory_pull_quotes_sell_only_past_pull_lots(self):
+        ts = 3_000_000.0
+        self.bot.inventory_pull_lots = 2.0
+        self._seed_pos(200, avg_cost=47.55)
+        self._set_nbbo(bid=48.0, ask=48.40, ts=ts)
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+
+        with patch("market_maker.time.time", return_value=ts):
+            self.bot.maybe_manage_quotes(force=True)
+
+        self.assertEqual(len(self._peg_calls()), 1)
+        self.assertEqual(len(self._buy_calls()), 0)
+        self.assertIsNone(self.bot.buy_order)
+
     def test_long_at_max_position_places_sell_only(self):
         ts = 3_000_000.0
         self._seed_pos(300, avg_cost=47.55)
