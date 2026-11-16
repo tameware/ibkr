@@ -323,8 +323,185 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm._nbbo.ask = self.mm.quote.ask
         self.mm._nbbo.satisfy_pair_for_quoting()
         ts = self.mm.quote.last_update_ts or 1_000_000.0
+        # One update older than the raise-confirm window so the current bid
+        # counts as held (earlier levels dropped); two recent ones for the
+        # freshness gate.
+        self.mm._bid_history.clear()
+        self.mm._note_nbbo_ok(ts - 200.0)
         self.mm._note_nbbo_ok(ts - 1.0)
         self.mm._note_nbbo_ok(ts)
+
+    # --- buy raise confirmation (bid persistence) -----------------------------
+
+    def _note_bid(self, ts: float, bid: float) -> None:
+        self.mm.quote.bid = bid
+        self.mm.quote.ask = bid + 1.0
+        self.mm._note_nbbo_ok(ts)
+
+    def test_confirmed_bid_is_none_without_history_spanning_window(self):
+        self.mm.buy_raise_confirm_seconds = 120.0
+        self.mm._bid_history.clear()
+        self._note_bid(1000.0, 100.00)
+        self._note_bid(1060.0, 100.00)
+        self.assertIsNone(self.mm._confirmed_bid(now=1100.0))
+
+    def test_confirmed_bid_is_min_over_window_including_last_prior_update(self):
+        self.mm.buy_raise_confirm_seconds = 120.0
+        self.mm._bid_history.clear()
+        self._note_bid(900.0, 100.00)   # last update before the window
+        self._note_bid(1010.0, 100.20)
+        self._note_bid(1050.0, 100.30)
+        self.assertAlmostEqual(self.mm._confirmed_bid(now=1100.0), 100.00)
+
+    def test_confirmed_bid_rises_once_the_new_level_has_held_for_window(self):
+        self.mm.buy_raise_confirm_seconds = 120.0
+        self.mm._bid_history.clear()
+        self._note_bid(900.0, 100.00)
+        self._note_bid(1000.0, 100.20)
+        self.assertAlmostEqual(self.mm._confirmed_bid(now=1119.0), 100.00)
+        self.assertAlmostEqual(self.mm._confirmed_bid(now=1121.0), 100.20)
+
+    def test_confirmed_bid_follows_a_drop_immediately(self):
+        self.mm.buy_raise_confirm_seconds = 120.0
+        self.mm._bid_history.clear()
+        self._note_bid(900.0, 100.20)
+        self._note_bid(1099.0, 100.00)
+        self.assertAlmostEqual(self.mm._confirmed_bid(now=1100.0), 100.00)
+
+    def test_buy_raise_confirm_seconds_from_config(self):
+        self.assertAlmostEqual(self.mm.buy_raise_confirm_seconds, 120.0)
+        mm = MarketMaker({**self.base_config, "buy_raise_confirm_seconds": 30})
+        self.assertAlmostEqual(mm.buy_raise_confirm_seconds, 30.0)
+        with self.assertRaises(ValueError):
+            MarketMaker({**self.base_config, "buy_raise_confirm_seconds": -1})
+
+    def test_raise_cap_passes_through_when_bid_has_held(self):
+        self.mm._bid_history.clear()
+        self._note_bid(850.0, 100.00)
+        self._note_bid(1000.0, 100.00)
+        self.mm.buy_order = None
+        self.assertEqual(
+            self.mm._cap_buy_raise_to_confirmed_bid(100, 100.05, now=1000.0),
+            (100, 100.05),
+        )
+
+    def test_raise_cap_lowers_new_buy_by_unconfirmed_bid_rise(self):
+        # Bid 100.00 -> 100.20 a minute ago; proposal 100.25 is shifted down
+        # by the 0.20 that has not been confirmed yet.
+        self.mm._bid_history.clear()
+        self._note_bid(900.0, 100.00)
+        self._note_bid(1000.0, 100.20)
+        self.mm.buy_order = None
+        qty, px = self.mm._cap_buy_raise_to_confirmed_bid(100, 100.25, now=1060.0)
+        self.assertEqual(qty, 100)
+        self.assertAlmostEqual(px, 100.05)
+
+    def test_raise_cap_limits_working_buy_raise_to_confirmed_level(self):
+        self.mm._bid_history.clear()
+        self._note_bid(900.0, 100.00)
+        self._note_bid(1000.0, 100.20)
+        self.mm.buy_order = LiveOrder(
+            order_id=5, side="BUY", price=100.00, qty=100, status="Submitted"
+        )
+        qty, px = self.mm._cap_buy_raise_to_confirmed_bid(100, 100.25, now=1060.0)
+        self.assertEqual(qty, 100)
+        self.assertAlmostEqual(px, 100.05)
+
+    def test_raise_cap_holds_working_buy_already_at_or_above_cap(self):
+        self.mm._bid_history.clear()
+        self._note_bid(900.0, 100.00)
+        self._note_bid(1000.0, 100.20)
+        self.mm.buy_order = LiveOrder(
+            order_id=5, side="BUY", price=100.10, qty=100, status="Submitted"
+        )
+        qty, px = self.mm._cap_buy_raise_to_confirmed_bid(100, 100.25, now=1060.0)
+        self.assertEqual(qty, 100)
+        self.assertAlmostEqual(px, 100.10)
+
+    def test_raise_cap_never_delays_lowering_a_working_buy(self):
+        self.mm._bid_history.clear()
+        self._note_bid(900.0, 100.00)
+        self._note_bid(1000.0, 100.20)
+        self.mm.buy_order = LiveOrder(
+            order_id=5, side="BUY", price=100.30, qty=100, status="Submitted"
+        )
+        qty, px = self.mm._cap_buy_raise_to_confirmed_bid(100, 100.25, now=1060.0)
+        self.assertEqual(qty, 100)
+        self.assertAlmostEqual(px, 100.25)
+
+    def test_raise_cap_holds_buys_without_history_spanning_window(self):
+        self.mm._bid_history.clear()
+        self._note_bid(1000.0, 100.00)
+        self.mm.buy_order = None
+        self.assertEqual(
+            self.mm._cap_buy_raise_to_confirmed_bid(100, 100.05, now=1010.0),
+            (0, None),
+        )
+        self.mm.buy_order = LiveOrder(
+            order_id=5, side="BUY", price=99.90, qty=100, status="Submitted"
+        )
+        qty, px = self.mm._cap_buy_raise_to_confirmed_bid(100, 100.05, now=1010.0)
+        self.assertEqual(qty, 100)
+        self.assertAlmostEqual(px, 99.90)
+
+    def test_raise_cap_quantizes_down_to_tick(self):
+        self.mm._bid_history.clear()
+        self._note_bid(900.0, 100.00)
+        self._note_bid(1000.0, 100.17)
+        self.mm.buy_order = None
+        _, px = self.mm._cap_buy_raise_to_confirmed_bid(100, 100.25, now=1060.0)
+        # 100.25 - 0.17 = 100.08 exactly; make sure float noise rounds down, not up.
+        self.assertAlmostEqual(px, 100.08)
+        self.assertAlmostEqual(px, round(px, 2))
+
+    def test_raise_cap_passes_through_cancel_requests_and_when_disabled(self):
+        self.mm._bid_history.clear()
+        self.assertEqual(
+            self.mm._cap_buy_raise_to_confirmed_bid(0, None, now=1000.0), (0, None)
+        )
+        self.mm.buy_raise_confirm_seconds = 0.0
+        self._note_bid(1000.0, 100.20)
+        self.assertEqual(
+            self.mm._cap_buy_raise_to_confirmed_bid(100, 100.25, now=1000.0),
+            (100, 100.25),
+        )
+
+    def test_quote_cycle_does_not_chase_bid_spike_until_it_holds(self):
+        """2026-10-29: bid stepped 34.56 -> 34.76 -> 35.01 in five minutes and
+        the buy followed to 35.05; the bid was back at 34.76 a minute later."""
+        ts = 1_000_000.0
+        self._seed_pos(0, avg_cost=0.0)
+        self.mm.next_order_id = 700
+        self.mm.isConnected = Mock(return_value=True)
+        self.mm.serverVersion = Mock(return_value=157)
+        self.mm.connected_flag = True
+        self.mm.open_orders_snapshot_done = True
+        self.mm.quote.bid_size = 100
+        self.mm.quote.ask_size = 100
+        # Bid held at 100.00 for well over the window.
+        for dt in (-300.0, -200.0, -10.0, 0.0):
+            with patch("market_maker.time.time", return_value=ts + dt):
+                self.mm._on_coalesced_nbbo(100.00, 101.00)
+        with patch("market_maker.time.time", return_value=ts + 1):
+            self.mm.maybe_manage_quotes(force=True)
+        self.assertIsNotNone(self.mm.buy_order)
+        px_before = self.mm.buy_order.price
+
+        # Spike: bid jumps 0.30 and is confirmed by a second update 20s later.
+        for dt in (30.0, 50.0):
+            with patch("market_maker.time.time", return_value=ts + dt):
+                self.mm._on_coalesced_nbbo(100.30, 101.30)
+        with patch("market_maker.time.time", return_value=ts + 51):
+            self.mm.maybe_manage_quotes(force=True)
+        self.assertAlmostEqual(self.mm.buy_order.price, px_before)
+
+        # Held for the full window: the raise goes through.
+        for dt in (150.0, 175.0):
+            with patch("market_maker.time.time", return_value=ts + dt):
+                self.mm._on_coalesced_nbbo(100.30, 101.30)
+        with patch("market_maker.time.time", return_value=ts + 176):
+            self.mm.maybe_manage_quotes(force=True)
+        self.assertGreater(self.mm.buy_order.price, px_before + 0.25)
 
     # --- buy freshness gate --------------------------------------------------
 
@@ -425,8 +602,9 @@ class TestMarketMakerCore(unittest.TestCase):
         )
 
     def test_quote_cycle_does_not_place_buy_on_single_nbbo_snapshot(self):
-        """One valid NBBO after a dead feed must not trigger a buy; the next
-        update confirms the market and the buy goes out."""
+        """One valid NBBO after a dead feed must not trigger a buy; once the
+        market is confirmed (two updates, and the bid has held for the raise
+        window) the buy goes out."""
         ts = 1_000_000.0
         self._seed_pos(0, avg_cost=0.0)
         self.mm.next_order_id = 700
@@ -446,7 +624,9 @@ class TestMarketMakerCore(unittest.TestCase):
 
         with patch("market_maker.time.time", return_value=ts + 20):
             self.mm._on_coalesced_nbbo(100.0, 101.0)
-        with patch("market_maker.time.time", return_value=ts + 21):
+        with patch("market_maker.time.time", return_value=ts + 130):
+            self.mm._on_coalesced_nbbo(100.0, 101.0)
+        with patch("market_maker.time.time", return_value=ts + 131):
             self.mm.maybe_manage_quotes(force=True)
         buys = [c for c in self.mm.placeOrder.call_args_list if c[0][2].action == "BUY"]
         self.assertEqual(len(buys), 1)
@@ -1315,7 +1495,8 @@ class TestMarketMakerCore(unittest.TestCase):
         self.mm.quote.bid_size = 100
         self.mm.quote.ask_size = 100
         self.mm.quote.last_update_ts = ts
-        self.mm._note_nbbo_ok(ts - 1.0)  # confirmed NBBO (live feed)
+        self.mm._note_nbbo_ok(ts - 200.0)  # confirmed NBBO (live feed, bid held)
+        self.mm._note_nbbo_ok(ts - 1.0)
         self.mm._note_nbbo_ok(ts)
         self.mm.quote_refresh_seconds = 3.0
         self.mm._nbbo_throttle = NbboThrottle(3.0, clock=lambda: ts)

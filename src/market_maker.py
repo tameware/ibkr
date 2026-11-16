@@ -239,6 +239,14 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
             config.get("buy_place_nbbo_window_seconds", 120.0)
         )
         self._nbbo_ok_history: Deque[float] = deque(maxlen=256)
+        # Bid persistence: a buy may be raised only to a level the bid has
+        # held for this long. Follows a rise with a lag; a drop is immediate.
+        self.buy_raise_confirm_seconds = float(
+            config.get("buy_raise_confirm_seconds", 120.0)
+        )
+        if self.buy_raise_confirm_seconds < 0:
+            raise ValueError("buy_raise_confirm_seconds must be >= 0")
+        self._bid_history: Deque[Tuple[float, float]] = deque(maxlen=4096)
 
         self.target_conid: Optional[int] = None
         self.open_orders_snapshot_done = False
@@ -537,6 +545,82 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         """Record a valid NBBO update (caller holds ``self.lock`` or is single-threaded)."""
         self.last_nbbo_ok_ts = now
         self._nbbo_ok_history.append(float(now))
+        if self.quote.bid is not None:
+            self._bid_history.append((float(now), float(self.quote.bid)))
+
+    def _confirmed_bid(self, *, now: float) -> Optional[float]:
+        """Lowest bid seen over the raise-confirm window.
+
+        Includes the last update at or before the window start, since that is
+        the level prevailing when the window opened. ``None`` when no update is
+        that old: the bid has not been observed for a full window yet.
+        """
+        cutoff = float(now) - float(self.buy_raise_confirm_seconds)
+        prior: Optional[float] = None
+        lowest: Optional[float] = None
+        for ts, bid in self._bid_history:
+            if ts <= cutoff:
+                prior = bid
+            elif lowest is None or bid < lowest:
+                lowest = bid
+        if prior is None:
+            return None
+        return prior if lowest is None else min(prior, lowest)
+
+    def _cap_buy_raise_to_confirmed_bid(
+        self, buy_qty: int, buy_px: Optional[float], *, now: float
+    ) -> Tuple[int, Optional[float]]:
+        """Do not follow a rising bid faster than it is confirmed.
+
+        A raise (or a new buy) is shifted down by however much the live bid
+        exceeds the bid level that has held for ``buy_raise_confirm_seconds``.
+        Lowering a working buy is never delayed.
+        """
+        if buy_px is None or buy_qty <= 0 or self.buy_raise_confirm_seconds <= 0:
+            return buy_qty, buy_px
+        with self.lock:
+            bid = self.quote.bid
+            working = self.buy_order.price if self.buy_order else None
+            confirmed = self._confirmed_bid(now=now)
+        if bid is None:
+            return buy_qty, buy_px
+        if working is not None and float(buy_px) <= float(working) + 1e-9:
+            return buy_qty, buy_px
+        if confirmed is None:
+            if working is None:
+                self.logger.info(
+                    "Buy held: bid not yet observed for %.0fs [%s]",
+                    self.buy_raise_confirm_seconds,
+                    self._format_nbbo_for_log(),
+                )
+                return 0, None
+            return buy_qty, float(working)
+        unconfirmed_rise = float(bid) - float(confirmed)
+        if unconfirmed_rise <= 1e-9:
+            return buy_qty, buy_px
+        tick = self._effective_min_tick()
+        capped = max(tick, float(buy_px) - unconfirmed_rise)
+        capped = math.floor(capped / tick + 1e-6) * tick
+        capped = round(capped, 10)
+        if working is not None and capped <= float(working) + 1e-9:
+            capped = float(working)
+        self.logger.info(
+            "Buy raise capped at %.2f (wanted %.2f): bid %.2f above %.2f held for %.0fs [%s]",
+            capped,
+            buy_px,
+            bid,
+            confirmed,
+            self.buy_raise_confirm_seconds,
+            self._format_nbbo_for_log(),
+        )
+        return buy_qty, capped
+
+    def _gate_buy(
+        self, buy_qty: int, buy_px: Optional[float], *, now: float
+    ) -> Tuple[int, Optional[float]]:
+        """All pre-placement buy gates: NBBO freshness, then bid persistence."""
+        buy_qty, buy_px = self._gate_buy_on_nbbo_freshness(buy_qty, buy_px, now=now)
+        return self._cap_buy_raise_to_confirmed_bid(buy_qty, buy_px, now=now)
 
     def _nbbo_confirmed_for_buy(self, *, now: float) -> bool:
         """True when enough valid NBBO updates arrived inside the freshness window."""
@@ -1768,7 +1852,7 @@ class MarketMaker(ContractResolutionMixin, IbkrBotApp):
         buy_px = pipeline.buy_px if pipeline.buy_qty > 0 else None
         sell_qty = pipeline.sell_qty
         sell_px = pipeline.sell_px
-        buy_qty, buy_px = self._gate_buy_on_nbbo_freshness(buy_qty, buy_px, now=now)
+        buy_qty, buy_px = self._gate_buy(buy_qty, buy_px, now=now)
 
         self.place_or_replace_buy(buy_qty, buy_px)
         self.place_or_replace_sell(sell_qty, sell_px if sell_qty > 0 else None)

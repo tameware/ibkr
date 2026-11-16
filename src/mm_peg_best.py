@@ -293,7 +293,7 @@ class MmPegBest(MarketMaker):
             return
         buy_qty = pipeline.buy_qty
         buy_px = pipeline.buy_px if buy_qty > 0 else None
-        buy_qty, buy_px = self._gate_buy_on_nbbo_freshness(buy_qty, buy_px, now=now)
+        buy_qty, buy_px = self._gate_buy(buy_qty, buy_px, now=now)
 
         if sellable > 0:
             limit = self._peg_sell_protective_limit(float(qb), float(qa))

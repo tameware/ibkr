@@ -105,7 +105,12 @@ class TestMmPegBest(unittest.TestCase):
         self.bot._nbbo.bid = bid
         self.bot._nbbo.ask = ask
         self.bot._nbbo.satisfy_pair_for_quoting()
-        # Two valid updates: a confirmed NBBO, as a live feed produces.
+        # A confirmed NBBO, as a live feed produces: one update older than
+        # the raise-confirm window (this bid has held), two recent (freshness).
+        # Earlier bid levels are dropped: tests that need a spike note bids
+        # directly.
+        self.bot._bid_history.clear()
+        self.bot._note_nbbo_ok(ts - 200.0)
         self.bot._note_nbbo_ok(ts - 1.0)
         self.bot._note_nbbo_ok(ts)
 
@@ -373,6 +378,37 @@ class TestMmPegBest(unittest.TestCase):
         with patch("market_maker.time.time", return_value=ts + 15):
             self.bot.maybe_manage_quotes(force=True)
         self.assertEqual(len(self._buy_calls()), 1)
+
+    def test_buy_does_not_follow_bid_spike_until_it_holds(self):
+        """Bid held at 48.00, then steps to 48.20: the working buy stays put
+        until the new level has persisted for buy_raise_confirm_seconds."""
+        ts = 3_000_000.0
+        self._seed_pos(150, avg_cost=47.55)
+        self._set_nbbo(bid=48.0, ask=48.40, ts=ts)
+        self.bot.isConnected = Mock(return_value=True)
+        self.bot.serverVersion = Mock(return_value=157)
+        with patch("market_maker.time.time", return_value=ts):
+            self.bot.maybe_manage_quotes(force=True)
+        self.assertEqual(len(self._buy_calls()), 1)
+        px_before = self.bot.buy_order.price
+
+        # Spike seen in two updates, but only for 40s.
+        self.bot.quote.bid, self.bot.quote.ask = 48.20, 48.60
+        self.bot._nbbo.bid, self.bot._nbbo.ask = 48.20, 48.60
+        self.bot.quote.last_update_ts = ts + 40
+        self.bot._note_nbbo_ok(ts + 20)
+        self.bot._note_nbbo_ok(ts + 40)
+        with patch("market_maker.time.time", return_value=ts + 41):
+            self.bot.maybe_manage_quotes(force=True)
+        self.assertAlmostEqual(self.bot.buy_order.price, px_before)
+
+        # Still there two minutes later: follow it.
+        self.bot.quote.last_update_ts = ts + 170
+        self.bot._note_nbbo_ok(ts + 150)
+        self.bot._note_nbbo_ok(ts + 170)
+        with patch("market_maker.time.time", return_value=ts + 171):
+            self.bot.maybe_manage_quotes(force=True)
+        self.assertGreater(self.bot.buy_order.price, px_before + 0.15)
 
     def test_inventory_skew_backs_buy_off_bid_when_long(self):
         # Far behind pace with a 0.40 spread: unskewed buy is 48.16 (mid-edge

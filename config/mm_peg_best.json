@@ -31,6 +31,8 @@
     "buy_place_min_nbbo_updates": 2,
     "buy_place_nbbo_window_seconds": 120,
     "//": "Place or raise a buy only after this many valid NBBO updates within the window; one snapshot after a dead feed is not a market. Lowering/cancelling is never gated. 0 disables.",
+    "buy_raise_confirm_seconds": 120,
+    "//": "Bid persistence: a buy is raised only to a level the bid has held for this long (lowest bid over the window). Follows a genuine move with this lag, ignores a spike that reverts sooner. Lowering is immediate. 0 disables.",
     "commission_per_share": 0.005,
     "min_spread": 0.10,
     "max_spread": 4.00,
