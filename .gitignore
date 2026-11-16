@@ -9,3 +9,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+
+# macOS / shell droppings, anywhere in the tree
+# (._* are AppleDouble sidecars macOS writes on filesystems without xattrs, e.g. sshfs)
+.DS_Store
+._*
+nohup.out
